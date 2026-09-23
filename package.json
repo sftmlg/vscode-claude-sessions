@@ -256,7 +256,7 @@
         {
           "command": "claudeSessions.closeTab",
           "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/ || viewItem == activeTerminal || viewItem == activeTerminalInSplit",
-          "group": "inline@5"
+          "group": "inline@7"
         },
         {
           "command": "claudeSessions.resume",
@@ -276,12 +276,12 @@
         {
           "command": "claudeSessions.archive",
           "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/",
-          "group": "inline@6"
+          "group": "inline@7"
         },
         {
           "command": "claudeSessions.unarchive",
           "when": "viewItem =~ /^archivedSession(\\.fav)?$/",
-          "group": "inline@6"
+          "group": "inline@7"
         },
         {
           "command": "claudeSessions.removeSaved",
@@ -310,8 +310,13 @@
         },
         {
           "command": "claudeSessions.deleteSession",
-          "when": "viewItem =~ /^(session|savedTab|archivedSession|activeTab|activeTabInSplit)(\\.fav)?$/",
-          "group": "inline@9"
+          "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/",
+          "group": "inline@6"
+        },
+        {
+          "command": "claudeSessions.deleteSession",
+          "when": "viewItem =~ /^(session|savedTab|archivedSession)(\\.fav)?$/",
+          "group": "inline@6"
         }
       ],
       "terminal/title/context": [
