@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -151,6 +151,12 @@
         "title": "Split: open a terminal to the right, then pick a session or start a new one",
         "category": "Claude Sessions",
         "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "claudeSessions.openInTerminal",
+        "title": "Start or resume a Claude session in this terminal",
+        "category": "Claude Sessions",
+        "icon": "$(add)"
       }
     ],
     "viewsContainers": {
@@ -277,6 +283,11 @@
           "command": "claudeSessions.splitTab",
           "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/ || viewItem == activeTerminal || viewItem == activeTerminalInSplit",
           "group": "inline@4"
+        },
+        {
+          "command": "claudeSessions.openInTerminal",
+          "when": "viewItem == activeTerminal || viewItem == activeTerminalInSplit",
+          "group": "inline@2"
         }
       ],
       "terminal/title/context": [
@@ -350,6 +361,10 @@
         },
         {
           "command": "claudeSessions.splitTab",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.openInTerminal",
           "when": "false"
         }
       ]

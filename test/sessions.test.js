@@ -8,7 +8,7 @@ const path = require('path');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sessions-test-'));
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
-const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState, timeAgo } = require('../sessions');
+const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState, timeAgo, readStateFile, writeStatePatch, archiveInState } = require('../sessions');
 
 const repo = '/work/demo-repo';
 const projectDir = path.join(home, '.claude', 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'));
@@ -122,4 +122,17 @@ test('times are relative up to 48 hours, then a plain day and month', () => {
   assert.strictEqual(timeAgo(at(47 * 60), now), '47 hours ago');
   const old = new Date(now - 72 * 3600000);
   assert.strictEqual(timeAgo(old.toISOString(), now), `${old.getDate()}.${old.getMonth() + 1}.`);
+});
+
+test('state writes merge keys and a corrupt file is kept, never overwritten silently', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-state-test-'));
+  const file = path.join(dir, '.vscode', 'claude-sessions.json');
+  writeStatePatch(file, { favorites: { a: true } });
+  archiveInState(file, ['x']);
+  assert.deepStrictEqual(readStateFile(file).favorites, { a: true });
+  assert.deepStrictEqual(readStateFile(file).archived, { x: true });
+  fs.writeFileSync(file, '{"tabs": [');
+  assert.throws(() => writeStatePatch(file, { favorites: {} }), /not valid JSON/);
+  assert.ok(fs.readdirSync(path.dirname(file)).some((f) => f.includes('.corrupt-')));
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"tabs": [');
 });

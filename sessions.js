@@ -396,19 +396,35 @@ function tabPresentation({ status, focused }) {
   };
 }
 
-function archiveInState(stateFile, ids) {
-  let state = {};
+function readStateFile(stateFile) {
+  let raw;
   try {
-    state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) || {};
-  } catch {}
-  const archived = { ...(state.archived || {}) };
-  const added = ids.filter((id) => !archived[id]);
-  for (const id of added) archived[id] = true;
-  const next = { ...state, archived, version: 2, updatedAt: new Date().toISOString() };
+    raw = fs.readFileSync(stateFile, 'utf8');
+  } catch {
+    return {};
+  }
+  try {
+    return JSON.parse(raw) || {};
+  } catch {
+    fs.copyFileSync(stateFile, `${stateFile}.corrupt-${Date.now()}`);
+    throw new Error(`State file ${stateFile} is not valid JSON; a copy was kept next to it`);
+  }
+}
+
+function writeStatePatch(stateFile, patch) {
+  const next = { ...readStateFile(stateFile), ...patch, version: 2, updatedAt: new Date().toISOString() };
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-  const tmp = `${stateFile}.tmp`;
+  const tmp = `${stateFile}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
   fs.renameSync(tmp, stateFile);
+  return next;
+}
+
+function archiveInState(stateFile, ids) {
+  const archived = { ...(readStateFile(stateFile).archived || {}) };
+  const added = ids.filter((id) => !archived[id]);
+  for (const id of added) archived[id] = true;
+  writeStatePatch(stateFile, { archived });
   return added;
 }
 
@@ -417,4 +433,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

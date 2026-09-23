@@ -21,7 +21,7 @@ Module._load = (request, ...rest) => {
     workspace: { getConfiguration: () => ({ get: (key) => (key === 'syncSessionName' ? true : undefined) }) },
   };
 };
-const { Notifications, Store, Tracker, sortSessions, pickerOrder } = require('../extension');
+const { Notifications, Store, Tracker, sortSessions, pickerOrder, parseGroupSizes } = require('../extension');
 
 function fresh() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-notifications-test-'));
@@ -138,4 +138,9 @@ test('picker order: unopened favorites newest first, then the rest newest first,
   const fav = new Set(['f-old', 'f-new']);
   const order = pickerOrder(rows, (id) => fav.has(id), (id) => id === 'arch').map((r) => r.id);
   assert.deepStrictEqual(order, ['f-new', 'f-old', 'n-new', 'n-old', 'arch']);
+});
+
+test('VS Code layout parsing yields group sizes in tab order', () => {
+  const layout = '{"tabs":[{"terminals":[{"terminal":3},{"terminal":14},{"terminal":9}]},{"terminals":[{"terminal":7},{"terminal":8}]}]}';
+  assert.deepStrictEqual(parseGroupSizes(layout), [3, 2]);
 });

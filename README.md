@@ -22,6 +22,7 @@ Buttons:
 |---|---|
 | `active` folder | ＋ open a new tab, then the picker |
 | `split` | ＋ add a terminal to this split, then the same picker |
+| plain terminal (no Claude session) | ＋ start or resume a Claude session in this terminal · ⫼ split · ✕ close |
 | active tab | ☆/★ favorite and ✎ rename (only once the tab runs a Claude session) · ⫼ split: a terminal opens to the right at once, then the picker · ✕ close tab |
 | inactive / archived session | ☆/★ favorite · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back |
 
@@ -69,7 +70,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 
 - **Session per tab:** terminal shell process → child `claude` process → `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
 - **Session list:** `~/.claude*/projects/<encoded repo path>*/*.jsonl`, read from the head and tail of each file only.
-- **Splits and order:** VS Code does not expose terminal groups to extensions. When a terminal opens or closes, the extension cycles focus through all terminals once and restores focus afterwards (`claudeSessions.autoCaptureLayout`).
+- **Splits and order:** VS Code does not expose terminal groups to extensions. When a terminal opens or closes, the extension cycles focus through all terminals once and restores focus afterwards (`claudeSessions.autoCaptureLayout`). Every capture is checked against the layout VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`); on a mismatch it captures again more slowly. The same check runs every 10 seconds and when the window regains focus, so splits made by dragging tabs are picked up too. Captures are logged in the output channel **Claude Sessions**.
 - Terminals in the editor area are treated as separate tabs.
 
 ## Settings
