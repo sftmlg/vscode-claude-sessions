@@ -319,6 +319,41 @@ async function renameSession(sessionId, name) {
   return target;
 }
 
+const STATE_FILE = '.vscode/claude-sessions.json';
+
+function readState(wsPath) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(wsPath, STATE_FILE), 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+
+function sessionName(meta) {
+  return meta.customTitle || meta.aiTitle || '';
+}
+
+async function archiveDuplicates(wsPath, days = 30) {
+  const [metas, running] = await Promise.all([listRepoSessions(wsPath, days), readRunningSessions()]);
+  const live = new Set([...running.values()].map((s) => s.sessionId));
+  const newestByName = new Map();
+  for (const m of metas) {
+    const name = sessionName(m);
+    if (!name) continue;
+    const best = newestByName.get(name);
+    if (!best || Date.parse(m.lastActivity) > Date.parse(best.lastActivity)) newestByName.set(name, m);
+  }
+  const state = readState(wsPath);
+  const archived = state.archived || {};
+  const favorites = state.favorites || {};
+  const moved = metas
+    .filter((m) => sessionName(m) && !live.has(m.id) && !favorites[m.id] && !archived[m.id])
+    .filter((m) => newestByName.get(sessionName(m)).id !== m.id)
+    .map((m) => ({ id: m.id, name: sessionName(m) }));
+  archiveInState(path.join(wsPath, STATE_FILE), moved.map((m) => m.id));
+  return moved;
+}
+
 async function listRepoSessions(wsPath, days = 14) {
   const encoded = wsPath.replace(/[^a-zA-Z0-9]/g, '-');
   const byId = await collectSessionFiles((p) => p === encoded || p.startsWith(`${encoded}-`));
@@ -369,4 +404,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

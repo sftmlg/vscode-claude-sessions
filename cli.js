@@ -8,6 +8,7 @@ const USAGE = [
   'Usage:',
   '  node cli.js list [repo-path] [--days N] [--json]',
   '  node cli.js rename <session-id> <name>',
+  '  node cli.js archive-duplicates [repo-path] [--days N]   (keeps the newest session per name)',
   '  node cli.js rename-batch <mapping.json> [--keep-existing]   (JSON object: session id -> name)',
   '  node cli.js archive <repo-path> --name <name> [--days N] [--apply]   (preview unless --apply; running sessions are skipped)',
 ].join('\n');
@@ -56,6 +57,18 @@ async function main(argv) {
     }
     const added = archiveInState(path.join(repo, '.vscode', 'claude-sessions.json'), picked.map((s) => s.id));
     console.log(`${added.length} archived, ${picked.length - added.length} were already archived`);
+    return 0;
+  }
+  if (command === 'archive-duplicates') {
+    const daysIndex = rest.indexOf('--days');
+    const days = daysIndex >= 0 ? Number(rest[daysIndex + 1]) : 30;
+    const repo = path.resolve(rest.find((a, i) => !a.startsWith('--') && rest[i - 1] !== '--days') || process.cwd());
+    const moved = await archiveDuplicates(repo, days);
+    const counts = moved.reduce((acc, m) => ({ ...acc, [m.name]: (acc[m.name] || 0) + 1 }), {});
+    Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([name, n]) => console.log(`${String(n).padStart(4)}  ${name}`));
+    console.log(`${moved.length} older duplicates archived`);
     return 0;
   }
   if (command !== 'list') {

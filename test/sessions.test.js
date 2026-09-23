@@ -8,7 +8,7 @@ const path = require('path');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sessions-test-'));
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
-const { listRepoSessions, sessionSummary, renameSession } = require('../sessions');
+const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState } = require('../sessions');
 
 const repo = '/work/demo-repo';
 const projectDir = path.join(home, '.claude', 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'));
@@ -89,4 +89,25 @@ test('a session without messages is dated by its own records, not by the file ti
   await renameSession('eeee5555-0000-0000-0000-000000000000', 'empty');
   const meta = (await listRepoSessions(repo, 14)).find((s) => s.id.startsWith('eeee'));
   assert.strictEqual(meta.lastActivity, iso(600));
+});
+
+test('archive-duplicates keeps the newest session per name and skips favorites', async () => {
+  const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-dupes-ws-'));
+  const dupDir = path.join(home, '.claude', 'projects', wsDir.replace(/[^a-zA-Z0-9]/g, '-'));
+  fs.mkdirSync(dupDir, { recursive: true });
+  const put = (id, minutesAgo, title) =>
+    fs.writeFileSync(path.join(dupDir, `${id}.jsonl`), [
+      JSON.stringify({ type: 'user', cwd: wsDir, timestamp: iso(minutesAgo), message: { content: 'go' } }),
+      JSON.stringify({ type: 'custom-title', customTitle: title }),
+    ].join('\n') + '\n');
+  put('r-old', 300, 'radar-daily');
+  put('r-mid', 200, 'radar-daily');
+  put('r-new', 100, 'radar-daily');
+  put('fav-old', 400, 'radar-daily');
+  put('solo', 50, 'kreil');
+  fs.mkdirSync(path.join(wsDir, '.vscode'), { recursive: true });
+  fs.writeFileSync(path.join(wsDir, '.vscode', 'claude-sessions.json'), JSON.stringify({ favorites: { 'fav-old': true } }));
+  const moved = await archiveDuplicates(wsDir, 14);
+  assert.deepStrictEqual(moved.map((m) => m.id).sort(), ['r-mid', 'r-old']);
+  assert.deepStrictEqual(Object.keys(readState(wsDir).archived).sort(), ['r-mid', 'r-old']);
 });
