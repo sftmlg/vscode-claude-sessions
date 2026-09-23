@@ -20,21 +20,6 @@ const AUTO_TITLE = /^[\u2800-\u28ff✳✻✽✶✢✦·*●○◐◓◑◒]\s*/u
 const SHELL_NAMES = new Set(['', 'zsh', '-zsh', 'bash', '-bash', 'sh', 'fish', 'node', 'claude', 'login', 'Claude Code']);
 const LEGACY_DIR = '.vscode/claude-sessions';
 
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+){0,4}$/;
-
-function toSlug(text) {
-  return text
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/ß/g, 'ss')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .split('-')
-    .slice(0, 5)
-    .join('-');
-}
-
 const settings = () => vscode.workspace.getConfiguration('claudeSessions');
 const claudeCommand = () => settings().get('claudeCommand') || 'claude';
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -77,21 +62,30 @@ class Store {
     return path.resolve(this.wsPath, settings().get('storageFile') || '.vscode/claude-sessions.json');
   }
 
-  read() {
+  readState() {
     try {
-      const data = JSON.parse(fs.readFileSync(this.file(), 'utf8'));
-      return Array.isArray(data.tabs) ? data.tabs : [];
+      return JSON.parse(fs.readFileSync(this.file(), 'utf8')) || {};
     } catch {
-      return [];
+      return {};
     }
   }
 
-  write(tabs) {
+  writeState(patch) {
     const file = this.file();
+    const state = { ...this.readState(), ...patch, version: 2, updatedAt: new Date().toISOString() };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, `${JSON.stringify({ version: 2, updatedAt: new Date().toISOString(), tabs }, null, 2)}\n`);
+    fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`);
     fs.renameSync(tmp, file);
+  }
+
+  read() {
+    const tabs = this.readState().tabs;
+    return Array.isArray(tabs) ? tabs : [];
+  }
+
+  write(tabs) {
+    this.writeState({ tabs });
   }
 
   migrateLegacy() {
@@ -119,9 +113,65 @@ class Store {
   }
 }
 
-class Tracker {
+const MAX_PRIORITY = 5;
+const STALE_MINUTES = 30;
+
+class Notifications {
   constructor(store) {
     this.store = store;
+    this.onChange = new vscode.EventEmitter();
+  }
+
+  list() {
+    const items = this.store.readState().notifications;
+    return Array.isArray(items) ? items : [];
+  }
+
+  priorities() {
+    return this.store.readState().priorities || {};
+  }
+
+  priorityOf(sessionId) {
+    return this.priorities()[sessionId] || 1;
+  }
+
+  save(items) {
+    this.store.writeState({ notifications: items });
+    this.onChange.fire();
+  }
+
+  add(sessionId, name, kind) {
+    const items = this.list().filter((n) => n.sessionId !== sessionId);
+    items.push({ sessionId, name, kind, at: new Date().toISOString() });
+    this.save(items);
+  }
+
+  dismiss(sessionId) {
+    const items = this.list();
+    const kept = items.filter((n) => n.sessionId !== sessionId);
+    if (kept.length !== items.length) this.save(kept);
+  }
+
+  shiftPriority(sessionId, delta) {
+    const priorities = this.priorities();
+    const next = Math.min(MAX_PRIORITY, Math.max(1, (priorities[sessionId] || 1) + delta));
+    this.store.writeState({ priorities: { ...priorities, [sessionId]: next } });
+    this.onChange.fire();
+  }
+
+  onStatus(sessionId, name, previous, current, visible) {
+    if (!sessionId || previous === current) return;
+    if (current === 'busy') return this.dismiss(sessionId);
+    if (visible || !previous || previous === 'exited') return;
+    if (current === 'waiting') return this.add(sessionId, name, 'waiting');
+    if (current === 'idle' && previous === 'busy') return this.add(sessionId, name, 'finished');
+  }
+}
+
+class Tracker {
+  constructor(store, notifications) {
+    this.store = store;
+    this.notifications = notifications;
     this.groups = [];
     this.meta = new Map();
     this.titles = new Map();
@@ -201,9 +251,13 @@ class Tracker {
       }
       this.observeName(t, m);
       await this.syncSessionName(t, m, s);
+      const status = s ? s.status || 'idle' : m.sessionId ? 'exited' : null;
+      const visible = vscode.window.state.focused && vscode.window.activeTerminal === t;
+      this.notifications.onStatus(m.sessionId, m.name, m.status, status, visible);
+      m.status = status;
       this.meta.set(t, m);
     }
-    const signature = JSON.stringify(this.groups.map((g) => g.map((t) => [(this.meta.get(t) || {}).name, (this.meta.get(t) || {}).sessionId])));
+    const signature = JSON.stringify(this.groups.map((g) => g.map((t) => [(this.meta.get(t) || {}).name, (this.meta.get(t) || {}).sessionId, (this.meta.get(t) || {}).status])));
     if (signature !== this.lastSignature) {
       this.lastSignature = signature;
       this.onChange.fire();
@@ -364,9 +418,12 @@ class SessionsProvider {
     const name = m.name || t.name;
     const item = new vscode.TreeItem(name);
     item.contextValue = 'openTab';
-    item.iconPath = new vscode.ThemeIcon(m.sessionId ? 'pass-filled' : 'terminal');
+    const focused = vscode.window.activeTerminal === t;
+    const statusIcon = { busy: 'loading~spin', waiting: 'bell-dot', idle: 'pass-filled', exited: 'circle-slash' }[m.status] || 'terminal';
+    item.iconPath = new vscode.ThemeIcon(focused ? 'eye' : statusIcon, focused ? new vscode.ThemeColor('charts.blue') : undefined);
     const meta = await metaForSession(m.sessionId);
-    item.description = [sessionSummary(meta), this.relative(m.cwd)].filter(Boolean).join(' · ');
+    const state = { busy: 'working', waiting: 'waiting for input', idle: 'idle', exited: 'exited' }[m.status] || '';
+    item.description = [focused ? '● focused' : '', state, sessionSummary(meta), this.relative(m.cwd)].filter(Boolean).join(' · ');
     item.tooltip = m.sessionId ? sessionTooltip(name, meta, [m.cwd]) : name;
     item.command = { command: 'claudeSessions.focusTab', title: 'Focus tab', arguments: [t] };
     item.data = { terminal: t, tab: { name, sessionId: m.sessionId, cwd: m.cwd } };
@@ -424,12 +481,72 @@ class SessionsProvider {
   }
 }
 
+class NotificationsProvider {
+  constructor(notifications, tracker) {
+    this.notifications = notifications;
+    this.tracker = tracker;
+    this.emitter = new vscode.EventEmitter();
+    this.onDidChangeTreeData = this.emitter.event;
+  }
+
+  refresh() {
+    this.emitter.fire();
+  }
+
+  getTreeItem(e) {
+    return e;
+  }
+
+  item(n) {
+    const minutes = Math.round((Date.now() - Date.parse(n.at)) / 60000);
+    const stale = minutes >= STALE_MINUTES;
+    const item = new vscode.TreeItem(n.name || n.sessionId.slice(0, 8));
+    item.contextValue = 'notification';
+    item.iconPath = new vscode.ThemeIcon(stale ? 'history' : n.kind === 'waiting' ? 'bell-dot' : 'check');
+    const what = n.kind === 'waiting' ? 'waiting for input' : 'finished';
+    item.description = `${what} ${formatTime(n.at)} · ${minutes < 1 ? 'just now' : `${minutes} min ago`}${stale ? ' · stale' : ''}`;
+    item.tooltip = `${n.name}\n${what} at ${formatTime(n.at)}\nPriority ${this.notifications.priorityOf(n.sessionId)}\nClick to focus the tab.`;
+    item.command = { command: 'claudeSessions.openNotification', title: 'Focus session', arguments: [n] };
+    item.data = { notification: n };
+    return item;
+  }
+
+  getChildren(e) {
+    const items = this.notifications.list();
+    if (e) return e.data.items.map((n) => this.item(n));
+    const groups = new Map();
+    for (const n of items) {
+      const p = this.notifications.priorityOf(n.sessionId);
+      if (!groups.has(p)) groups.set(p, []);
+      groups.get(p).push(n);
+    }
+    return [...groups.keys()]
+      .sort((a, b) => a - b)
+      .map((p) => {
+        const list = groups.get(p).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+        const group = new vscode.TreeItem(`Priority ${p} (${list.length})`, vscode.TreeItemCollapsibleState.Expanded);
+        group.contextValue = 'priorityGroup';
+        group.iconPath = new vscode.ThemeIcon(p === 1 ? 'flame' : 'list-ordered');
+        group.data = { items: list };
+        return group;
+      });
+  }
+}
+
 function activate(context) {
   const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
   if (!folder) return;
   const store = new Store(folder.uri.fsPath);
   store.migrateLegacy();
-  const tracker = new Tracker(store);
+  const notifications = new Notifications(store);
+  const tracker = new Tracker(store, notifications);
+  const notificationsView = new NotificationsProvider(notifications, tracker);
+  const notificationsTree = vscode.window.createTreeView('claudeSessions.notifications', { treeDataProvider: notificationsView });
+  const updateBadge = () => {
+    const count = notifications.list().length;
+    notificationsTree.badge = count ? { value: count, tooltip: `${count} Claude sessions need attention` } : undefined;
+  };
+  const terminalFor = (sessionId) => tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === sessionId);
   const view = new SessionsProvider(store, tracker);
 
   const renameTerminal = async (t, name) => {
@@ -454,12 +571,7 @@ function activate(context) {
     await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name });
   };
 
-  const askName = (value) =>
-    vscode.window.showInputBox({
-      prompt: 'Name: 1–5 lowercase words joined by hyphens, e.g. vibe-coding',
-      value: toSlug(value || ''),
-      validateInput: (v) => (SLUG_RE.test(v) ? null : 'Use lowercase words joined by hyphens (at most 5), e.g. client-billing-fix'),
-    });
+  const askName = (value) => vscode.window.showInputBox({ prompt: 'Tab and session name', value: value || '' });
 
   const resumeInNewTab = (tab) => {
     const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
@@ -494,6 +606,10 @@ function activate(context) {
     tracker.save();
   };
 
+  let focusRefresh = null;
+  const minuteTimer = setInterval(() => notificationsView.refresh(), 60000);
+  updateBadge();
+
   let debounce = null;
   const scheduleScan = () => {
     clearTimeout(debounce);
@@ -512,6 +628,29 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('claudeSessions.sessions', view),
+    notificationsTree,
+    notifications.onChange.event(() => {
+      notificationsView.refresh();
+      updateBadge();
+    }),
+    vscode.window.onDidChangeActiveTerminal((t) => {
+      if (tracker.scanning || !t) return;
+      const m = tracker.meta.get(t);
+      if (m && m.sessionId && vscode.window.state.focused) notifications.dismiss(m.sessionId);
+      clearTimeout(focusRefresh);
+      focusRefresh = setTimeout(() => view.refresh(), 300);
+    }),
+    { dispose: () => clearInterval(minuteTimer) },
+    vscode.commands.registerCommand('claudeSessions.openNotification', (n) => {
+      const t = terminalFor(n.sessionId);
+      if (t) t.show(false);
+      else vscode.window.showWarningMessage(`${n.name} is no longer open in this window.`);
+      notifications.dismiss(n.sessionId);
+    }),
+    vscode.commands.registerCommand('claudeSessions.lowerPriority', (item) => notifications.shiftPriority(item.data.notification.sessionId, 1)),
+    vscode.commands.registerCommand('claudeSessions.raisePriority', (item) => notifications.shiftPriority(item.data.notification.sessionId, -1)),
+    vscode.commands.registerCommand('claudeSessions.dismissNotification', (item) => notifications.dismiss(item.data.notification.sessionId)),
+    vscode.commands.registerCommand('claudeSessions.dismissAll', () => notifications.save([])),
     tracker.onChange.event(() => view.refresh()),
     vscode.window.onDidOpenTerminal(scheduleScan),
     vscode.window.onDidCloseTerminal((t) => {
@@ -571,4 +710,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, Notifications, Store };

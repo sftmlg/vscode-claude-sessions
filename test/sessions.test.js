@@ -8,7 +8,7 @@ const path = require('path');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sessions-test-'));
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
-const { listRepoSessions, sessionSummary } = require('../sessions');
+const { listRepoSessions, sessionSummary, renameSession } = require('../sessions');
 
 const repo = '/work/demo-repo';
 const projectDir = path.join(home, '.claude', 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'));
@@ -72,4 +72,14 @@ test('finds the title in the middle of a mid-sized file', async () => {
 test('summary shows last activity before start', async () => {
   const newer = (await listRepoSessions(repo, 14)).find((s) => s.id.startsWith('bbbb'));
   assert.match(sessionSummary(newer), /^last \d{2}\.\d{2}\. \d{2}:\d{2} · started /);
+});
+
+test('rename appends a custom title; any non-empty name is accepted', async () => {
+  await renameSession('bbbb2222-0000-0000-0000-000000000000', 'client-billing');
+  let renamed = (await listRepoSessions(repo, 14)).find((s) => s.id.startsWith('bbbb'));
+  assert.strictEqual(renamed.customTitle, 'client-billing');
+  await renameSession('bbbb2222-0000-0000-0000-000000000000', 'My Own Name');
+  renamed = (await listRepoSessions(repo, 14)).find((s) => s.id.startsWith('bbbb'));
+  assert.strictEqual(renamed.customTitle, 'My Own Name');
+  await assert.rejects(renameSession('bbbb2222-0000-0000-0000-000000000000', '  '), /must not be empty/);
 });

@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -17,7 +17,7 @@
     "onStartupFinished"
   ],
   "scripts": {
-    "test": "node --test test/sessions.test.js",
+    "test": "node --test test/sessions.test.js test/notifications.test.js",
     "list": "node cli.js list"
   },
   "contributes": {
@@ -86,6 +86,35 @@
         "title": "Rename tab (and session)",
         "category": "Claude Sessions",
         "icon": "$(edit)"
+      },
+      {
+        "command": "claudeSessions.openNotification",
+        "title": "Focus session",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "claudeSessions.lowerPriority",
+        "title": "Lower priority",
+        "category": "Claude Sessions",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "claudeSessions.raisePriority",
+        "title": "Raise priority",
+        "category": "Claude Sessions",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "claudeSessions.dismissNotification",
+        "title": "Dismiss",
+        "category": "Claude Sessions",
+        "icon": "$(check)"
+      },
+      {
+        "command": "claudeSessions.dismissAll",
+        "title": "Dismiss all notifications",
+        "category": "Claude Sessions",
+        "icon": "$(clear-all)"
       }
     ],
     "viewsContainers": {
@@ -99,6 +128,10 @@
     },
     "views": {
       "claudeSessions": [
+        {
+          "id": "claudeSessions.notifications",
+          "name": "Notifications"
+        },
         {
           "id": "claudeSessions.sessions",
           "name": "Sessions"
@@ -126,6 +159,11 @@
           "command": "claudeSessions.refresh",
           "when": "view == claudeSessions.sessions",
           "group": "navigation@9"
+        },
+        {
+          "command": "claudeSessions.dismissAll",
+          "when": "view == claudeSessions.notifications",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -158,6 +196,21 @@
           "command": "claudeSessions.renameTab",
           "when": "viewItem == openTab",
           "group": "inline@1"
+        },
+        {
+          "command": "claudeSessions.raisePriority",
+          "when": "viewItem == notification",
+          "group": "inline@1"
+        },
+        {
+          "command": "claudeSessions.lowerPriority",
+          "when": "viewItem == notification",
+          "group": "inline@2"
+        },
+        {
+          "command": "claudeSessions.dismissNotification",
+          "when": "viewItem == notification",
+          "group": "inline@3"
         }
       ],
       "terminal/title/context": [
@@ -195,6 +248,22 @@
         },
         {
           "command": "claudeSessions.copyResume",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.openNotification",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.lowerPriority",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.raisePriority",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.dismissNotification",
           "when": "false"
         }
       ]

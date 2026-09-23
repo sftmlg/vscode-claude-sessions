@@ -26,16 +26,38 @@ Buttons on an entry:
 
 Title bar: **Restore saved tabs** reopens every saved tab that is not running, with its name and split layout.
 
+## Notifications
+
+The **Notifications** section above the session list shows every session in this window that finished (`busy` → `idle`) or is waiting for your input (`waiting`), with name, time and age; after 30 minutes an entry is marked stale.
+
+- **Click** focuses the tab and clears the entry; focusing the tab any other way clears it too.
+- **Priority:** every session starts at priority 1; ↓ moves it down (up to 5), ↑ moves it up. The priority is remembered per session and groups the list.
+- **Source:** Claude Code writes the status of every running session to `~/.claude*/sessions/<pid>.json`; the extension reads it on every poll.
+- The tab you are on is marked `● focused` with an eye icon in the Open folder, next to each tab's state (working, waiting for input, idle).
+
 ## Names
 
 - A name you give a terminal tab is saved and also becomes the Claude session name (`/rename <name>`, sent while the session is idle).
 - Right-click a tab → **Rename tab (and session)** does both immediately.
 - VS Code reports Claude's own title (`✳ …`) through the API rather than a custom tab name; a custom name is recognised as soon as it does not look like a Claude or shell title.
 
+## Naming convention
+
+Default for names given automatically (by an agent or a batch run). Anyone renaming by hand can use any name.
+
+- **Source:** the first message of the session. Name its customer, its general topic or its core task, not what the session drifted into later.
+- **Pasted examples are not the topic:** a first message that pastes some output to complain about it is named after the task (`output-fix`), not after the pasted content.
+- **Customer work:** just the customer slug (`kreil`, `schmid`); add one word only to distinguish (`kreil-tickets`).
+- **Tasks:** noun plus verb or object (`skills-fix`, `vertrag-amerbauer`, `mainufaktur-inbox`).
+- **Vague first messages** ("continue", "yes"): fall back to the working directory, then to Claude's title, else `misc`.
+- **Recurring automated runs:** `<job>-daily`, e.g. `radar-daily`. Throwaway checks: `test`.
+- **Format:** lowercase words joined by hyphens, usually 1–3, at most 5.
+- **Never overwrite a name a person gave.** `rename-batch --keep-existing` skips sessions that already carry a name in this format.
+
 ## What is saved
 
 - One file per repository: `.vscode/claude-sessions.json`.
-- It holds only named tabs that run a Claude session: name, session id, working directory, split group.
+- It holds only named tabs that run a Claude session (name, session id, working directory, split group), plus open notifications and session priorities.
 - A tab you close is removed from it; tabs lost in a crash stay, so they can be restored.
 - Whether the file is committed is up to the repository's `.gitignore`.
 
@@ -61,6 +83,8 @@ Title bar: **Restore saved tabs** reopens every saved tab that is not running, w
 ## Command line and tests
 
 - `node cli.js list [repo] [--days N] [--json]` lists the sessions of a repository like the Closed folder.
+- `node cli.js rename <session-id> <name>` names a closed session (running sessions are renamed through their tab).
+- `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
 - `npm test` checks session parsing against generated session files.
 
 ## Install

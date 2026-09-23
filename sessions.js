@@ -291,14 +291,32 @@ async function metasFor(files) {
 let allFiles = null;
 let allFilesAt = 0;
 
-async function metaForSession(sessionId) {
-  if (!sessionId) return null;
-  if (!allFiles || Date.now() - allFilesAt > 30000 || !allFiles.has(sessionId)) {
+async function sessionIndex(sessionId) {
+  if (!allFiles || Date.now() - allFilesAt > 30000 || (sessionId && !allFiles.has(sessionId))) {
     allFiles = await collectSessionFiles(() => true);
     allFilesAt = Date.now();
   }
-  const byId = allFiles.get(sessionId);
+  return allFiles;
+}
+
+async function metaForSession(sessionId) {
+  if (!sessionId) return null;
+  const byId = (await sessionIndex(sessionId)).get(sessionId);
   return byId ? metasFor(byId) : null;
+}
+
+const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+){0,4}$/;
+
+async function renameSession(sessionId, name) {
+  const clean = String(name || '').replace(/[\r\n]+/g, ' ').trim();
+  if (!clean) throw new Error('Name must not be empty');
+  const running = [...(await readRunningSessions()).values()].some((s) => s.sessionId === sessionId);
+  if (running) throw new Error(`Session ${sessionId} is running; rename its tab instead`);
+  const files = (await sessionIndex(sessionId)).get(sessionId);
+  if (!files) throw new Error(`Session ${sessionId} not found`);
+  const target = files.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a)).file;
+  await fsp.appendFile(target, `${JSON.stringify({ type: 'custom-title', customTitle: clean, sessionId })}\n`);
+  return target;
 }
 
 async function listRepoSessions(wsPath, days = 14) {
@@ -314,4 +332,4 @@ async function listRepoSessions(wsPath, days = 14) {
   return metas.sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
 }
 
-module.exports = { claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
