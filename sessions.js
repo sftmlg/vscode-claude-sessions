@@ -210,7 +210,7 @@ async function sessionMeta(file) {
     aiTitle: lastMatch(tail, /"aiTitle":"((?:[^"\\]|\\.)*)"/g) || lastMatch(head, /"aiTitle":"((?:[^"\\]|\\.)*)"/g),
     cwd: firstOf(/"cwd":"((?:[^"\\]|\\.)*)"/),
     startedAt: firstOf(/"timestamp":"([^"]+)"/),
-    lastActivity: lastActivity || new Date(st.mtimeMs).toISOString(),
+    lastActivity: lastActivity || lastMatch(tail, /"timestamp":"([^"]+)"/g) || firstOf(/"timestamp":"([^"]+)"/) || new Date(st.mtimeMs).toISOString(),
     firstPrompt,
     lastUser,
     lastAssistant,

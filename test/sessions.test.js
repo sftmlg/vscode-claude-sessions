@@ -83,3 +83,10 @@ test('rename appends a custom title; any non-empty name is accepted', async () =
   assert.strictEqual(renamed.customTitle, 'My Own Name');
   await assert.rejects(renameSession('bbbb2222-0000-0000-0000-000000000000', '  '), /must not be empty/);
 });
+
+test('a session without messages is dated by its own records, not by the file time', async () => {
+  writeSession('eeee5555-0000-0000-0000-000000000000', [{ type: 'attachment', cwd: repo, timestamp: iso(600) }]);
+  await renameSession('eeee5555-0000-0000-0000-000000000000', 'empty');
+  const meta = (await listRepoSessions(repo, 14)).find((s) => s.id.startsWith('eeee'));
+  assert.strictEqual(meta.lastActivity, iso(600));
+});
