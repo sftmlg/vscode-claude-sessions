@@ -23,7 +23,7 @@ When a session in another tab finishes (`busy` → `idle`) or starts waiting for
 
 | Where | Buttons |
 |---|---|
-| **Active** title bar | ＋ new tab (picker first) · restore saved tabs · ★ open all closed favorites, alphabetically, four per split (asks first) |
+| **Active** title bar | ＋ new tab (picker first) · restore saved tabs |
 | `split` | ＋ picker first, then a new terminal inside this split |
 | active tab | 🔍 search a session and open it in this tab (`/resume`; „New Claude session“ runs `/clear`; refused while the session is working) · ⫼ split: picker first, then a terminal opens directly to the right · ☆/★ favorite and ✎ rename (only for Claude sessions) · ✕ close · 🗑 delete |
 | plain terminal (no Claude session) | ＋ picker, runs the choice in this terminal · ⫼ split · ✕ close |

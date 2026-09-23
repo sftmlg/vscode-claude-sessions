@@ -165,12 +165,6 @@
         "title": "Delete session completely (files go to the Trash)",
         "category": "Claude Sessions",
         "icon": "$(trash)"
-      },
-      {
-        "command": "claudeSessions.openFavorites",
-        "title": "Open closed favorites (alphabetical, four per split)",
-        "category": "Claude Sessions",
-        "icon": "$(star-full)"
       }
     ],
     "viewsContainers": {
@@ -224,11 +218,6 @@
         {
           "command": "claudeSessions.openStateFile",
           "when": "view == claudeSessions.inactive",
-          "group": "navigation@3"
-        },
-        {
-          "command": "claudeSessions.openFavorites",
-          "when": "view == claudeSessions.active",
           "group": "navigation@3"
         }
       ],

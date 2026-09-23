@@ -432,11 +432,6 @@ function pickerOrder(sessions, isFavorite, isArchived) {
     .concat(sessions.filter((s) => isArchived(s.id)).sort(newest));
 }
 
-function favoriteLayout(sessions, isFavorite, perSplit = 4) {
-  const favorites = sessions.filter((s) => isFavorite(s.id)).sort((a, b) => a.title.localeCompare(b.title));
-  return favorites.map((s, i) => ({ name: s.title, sessionId: s.id, cwd: s.meta.cwd, group: `favorites-${Math.floor(i / perSplit)}` }));
-}
-
 function sortSessions(sessions, isFavorite) {
   const favorites = sessions.filter((s) => isFavorite(s.id)).sort((a, b) => a.title.localeCompare(b.title));
   const others = sessions.filter((s) => !isFavorite(s.id)).sort((a, b) => Date.parse(b.meta.lastActivity) - Date.parse(a.meta.lastActivity));
@@ -1005,22 +1000,6 @@ function activate(context) {
     vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeSessions') && startTimer()),
     { dispose: () => clearInterval(timer) },
     vscode.commands.registerCommand('claudeSessions.restore', () => tracker.restore()),
-    vscode.commands.registerCommand('claudeSessions.openFavorites', async () => {
-      const sessions = await view.inactiveSessions().catch(() => []);
-      const tabs = favoriteLayout(sessions, (id) => notifications.isFavorite(id));
-      if (!tabs.length) {
-        vscode.window.showInformationMessage('All favorites are already open.');
-        return;
-      }
-      const answer = await vscode.window.showInformationMessage(
-        `Open ${tabs.length} closed favorites, alphabetically, four per split?`,
-        { modal: true, detail: tabs.map((t) => t.name).join(', ') },
-        'Open'
-      );
-      if (answer !== 'Open') return;
-      await tracker.openTabs(tabs);
-      view.refresh();
-    }),
     vscode.commands.registerCommand('claudeSessions.captureLayout', async () => {
       await tracker.scanLayout();
       vscode.window.showInformationMessage('Tab layout captured.');
@@ -1131,4 +1110,4 @@ function parseGroupSizes(layoutJson) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, Notifications, Store, Tracker, sortSessions, pickerOrder, parseGroupSizes, favoriteLayout };
+module.exports = { activate, deactivate, Notifications, Store, Tracker, sortSessions, pickerOrder, parseGroupSizes };
