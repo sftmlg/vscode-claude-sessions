@@ -21,7 +21,7 @@ Module._load = (request, ...rest) => {
     workspace: { getConfiguration: () => ({ get: () => undefined }) },
   };
 };
-const { Notifications, Store, Tracker, sortSessions, pickerOrder, parseGroupSizes } = require('../extension');
+const { Notifications, Store, Tracker, sortSessions, pickerOrder, parseGroupSizes, favoriteLayout } = require('../extension');
 
 function fresh() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-notifications-test-'));
@@ -120,4 +120,15 @@ test('picker order: unopened favorites newest first, then the rest newest first,
 test('VS Code layout parsing yields group sizes in tab order', () => {
   const layout = '{"tabs":[{"terminals":[{"terminal":3},{"terminal":14},{"terminal":9}]},{"terminals":[{"terminal":7},{"terminal":8}]}]}';
   assert.deepStrictEqual(parseGroupSizes(layout), [3, 2]);
+});
+
+test('open favorites: closed favorites alphabetically, four per split', () => {
+  const s = (id, title) => ({ id, title, meta: { cwd: '/w' } });
+  const rows = ['e', 'a', 'x', 'c', 'b', 'd'].map((t) => s(t, t)).concat([s('n', 'not-a-favorite')]);
+  const fav = new Set(['e', 'a', 'x', 'c', 'b', 'd']);
+  const tabs = favoriteLayout(rows, (id) => fav.has(id));
+  assert.deepStrictEqual(tabs.map((t) => [t.name, t.group]), [
+    ['a', 'favorites-0'], ['b', 'favorites-0'], ['c', 'favorites-0'], ['d', 'favorites-0'],
+    ['e', 'favorites-1'], ['x', 'favorites-1'],
+  ]);
 });

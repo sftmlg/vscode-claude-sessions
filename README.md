@@ -23,7 +23,7 @@ When a session in another tab finishes (`busy` → `idle`) or starts waiting for
 
 | Where | Buttons |
 |---|---|
-| **Active** title bar | ＋ new tab (picker first) · restore saved tabs |
+| **Active** title bar | ＋ new tab (picker first) · restore saved tabs · ★ open all closed favorites, alphabetically, four per split (asks first) |
 | `split` | ＋ picker first, then a new terminal inside this split |
 | active tab | 🔍 search a session and open it in this tab (`/resume`; „New Claude session“ runs `/clear`; refused while the session is working) · ⫼ split: picker first, then a terminal opens directly to the right · ☆/★ favorite and ✎ rename (only for Claude sessions) · ✕ close · 🗑 delete |
 | plain terminal (no Claude session) | ＋ picker, runs the choice in this terminal · ⫼ split · ✕ close |
@@ -76,7 +76,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 
 - **Session per tab:** terminal shell process → child `claude` process → `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
 - **Session list:** `~/.claude*/projects/<encoded repo path>*/*.jsonl`, read from the head and tail of each file only.
-- **Splits and order (automatic):** VS Code does not expose terminal groups to extensions. When a terminal opens or closes, the extension cycles focus through all terminals once and restores focus afterwards (`claudeSessions.autoCaptureLayout`). Every capture is checked against the layout VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`); on a mismatch it captures again more slowly. The same check runs every 10 seconds and when the window regains focus, so splits made by dragging tabs are picked up too. Captures are logged in the output channel **Claude Sessions**.
+- **Splits and order (automatic):** VS Code does not expose terminal groups to extensions. When a terminal opens or closes, the extension cycles focus through all terminals once and restores focus afterwards (`claudeSessions.autoCaptureLayout`). Every capture is checked against the layout VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`); on a mismatch it captures again more slowly. The same check runs every 10 seconds and when the window regains focus, so splits made by dragging tabs are picked up too — but only after 5 quiet seconds without terminal changes, and at most once per VS Code layout, so the focus never keeps jumping. Captures are logged in the output channel **Claude Sessions**.
 - Terminals in the editor area are treated as separate tabs.
 
 ## Settings

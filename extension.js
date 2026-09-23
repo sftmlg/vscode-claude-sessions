@@ -382,6 +382,11 @@ class Tracker {
       vscode.window.showInformationMessage('All saved Claude tabs are already open.');
       return;
     }
+    await this.openTabs(tabs);
+    vscode.window.showInformationMessage(`Restored ${tabs.length} Claude tabs.`);
+  }
+
+  async openTabs(tabs) {
     const byGroup = new Map();
     for (const t of tabs) {
       const key = t.group || t.sessionId;
@@ -414,7 +419,6 @@ class Tracker {
     }
     this.restoring = false;
     await this.poll();
-    vscode.window.showInformationMessage(`Restored ${tabs.length} Claude tabs.`);
   }
 }
 
@@ -426,6 +430,11 @@ function pickerOrder(sessions, isFavorite, isArchived) {
     .sort(newest)
     .concat(live.filter((s) => !isFavorite(s.id)).sort(newest))
     .concat(sessions.filter((s) => isArchived(s.id)).sort(newest));
+}
+
+function favoriteLayout(sessions, isFavorite, perSplit = 4) {
+  const favorites = sessions.filter((s) => isFavorite(s.id)).sort((a, b) => a.title.localeCompare(b.title));
+  return favorites.map((s, i) => ({ name: s.title, sessionId: s.id, cwd: s.meta.cwd, group: `favorites-${Math.floor(i / perSplit)}` }));
 }
 
 function sortSessions(sessions, isFavorite) {
@@ -841,6 +850,7 @@ function activate(context) {
 
   let debounce = null;
   const scheduleScan = () => {
+    lastTerminalChange = Date.now();
     clearTimeout(debounce);
     debounce = setTimeout(() => {
       if (!settings().get('autoCaptureLayout')) return;
@@ -850,19 +860,20 @@ function activate(context) {
   };
 
   let lastVscodeLayout = null;
+  let lastTerminalChange = 0;
   const checkLayout = async () => {
     const sizes = await vscodeGroupSizes(stateDb);
     if (!sizes) return;
     const signature = JSON.stringify(sizes);
     if (signature === lastVscodeLayout || !canScan()) return;
+    if (Date.now() - lastTerminalChange < 5000) return;
     tracker.syncGroups();
     const ours = JSON.stringify(tracker.groups.map((g) => g.length));
-    if (ours === signature) {
-      lastVscodeLayout = signature;
-      return;
-    }
+    lastVscodeLayout = signature;
+    if (ours === signature) return;
     await scan(`VS Code layout ${signature} differs from ${ours}`);
-    if (JSON.stringify(tracker.groups.map((g) => g.length)) === signature) lastVscodeLayout = signature;
+    const after = JSON.stringify(tracker.groups.map((g) => g.length));
+    if (after !== signature) tracker.log(`layout still differs after one capture (${after} vs ${signature}); not retrying until VS Code's layout changes`);
   };
   const layoutTimer = setInterval(checkLayout, 10000);
 
@@ -994,6 +1005,22 @@ function activate(context) {
     vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeSessions') && startTimer()),
     { dispose: () => clearInterval(timer) },
     vscode.commands.registerCommand('claudeSessions.restore', () => tracker.restore()),
+    vscode.commands.registerCommand('claudeSessions.openFavorites', async () => {
+      const sessions = await view.inactiveSessions().catch(() => []);
+      const tabs = favoriteLayout(sessions, (id) => notifications.isFavorite(id));
+      if (!tabs.length) {
+        vscode.window.showInformationMessage('All favorites are already open.');
+        return;
+      }
+      const answer = await vscode.window.showInformationMessage(
+        `Open ${tabs.length} closed favorites, alphabetically, four per split?`,
+        { modal: true, detail: tabs.map((t) => t.name).join(', ') },
+        'Open'
+      );
+      if (answer !== 'Open') return;
+      await tracker.openTabs(tabs);
+      view.refresh();
+    }),
     vscode.commands.registerCommand('claudeSessions.captureLayout', async () => {
       await tracker.scanLayout();
       vscode.window.showInformationMessage('Tab layout captured.');
@@ -1104,4 +1131,4 @@ function parseGroupSizes(layoutJson) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, Notifications, Store, Tracker, sortSessions, pickerOrder, parseGroupSizes };
+module.exports = { activate, deactivate, Notifications, Store, Tracker, sortSessions, pickerOrder, parseGroupSizes, favoriteLayout };
