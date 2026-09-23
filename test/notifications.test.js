@@ -14,7 +14,9 @@ Module._load = (request, ...rest) => {
       constructor() {
         this.event = () => ({ dispose() {} });
       }
-      fire() {}
+      fire() {
+        this.fired = (this.fired || 0) + 1;
+      }
     },
     workspace: { getConfiguration: () => ({ get: (key) => (key === 'syncSessionName' ? true : undefined) }) },
   };
@@ -111,4 +113,15 @@ test('an explicit rename is sent immediately even inside the rate limit', async 
   const running = { sessionId: 'no-such-session', status: 'idle' };
   await tracker.syncSessionName(terminal, { name: 'kreil', nameSource: 'user' }, running, true);
   assert.deepStrictEqual(sent, ['/rename kreil']);
+});
+
+test('terminal focus flag fires only on real changes', () => {
+  const tracker = fakeTracker();
+  assert.strictEqual(tracker.terminalFocused, true);
+  tracker.setTerminalFocus(true);
+  assert.strictEqual(tracker.onFocusChange.fired || 0, 0);
+  tracker.setTerminalFocus(false);
+  tracker.setTerminalFocus(false);
+  assert.strictEqual(tracker.terminalFocused, false);
+  assert.strictEqual(tracker.onFocusChange.fired, 1);
 });

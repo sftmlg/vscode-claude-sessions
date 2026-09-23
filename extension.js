@@ -183,7 +183,9 @@ class Tracker {
     this.lastAutoRename = new Map();
     this.restoring = false;
     this.scanning = false;
+    this.terminalFocused = true;
     this.onChange = new vscode.EventEmitter();
+    this.onFocusChange = new vscode.EventEmitter();
   }
 
   liveTerminals() {
@@ -227,6 +229,12 @@ class Tracker {
     t.sendText(`/rename ${m.name.replace(/[\r\n]+/g, ' ')}`);
   }
 
+  setTerminalFocus(value) {
+    if (this.terminalFocused === value) return;
+    this.terminalFocused = value;
+    this.onFocusChange.fire();
+  }
+
   forget(sessionId) {
     if (!sessionId) return;
     const tabs = this.store.read();
@@ -266,7 +274,8 @@ class Tracker {
       this.observeName(t, m);
       await this.syncSessionName(t, m, s);
       const status = s ? s.status || 'idle' : m.sessionId ? 'exited' : null;
-      const visible = vscode.window.state.focused && vscode.window.activeTerminal === t;
+      if (status === 'busy' && m.status !== 'busy' && vscode.window.activeTerminal === t && vscode.window.state.focused) this.setTerminalFocus(true);
+      const visible = this.terminalFocused && vscode.window.state.focused && vscode.window.activeTerminal === t;
       this.notifications.onStatus(m.sessionId, m.name, m.status, status, visible);
       m.status = status;
       this.meta.set(t, m);
@@ -448,7 +457,7 @@ class SessionsProvider {
     const name = m.name || t.name;
     const item = new vscode.TreeItem(this.label(m.sessionId, name));
     item.contextValue = `${inSplit ? 'activeTabInSplit' : 'activeTab'}${this.favSuffix(m.sessionId)}`;
-    const focused = vscode.window.state.focused && vscode.window.activeTerminal === t;
+    const focused = this.tracker.terminalFocused && vscode.window.state.focused && vscode.window.activeTerminal === t;
     const look = tabPresentation({ status: m.status, focused });
     item.label = `${this.label(m.sessionId, name)}${look.nameSuffix}`;
     item.iconPath = new vscode.ThemeIcon(look.icon);
@@ -582,6 +591,7 @@ function activate(context) {
   };
   const terminalFor = (sessionId) => tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === sessionId);
   const view = new SessionsProvider(store, tracker, notifications);
+  const sessionsTree = vscode.window.createTreeView('claudeSessions.sessions', { treeDataProvider: view });
 
   const renameTerminal = async (t, name) => {
     if (vscode.window.activeTerminal !== t) {
@@ -722,7 +732,15 @@ function activate(context) {
   startTimer();
 
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('claudeSessions.sessions', view),
+    sessionsTree,
+    sessionsTree.onDidChangeSelection(() => tracker.setTerminalFocus(false)),
+    notificationsTree.onDidChangeSelection(() => tracker.setTerminalFocus(false)),
+    vscode.window.onDidChangeTextEditorSelection(() => tracker.setTerminalFocus(false)),
+    vscode.window.onDidChangeActiveTextEditor((e) => e && tracker.setTerminalFocus(false)),
+    tracker.onFocusChange.event(() => {
+      clearTimeout(focusRefresh);
+      focusRefresh = setTimeout(() => view.refresh(), 30);
+    }),
     notificationsTree,
     notifications.onChange.event(() => {
       notificationsView.refresh();
@@ -747,13 +765,17 @@ function activate(context) {
       if (tracker.scanning || !t) return;
       const m = tracker.meta.get(t);
       if (m && m.sessionId && vscode.window.state.focused) notifications.dismiss(m.sessionId);
+      tracker.setTerminalFocus(true);
       clearTimeout(focusRefresh);
-      focusRefresh = setTimeout(() => view.refresh(), 300);
+      focusRefresh = setTimeout(() => view.refresh(), 30);
     }),
     { dispose: () => clearInterval(minuteTimer) },
     vscode.commands.registerCommand('claudeSessions.openNotification', (n) => {
       const t = terminalFor(n.sessionId);
-      if (t) t.show(false);
+      if (t) {
+        t.show(false);
+        setTimeout(() => tracker.setTerminalFocus(true), 50);
+      }
       else vscode.window.showWarningMessage(`${n.name} is no longer open in this window.`);
       notifications.dismiss(n.sessionId);
     }),
@@ -775,7 +797,11 @@ function activate(context) {
       vscode.window.showInformationMessage('Tab layout captured.');
     }),
     vscode.commands.registerCommand('claudeSessions.refresh', () => view.refresh()),
-    vscode.commands.registerCommand('claudeSessions.focusTab', (t) => t && t.show(false)),
+    vscode.commands.registerCommand('claudeSessions.focusTab', (t) => {
+      if (!t) return;
+      t.show(false);
+      setTimeout(() => tracker.setTerminalFocus(true), 50);
+    }),
     vscode.commands.registerCommand('claudeSessions.openStateFile', () => vscode.window.showTextDocument(vscode.Uri.file(store.file()))),
     vscode.commands.registerCommand('claudeSessions.resume', (item) => resume(item.data.tab)),
     vscode.commands.registerCommand('claudeSessions.resumeNewTab', (item) => resumeInNewTab(item.data.tab)),

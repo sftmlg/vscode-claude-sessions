@@ -10,7 +10,7 @@ vscode, vs code, extension, claude code, terminal tabs, restore tabs, restore se
 
 Activity bar → **Claude Sessions** has two sections: **Notifications** (below) and **Sessions** with three folders:
 
-- **active** — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside; the icon on the left is always the tab's state — ⟳ working, 🔔 waiting for input, ✓ idle, ⊘ exited — and the tab you are on carries a `●` after its name (only while the VS Code window has focus). Hovering an entry explains both in its first line.
+- **active** — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside; the icon on the left is always the tab's state — ⟳ working, 🔔 waiting for input, ✓ idle, ⊘ exited — and the tab you are working in carries a `●` after its name. The dot goes away when you click into the editor, into this view or another window, and comes back when you switch to a terminal or send a message in it (VS Code does not report a click back into the same terminal, so in that case the dot returns with your next message). Hovering an entry explains both in its first line.
 - **inactive** — every Claude session of this repository that is not running (default: last 30 days).
 - **archive** — sessions you archived; collapsed by default. Archiving only hides a session in this list; its files stay untouched.
 
