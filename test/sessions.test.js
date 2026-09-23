@@ -71,7 +71,7 @@ test('finds the title in the middle of a mid-sized file', async () => {
 
 test('summary shows last activity before start', async () => {
   const newer = (await listRepoSessions(repo, 14)).find((s) => s.id.startsWith('bbbb'));
-  assert.match(sessionSummary(newer), /^last \d+ minutes? ago · started \d{2}\.\d{2}\. \d{2}:\d{2}$/);
+  assert.match(sessionSummary(newer), /^last \d+ minutes? ago · started \d+ minutes? ago$/);
 });
 
 test('rename appends a custom title; any non-empty name is accepted', async () => {
@@ -112,14 +112,14 @@ test('archive-duplicates keeps the newest session per name and skips favorites',
   assert.deepStrictEqual(Object.keys(readState(wsDir).archived).sort(), ['r-mid', 'r-old']);
 });
 
-test('timeAgo uses minutes, hours and days with singular forms', () => {
+test('times are relative up to 48 hours, then a plain day and month', () => {
   const now = Date.parse('2026-09-23T12:00:00Z');
   const at = (m) => new Date(now - m * 60000).toISOString();
   assert.strictEqual(timeAgo(at(0.5), now), 'just now');
   assert.strictEqual(timeAgo(at(1), now), '1 minute ago');
   assert.strictEqual(timeAgo(at(42), now), '42 minutes ago');
   assert.strictEqual(timeAgo(at(60), now), '1 hour ago');
-  assert.strictEqual(timeAgo(at(5 * 60), now), '5 hours ago');
-  assert.strictEqual(timeAgo(at(24 * 60), now), '1 day ago');
-  assert.strictEqual(timeAgo(at(3 * 24 * 60), now), '3 days ago');
+  assert.strictEqual(timeAgo(at(47 * 60), now), '47 hours ago');
+  const old = new Date(now - 72 * 3600000);
+  assert.strictEqual(timeAgo(old.toISOString(), now), `${old.getDate()}.${old.getMonth() + 1}.`);
 });

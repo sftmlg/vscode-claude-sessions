@@ -122,20 +122,23 @@ function oneLine(text, max) {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+const RELATIVE_HOURS = 48;
+
 function timeAgo(iso, now = Date.now()) {
   if (!iso) return '';
   const minutes = Math.floor((now - Date.parse(iso)) / 60000);
   if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
-  const days = Math.floor(hours / 24);
-  return `${days} day${days === 1 ? '' : 's'} ago`;
+  if (hours < RELATIVE_HOURS) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const d = new Date(iso);
+  return `${d.getDate()}.${d.getMonth() + 1}.`;
 }
 
 function sessionSummary(meta) {
   if (!meta) return '';
-  return `last ${timeAgo(meta.lastActivity)} · started ${formatTime(meta.startedAt)}`;
+  const started = timeAgo(meta.startedAt);
+  return started ? `last ${timeAgo(meta.lastActivity)} · started ${started}` : `last ${timeAgo(meta.lastActivity)}`;
 }
 
 
