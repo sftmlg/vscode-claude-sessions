@@ -474,6 +474,19 @@ async function filesForSession(sessionId) {
   return found;
 }
 
+async function sessionPaths(sessionId) {
+  if (!/^[0-9a-zA-Z-]+$/.test(sessionId || '')) throw new Error(`Invalid session id "${sessionId}"`);
+  const files = (await filesForSession(sessionId)).map((f) => f.file);
+  const dirs = [];
+  for (const file of files) {
+    const dir = path.join(path.dirname(file), sessionId);
+    try {
+      if ((await fsp.stat(dir)).isDirectory()) dirs.push(dir);
+    } catch {}
+  }
+  return { files, dirs };
+}
+
 async function metaForSession(sessionId) {
   if (!sessionId) return null;
   const files = await filesForSession(sessionId);
@@ -595,4 +608,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { loadCache, loadTextCache, peekMeta, searchSessions, conversationText, foldText, matchSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, conversationText, foldText, matchSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

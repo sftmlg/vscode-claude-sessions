@@ -17,6 +17,7 @@ const {
   tabPresentation,
   timeAgo,
   searchSessions,
+  sessionPaths,
   loadCache,
   loadTextCache,
   peekMeta,
@@ -905,6 +906,60 @@ function activate(context) {
       if (id) notifications.setFavorite(id, false);
     }),
     vscode.commands.registerCommand('claudeSessions.closeTab', (item) => item.data.terminal && item.data.terminal.dispose()),
+    vscode.commands.registerCommand('claudeSessions.deleteSession', async (item) => {
+      const tab = item.data.tab;
+      if (!tab || !tab.sessionId) return;
+      const { files, dirs } = await sessionPaths(tab.sessionId);
+      if (!files.length) {
+        vscode.window.showWarningMessage(`No session files found for ${tab.name}.`);
+        return;
+      }
+      const meta = await metaForSession(tab.sessionId);
+      const open = item.data.terminal;
+      const answer = await vscode.window.showWarningMessage(
+        `Delete the session "${tab.name}" completely?`,
+        {
+          modal: true,
+          detail: [
+            meta ? sessionSummary(meta) : '',
+            `${files.length} session file(s)${dirs.length ? ` and ${dirs.length} folder(s)` : ''} go to the system Trash.`,
+            open ? 'Its tab is closed first.' : '',
+          ].filter(Boolean).join('\n'),
+        },
+        'Delete'
+      );
+      if (answer !== 'Delete') return;
+      if (open) {
+        open.dispose();
+        for (let i = 0; i < 50; i++) {
+          const running = [...(await readRunningSessions()).values()].some((r) => r.sessionId === tab.sessionId);
+          if (!running) break;
+          await sleep(100);
+        }
+      }
+      if ([...(await readRunningSessions()).values()].some((r) => r.sessionId === tab.sessionId)) {
+        vscode.window.showWarningMessage(`${tab.name} is still running in another window; nothing was deleted.`);
+        return;
+      }
+      for (const p of [...files, ...dirs]) {
+        await vscode.workspace.fs.delete(vscode.Uri.file(p), { recursive: true, useTrash: true });
+      }
+      const state = store.readState();
+      const drop = (map) => {
+        const next = { ...(map || {}) };
+        delete next[tab.sessionId];
+        return next;
+      };
+      store.writeState({
+        names: drop(state.names),
+        favorites: drop(state.favorites),
+        archived: drop(state.archived),
+        tabs: (state.tabs || []).filter((t) => t.sessionId !== tab.sessionId),
+        notifications: (state.notifications || []).filter((n) => n.sessionId !== tab.sessionId),
+      });
+      tracker.log(`deleted session ${tab.sessionId} (${tab.name}): ${[...files, ...dirs].join(', ')}`);
+      view.refresh();
+    }),
     vscode.commands.registerCommand('claudeSessions.addToSplit', (item) => openFreshThenPick(item.data.terminals ? item.data.terminals[0] : item.data.terminal)),
     vscode.commands.registerCommand('claudeSessions.splitTab', (item) => openFreshThenPick(item.data.terminal)),
     vscode.commands.registerCommand('claudeSessions.openNew', () => openFreshThenPick(null)),

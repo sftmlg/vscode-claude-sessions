@@ -8,7 +8,7 @@ const path = require('path');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sessions-test-'));
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
-const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState, timeAgo, readStateFile, writeStatePatch, archiveInState, searchSessions, foldText } = require('../sessions');
+const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState, timeAgo, readStateFile, writeStatePatch, archiveInState, searchSessions, foldText, sessionPaths } = require('../sessions');
 
 const repo = '/work/demo-repo';
 const projectDir = path.join(home, '.claude', 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'));
@@ -157,4 +157,15 @@ test('search: every word must occur, title hits beat body hits, frequency beats 
 
 test('search folds case and umlauts', () => {
   assert.strictEqual(foldText('Prüfung GRÖSSE Straße'), 'pruefung groesse strasse');
+});
+
+test('delete targets only the files and subfolder of that one session id', async () => {
+  const id = 'ffff6666-0000-0000-0000-000000000000';
+  writeSession(id, [{ type: 'user', cwd: repo, timestamp: iso(5), message: { content: 'bye' } }]);
+  fs.mkdirSync(path.join(projectDir, id, 'subagents'), { recursive: true });
+  writeSession('ffff6666-0000-0000-0000-000000000001', [{ type: 'user', cwd: repo, timestamp: iso(5), message: { content: 'keep' } }]);
+  const { files, dirs } = await sessionPaths(id);
+  assert.deepStrictEqual(files.map((f) => path.basename(f)), [`${id}.jsonl`]);
+  assert.deepStrictEqual(dirs.map((d) => path.basename(d)), [id]);
+  await assert.rejects(sessionPaths('../etc'), /Invalid session id/);
 });

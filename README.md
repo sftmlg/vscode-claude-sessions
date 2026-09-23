@@ -25,11 +25,13 @@ When a session in another tab finishes (`busy` → `idle`) or starts waiting for
 |---|---|
 | **Active** title bar | ＋ new tab (picker first) · restore saved tabs |
 | `split` | ＋ picker first, then a new terminal inside this split |
-| active tab | 🔍 search a session and open it in this tab (`/resume`; „New Claude session“ runs `/clear`; refused while the session is working) · ⫼ split: picker first, then a terminal opens directly to the right · ☆/★ favorite and ✎ rename (only for Claude sessions) · ✕ close |
+| active tab | 🔍 search a session and open it in this tab (`/resume`; „New Claude session“ runs `/clear`; refused while the session is working) · ⫼ split: picker first, then a terminal opens directly to the right · ☆/★ favorite and ✎ rename (only for Claude sessions) · ✕ close · 🗑 delete |
 | plain terminal (no Claude session) | ＋ picker, runs the choice in this terminal · ⫼ split · ✕ close |
-| inactive / archived session | ☆/★ favorite · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back |
+| inactive / archived session | ☆/★ favorite · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back · 🗑 delete |
 
 The picker always opens before anything else, so cancelling it (Escape) changes nothing. It offers a new Claude session and a new plain terminal first, then closed favorites newest first, then all other closed sessions newest first, archived last; type to search. Every button explains itself on hover.
+
+🗑 deletes a session completely after a confirmation dialog: its session file(s) and its subfolder go to the system Trash (recoverable from there), and its name, favorite and archive entries are removed. A running session is closed first; one still running in another window is not deleted.
 
 ▶ resumes in the active terminal: an idle shell runs `claude --resume <id>`, a running Claude switches via `/resume <id>`, a busy terminal gets a new tab instead.
 

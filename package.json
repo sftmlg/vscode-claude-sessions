@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -159,6 +159,12 @@
         "title": "Search a session and open it in this tab",
         "category": "Claude Sessions",
         "icon": "$(search)"
+      },
+      {
+        "command": "claudeSessions.deleteSession",
+        "title": "Delete session completely (files go to the Trash)",
+        "category": "Claude Sessions",
+        "icon": "$(trash)"
       }
     ],
     "viewsContainers": {
@@ -290,6 +296,11 @@
           "command": "claudeSessions.switchSession",
           "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/",
           "group": "inline@2"
+        },
+        {
+          "command": "claudeSessions.deleteSession",
+          "when": "viewItem =~ /^(session|savedTab|archivedSession|activeTab|activeTabInSplit)(\\.fav)?$/",
+          "group": "inline@9"
         }
       ],
       "terminal/title/context": [
@@ -363,6 +374,10 @@
         },
         {
           "command": "claudeSessions.switchSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.deleteSession",
           "when": "false"
         }
       ]
