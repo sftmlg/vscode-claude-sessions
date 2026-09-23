@@ -38,7 +38,7 @@ The **Notifications** section above the session list shows every session in this
 - **Click** focuses the tab and clears the entry; focusing the tab any other way clears it too.
 - **Priority:** every session starts at priority 1; ↓ moves it down (up to 5), ↑ moves it up. The priority is remembered per session and groups the list.
 - **Source:** Claude Code writes the status of every running session to `~/.claude*/sessions/<pid>.json`; the extension reads it on every poll.
-- The tab you are on is marked `● focused` with an eye icon in the Open folder, next to each tab's state (working, waiting for input, idle).
+- The tab you are on is marked `● focused` with an eye icon in the active folder, next to each tab's state (working, waiting for input, idle).
 
 ## Names
 
