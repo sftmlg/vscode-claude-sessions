@@ -115,7 +115,7 @@ test('activation registers every contributed command in a mocked VS Code', () =>
     const modulePath = require.resolve('../extension');
     delete require.cache[modulePath];
     const extension = require('../extension');
-    const context = { subscriptions: [], storageUri: undefined };
+    const context = { subscriptions: [], storageUri: undefined, globalStorageUri: { fsPath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-manifest-global-')) } };
     extension.activate(context);
   } finally {
     Module._load = originalLoad;

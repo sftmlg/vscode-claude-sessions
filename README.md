@@ -44,7 +44,11 @@ The picker always opens before anything else, so cancelling it (Escape) changes 
 
 - The picker searches while you type; the 🔍 button on **Inactive** filters that list the same way (✕ clears it).
 - Every word must occur (case and umlauts ignored). Ranking: a hit in the name or title first, then how often the words occur in the whole conversation, then the most recent session.
-- The conversation text of every session (user and Claude messages, not tool output) is cached in memory and filled in the background after start; a warm search over 340 sessions takes about 60 ms, the first cold one about 6 s.
+- The conversation text of every session (user and Claude messages, not tool output) is cached and filled in the background 5 seconds after start; a warm search over 340 sessions takes about 60 ms.
+
+## Startup
+
+The views render first, from a cache in VS Code's extension storage (`meta-cache.json`, `text-cache.json`), keyed by file and change time; only changed session files are read again. Listing 340 sessions takes about 0.1 s with the cache and 0.75 s without it; details for open tabs load one by one afterwards, and the search text last.
 
 ## Naming convention
 

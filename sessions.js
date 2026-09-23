@@ -6,7 +6,8 @@ const os = require('os');
 const { execFile } = require('child_process');
 
 const HEAD_BYTES = 256 * 1024;
-const TAIL_BYTES = 2 * 1024 * 1024;
+const TAIL_BYTES = 512 * 1024;
+const STORED_TEXT = 2000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const run = (cmd, args) =>
@@ -96,6 +97,40 @@ function withTimeout(promise, ms) {
 }
 
 const metaCache = new Map();
+let cacheDir = null;
+let saveTimer = null;
+
+function loadCache(dir) {
+  cacheDir = dir;
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(dir, 'meta-cache.json'), 'utf8'));
+    for (const [file, entry] of Object.entries(data)) metaCache.set(file, entry);
+  } catch {}
+}
+
+async function loadTextCache() {
+  if (!cacheDir) return;
+  try {
+    const data = JSON.parse(await fsp.readFile(path.join(cacheDir, 'text-cache.json'), 'utf8'));
+    for (const [file, entry] of Object.entries(data)) if (!conversationCache.has(file)) conversationCache.set(file, entry);
+  } catch {}
+}
+
+function scheduleSave() {
+  if (!cacheDir || saveTimer) return;
+  saveTimer = setTimeout(async () => {
+    saveTimer = null;
+    try {
+      await fsp.mkdir(cacheDir, { recursive: true });
+      await fsp.writeFile(path.join(cacheDir, 'meta-cache.json'), JSON.stringify(Object.fromEntries(metaCache)));
+      await fsp.writeFile(path.join(cacheDir, 'text-cache.json'), JSON.stringify(Object.fromEntries(conversationCache)));
+    } catch {}
+  }, 5000);
+}
+
+function clip(entry) {
+  return entry ? { ...entry, text: entry.text.slice(0, STORED_TEXT) } : entry;
+}
 
 function decodeJsonString(s) {
   try {
@@ -141,7 +176,9 @@ async function conversationText(file) {
   if (cached && cached.mtimeMs === st.mtimeMs) return cached.text;
   const raw = await fsp.readFile(file, 'utf8');
   const parts = [];
+  let n = 0;
   for (const line of raw.split('\n')) {
+    if (++n % 2000 === 0) await sleep(0);
     if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"') && !line.includes('"customTitle"')) continue;
     let o;
     try {
@@ -156,6 +193,7 @@ async function conversationText(file) {
   }
   const text = foldText(parts.join('\n'));
   conversationCache.set(file, { mtimeMs: st.mtimeMs, text });
+  scheduleSave();
   return text;
 }
 
@@ -315,16 +353,26 @@ async function sessionMeta(file) {
     startedAt: firstOf(/"timestamp":"([^"]+)"/),
     lastActivity: lastActivity || lastMatch(tail, /"timestamp":"([^"]+)"/g) || firstOf(/"timestamp":"([^"]+)"/) || new Date(st.mtimeMs).toISOString(),
     firstPrompt,
-    lastUser,
-    lastAssistant,
+    lastUser: clip(lastUser),
+    lastAssistant: clip(lastAssistant),
   };
+  if (meta.firstPrompt) meta.firstPrompt = meta.firstPrompt.slice(0, STORED_TEXT);
   if (!meta.customTitle && !meta.aiTitle && st.size > HEAD_BYTES + TAIL_BYTES) {
     const full = await fsp.readFile(file, 'utf8');
     meta.customTitle = lastMatch(full, /"customTitle":"((?:[^"\\]|\\.)*)"/g);
     meta.aiTitle = lastMatch(full, /"aiTitle":"((?:[^"\\]|\\.)*)"/g);
   }
   metaCache.set(file, { mtimeMs: st.mtimeMs, meta });
+  scheduleSave();
   return meta;
+}
+
+function peekMeta(sessionId) {
+  let best = null;
+  for (const { meta } of metaCache.values()) {
+    if (meta.id === sessionId && (!best || Date.parse(meta.lastActivity) > Date.parse(best.lastActivity))) best = meta;
+  }
+  return best;
 }
 
 function mergeMetas(metas) {
@@ -402,10 +450,34 @@ async function sessionIndex(sessionId) {
   return allFiles;
 }
 
+async function filesForSession(sessionId) {
+  const found = [];
+  const seen = new Set();
+  for (const d of claudeDirs()) {
+    const projects = path.join(d, 'projects');
+    let dirs = [];
+    try {
+      dirs = await fsp.readdir(projects);
+    } catch {
+      continue;
+    }
+    for (const p of dirs) {
+      const file = path.join(projects, p, `${sessionId}.jsonl`);
+      try {
+        const real = await fsp.realpath(file);
+        if (seen.has(real)) continue;
+        seen.add(real);
+        found.push({ file: real, mtimeMs: (await fsp.stat(real)).mtimeMs });
+      } catch {}
+    }
+  }
+  return found;
+}
+
 async function metaForSession(sessionId) {
   if (!sessionId) return null;
-  const byId = (await sessionIndex(sessionId)).get(sessionId);
-  return byId ? metasFor(byId) : null;
+  const files = await filesForSession(sessionId);
+  return files.length ? metasFor(files) : null;
 }
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+){0,4}$/;
@@ -523,4 +595,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { searchSessions, conversationText, foldText, matchSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { loadCache, loadTextCache, peekMeta, searchSessions, conversationText, foldText, matchSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

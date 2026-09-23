@@ -17,6 +17,9 @@ const {
   tabPresentation,
   timeAgo,
   searchSessions,
+  loadCache,
+  loadTextCache,
+  peekMeta,
   matchSnippet,
   conversationText,
   readStateFile,
@@ -438,6 +441,7 @@ class SessionsProvider {
     this.notifications = notifications;
     this.emitter = new vscode.EventEmitter();
     this.onDidChangeTreeData = this.emitter.event;
+    this.loadingMeta = new Set();
   }
 
   refresh(fast = false) {
@@ -472,7 +476,13 @@ class SessionsProvider {
     item.iconPath = notice
       ? new vscode.ThemeIcon(notice.kind === 'waiting' ? 'bell-dot' : 'bell', new vscode.ThemeColor('charts.yellow'))
       : new vscode.ThemeIcon(look.icon);
-    const meta = await metaForSession(m.sessionId);
+    let meta = m.sessionId ? peekMeta(m.sessionId) : null;
+    if (m.sessionId && !meta && !this.loadingMeta.has(m.sessionId)) {
+      this.loadingMeta.add(m.sessionId);
+      metaForSession(m.sessionId)
+        .then(() => this.refresh(true))
+        .finally(() => this.loadingMeta.delete(m.sessionId));
+    }
     const noticeText = notice ? `${notice.kind === 'waiting' ? 'waiting for input' : 'finished'} ${timeAgo(notice.at)}` : '';
     item.description = noticeText || sessionSummary(meta);
     item.tooltip = m.sessionId
@@ -558,6 +568,7 @@ function activate(context) {
   const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
   if (!folder) return;
   const store = new Store(folder.uri.fsPath);
+  if (context.globalStorageUri) loadCache(context.globalStorageUri.fsPath);
   store.migrateLegacy();
   const notifications = new Notifications(store);
   const tracker = new Tracker(store, notifications);
@@ -1006,13 +1017,15 @@ function activate(context) {
   }, 4000);
   setTimeout(checkLayout, 15000);
   setTimeout(async () => {
+    const started = Date.now();
+    await loadTextCache();
     const sessions = await view.inactiveSessions().catch(() => []);
     for (const s of sessions) {
       if (s.meta.file) await conversationText(s.meta.file).catch(() => '');
-      await sleep(20);
+      await sleep(10);
     }
-    tracker.log(`search cache ready for ${sessions.length} sessions`);
-  }, 10000);
+    tracker.log(`search cache ready for ${sessions.length} sessions in ${Date.now() - started} ms`);
+  }, 5000);
 }
 
 function vscodeGroupSizes(stateDb) {
