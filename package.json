@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -17,7 +17,7 @@
     "onStartupFinished"
   ],
   "scripts": {
-    "test": "node --test test/sessions.test.js test/notifications.test.js",
+    "test": "node --test test/sessions.test.js test/notifications.test.js test/presentation.test.js test/archive.test.js",
     "list": "node cli.js list"
   },
   "contributes": {

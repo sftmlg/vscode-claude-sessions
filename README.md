@@ -10,7 +10,7 @@ vscode, vs code, extension, claude code, terminal tabs, restore tabs, restore se
 
 Activity bar → **Claude Sessions** has two sections: **Notifications** (below) and **Sessions** with three folders:
 
-- **active** — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside; the tab you are on shows an eye icon and `● focused`, every tab shows its state (working, waiting for input, idle).
+- **active** — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside; the icon on the left is always the tab's state — ⟳ working, 🔔 waiting for input, ✓ idle, ⊘ exited — and the tab you are on carries a `●` after its name (only while the VS Code window has focus). Hovering an entry explains both in its first line.
 - **inactive** — every Claude session of this repository that is not running (default: last 30 days).
 - **archive** — sessions you archived; collapsed by default. Archiving only hides a session in this list; its files stay untouched.
 
@@ -38,7 +38,6 @@ The **Notifications** section above the session list shows every session in this
 - **Click** focuses the tab and clears the entry; focusing the tab any other way clears it too.
 - **Priority:** every session starts at priority 1; ↓ moves it down (up to 5), ↑ moves it up. The priority is remembered per session and groups the list.
 - **Source:** Claude Code writes the status of every running session to `~/.claude*/sessions/<pid>.json`; the extension reads it on every poll.
-- The tab you are on is marked `● focused` with an eye icon in the active folder, next to each tab's state (working, waiting for input, idle).
 
 ## Names
 
@@ -90,6 +89,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - `node cli.js list [repo] [--days N] [--json]` lists the sessions of a repository.
 - `node cli.js rename <session-id> <name>` names a closed session (running sessions are renamed through their tab).
 - `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
+- `node cli.js archive <repo> --name <name> [--days N] [--apply]` archives every session called `<name>` or `<name>-<n>` (e.g. all `misc`); preview unless `--apply`, running sessions are skipped, archiving only sets the flag in the state file.
 - `npm test` checks session parsing against generated session files.
 
 ## Install

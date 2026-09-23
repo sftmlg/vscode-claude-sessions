@@ -2,13 +2,14 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE } = require('./sessions');
+const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions } = require('./sessions');
 
 const USAGE = [
   'Usage:',
   '  node cli.js list [repo-path] [--days N] [--json]',
   '  node cli.js rename <session-id> <name>',
   '  node cli.js rename-batch <mapping.json> [--keep-existing]   (JSON object: session id -> name)',
+  '  node cli.js archive <repo-path> --name <name> [--days N] [--apply]   (preview unless --apply; running sessions are skipped)',
 ].join('\n');
 
 async function main(argv) {
@@ -34,6 +35,27 @@ async function main(argv) {
       }
     }
     console.log(`${Object.keys(mapping).length - failed} renamed, ${failed} skipped`);
+    return 0;
+  }
+  if (command === 'archive' && rest.length >= 3) {
+    const nameIndex = rest.indexOf('--name');
+    const daysIndex = rest.indexOf('--days');
+    const name = nameIndex >= 0 ? rest[nameIndex + 1] : null;
+    if (!name) {
+      console.error(USAGE);
+      return 1;
+    }
+    const days = daysIndex >= 0 ? Number(rest[daysIndex + 1]) : 30;
+    const repo = path.resolve(rest[0]);
+    const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
+    const picked = pickByName(await listRepoSessions(repo, days), name, running);
+    for (const s of picked) console.log(`${sessionSummary(s).padEnd(40)} | ${s.customTitle} | ${s.id}`);
+    if (!rest.includes('--apply')) {
+      console.log(`${picked.length} sessions would be archived (preview; add --apply)`);
+      return 0;
+    }
+    const added = archiveInState(path.join(repo, '.vscode', 'claude-sessions.json'), picked.map((s) => s.id));
+    console.log(`${added.length} archived, ${picked.length - added.length} were already archived`);
     return 0;
   }
   if (command !== 'list') {

@@ -332,4 +332,41 @@ async function listRepoSessions(wsPath, days = 14) {
   return metas.sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
 }
 
-module.exports = { SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+const TAB_STATES = {
+  busy: { icon: 'loading~spin', hover: '⟳ Working' },
+  waiting: { icon: 'bell-dot', hover: '🔔 Waiting for your input' },
+  idle: { icon: 'pass-filled', hover: '✓ Idle — finished, nothing running' },
+  exited: { icon: 'circle-slash', hover: '⊘ Claude has exited in this tab' },
+};
+
+function tabPresentation({ status, focused }) {
+  const state = TAB_STATES[status] || { icon: 'terminal', hover: 'Terminal without a Claude session' };
+  return {
+    icon: state.icon,
+    nameSuffix: focused ? ' ●' : '',
+    hoverLine: [state.hover, focused ? '● This tab is selected' : ''].filter(Boolean).join(' · '),
+  };
+}
+
+function archiveInState(stateFile, ids) {
+  let state = {};
+  try {
+    state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) || {};
+  } catch {}
+  const archived = { ...(state.archived || {}) };
+  const added = ids.filter((id) => !archived[id]);
+  for (const id of added) archived[id] = true;
+  const next = { ...state, archived, version: 2, updatedAt: new Date().toISOString() };
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  const tmp = `${stateFile}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
+  fs.renameSync(tmp, stateFile);
+  return added;
+}
+
+function pickByName(sessions, name, runningIds = new Set()) {
+  const re = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-\\d+)?$`);
+  return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
+}
+
+module.exports = { archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

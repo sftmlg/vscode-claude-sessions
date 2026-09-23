@@ -15,6 +15,7 @@ const {
   metaForSession,
   listRepoSessions,
   renameSession,
+  tabPresentation,
 } = require('./sessions');
 
 const AUTO_TITLE = /^[\u2800-\u28ff✳✻✽✶✢✦·*●○◐◓◑◒]\s*/u;
@@ -443,13 +444,13 @@ class SessionsProvider {
     const name = m.name || t.name;
     const item = new vscode.TreeItem(this.label(m.sessionId, name));
     item.contextValue = inSplit ? 'activeTabInSplit' : 'activeTab';
-    const focused = vscode.window.activeTerminal === t;
-    const statusIcon = { busy: 'loading~spin', waiting: 'bell-dot', idle: 'pass-filled', exited: 'circle-slash' }[m.status] || 'terminal';
-    item.iconPath = new vscode.ThemeIcon(focused ? 'eye' : statusIcon, focused ? new vscode.ThemeColor('charts.blue') : undefined);
+    const focused = vscode.window.state.focused && vscode.window.activeTerminal === t;
+    const look = tabPresentation({ status: m.status, focused });
+    item.label = `${this.label(m.sessionId, name)}${look.nameSuffix}`;
+    item.iconPath = new vscode.ThemeIcon(look.icon);
     const meta = await metaForSession(m.sessionId);
-    const state = { busy: 'working', waiting: 'waiting for input', idle: 'idle', exited: 'exited' }[m.status] || '';
-    item.description = [focused ? '● focused' : '', state, sessionSummary(meta), this.relative(m.cwd)].filter(Boolean).join(' · ');
-    item.tooltip = m.sessionId ? sessionTooltip(name, meta, [m.cwd]) : name;
+    item.description = [sessionSummary(meta), this.relative(m.cwd)].filter(Boolean).join(' · ');
+    item.tooltip = m.sessionId ? sessionTooltip(name, meta, [look.hoverLine, m.cwd]) : `${name}\n${look.hoverLine}`;
     item.command = { command: 'claudeSessions.focusTab', title: 'Focus tab', arguments: [t] };
     item.data = { terminal: t, tab: { name, sessionId: m.sessionId, cwd: m.cwd } };
     return item;
@@ -742,6 +743,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.closeTab', (item) => item.data.terminal && item.data.terminal.dispose()),
     vscode.commands.registerCommand('claudeSessions.addToSplit', (item) => pickAndOpen(item.data.terminals ? item.data.terminals[0] : item.data.terminal)),
     vscode.commands.registerCommand('claudeSessions.openNew', () => pickAndOpen(null)),
+    vscode.window.onDidChangeWindowState(() => view.refresh()),
     vscode.window.onDidChangeActiveTerminal((t) => {
       if (tracker.scanning || !t) return;
       const m = tracker.meta.get(t);
