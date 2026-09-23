@@ -2,7 +2,7 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions } = require('./sessions');
+const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions, archiveDuplicates } = require('./sessions');
 
 const USAGE = [
   'Usage:',
