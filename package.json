@@ -1,0 +1,74 @@
+{
+  "name": "vscode-claude-sessions",
+  "displayName": "Claude Sessions",
+  "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
+  "version": "0.2.0",
+  "publisher": "sftmlg",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/sftmlg/vscode-claude-sessions" },
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "scripts": {
+    "test": "node --test test/sessions.test.js",
+    "list": "node cli.js list"
+  },
+  "contributes": {
+    "commands": [
+      { "command": "claudeSessions.restore", "title": "Restore saved tabs", "category": "Claude Sessions", "icon": "$(debug-restart)" },
+      { "command": "claudeSessions.captureLayout", "title": "Capture tab layout now", "category": "Claude Sessions", "icon": "$(save)" },
+      { "command": "claudeSessions.refresh", "title": "Refresh", "category": "Claude Sessions", "icon": "$(refresh)" },
+      { "command": "claudeSessions.openStateFile", "title": "Open state file", "category": "Claude Sessions", "icon": "$(go-to-file)" },
+      { "command": "claudeSessions.focusTab", "title": "Focus tab", "category": "Claude Sessions" },
+      { "command": "claudeSessions.resume", "title": "Resume in active terminal", "category": "Claude Sessions", "icon": "$(play)" },
+      { "command": "claudeSessions.resumeNewTab", "title": "Resume in new tab", "category": "Claude Sessions", "icon": "$(add)" },
+      { "command": "claudeSessions.renameSaved", "title": "Rename", "category": "Claude Sessions", "icon": "$(edit)" },
+      { "command": "claudeSessions.removeSaved", "title": "Remove from saved tabs", "category": "Claude Sessions", "icon": "$(close)" },
+      { "command": "claudeSessions.copyResume", "title": "Copy resume command", "category": "Claude Sessions", "icon": "$(copy)" },
+      { "command": "claudeSessions.renameTab", "title": "Rename tab (and session)", "category": "Claude Sessions" }
+    ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "claudeSessions", "title": "Claude Sessions", "icon": "media/icon.svg" }]
+    },
+    "views": {
+      "claudeSessions": [{ "id": "claudeSessions.sessions", "name": "Sessions" }]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "claudeSessions.restore", "when": "view == claudeSessions.sessions", "group": "navigation@1" },
+        { "command": "claudeSessions.captureLayout", "when": "view == claudeSessions.sessions", "group": "navigation@2" },
+        { "command": "claudeSessions.openStateFile", "when": "view == claudeSessions.sessions", "group": "navigation@3" },
+        { "command": "claudeSessions.refresh", "when": "view == claudeSessions.sessions", "group": "navigation@9" }
+      ],
+      "view/item/context": [
+        { "command": "claudeSessions.resume", "when": "viewItem == savedTab || viewItem == session", "group": "inline@1" },
+        { "command": "claudeSessions.resumeNewTab", "when": "viewItem == savedTab || viewItem == session", "group": "inline@2" },
+        { "command": "claudeSessions.renameSaved", "when": "viewItem == savedTab || viewItem == session", "group": "inline@3" },
+        { "command": "claudeSessions.removeSaved", "when": "viewItem == savedTab", "group": "inline@4" },
+        { "command": "claudeSessions.copyResume", "when": "viewItem == savedTab || viewItem == session || viewItem == openTab", "group": "1_copy" }
+      ],
+      "terminal/title/context": [{ "command": "claudeSessions.renameTab", "group": "navigation@0" }],
+      "terminal/context": [{ "command": "claudeSessions.renameTab", "group": "z_claude" }],
+      "commandPalette": [
+        { "command": "claudeSessions.focusTab", "when": "false" },
+        { "command": "claudeSessions.resume", "when": "false" },
+        { "command": "claudeSessions.resumeNewTab", "when": "false" },
+        { "command": "claudeSessions.renameSaved", "when": "false" },
+        { "command": "claudeSessions.removeSaved", "when": "false" },
+        { "command": "claudeSessions.copyResume", "when": "false" }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Sessions",
+      "properties": {
+        "claudeSessions.storageFile": { "type": "string", "default": ".vscode/claude-sessions.json", "scope": "resource", "description": "State file inside the repository (relative to its root). Whether it is committed is up to the repository's .gitignore." },
+        "claudeSessions.claudeCommand": { "type": "string", "default": "claude", "description": "Command used to resume a session; `--resume <id>` is appended." },
+        "claudeSessions.openIn": { "type": "string", "enum": ["activeTerminal", "newTab"], "default": "activeTerminal", "enumDescriptions": ["Use the active terminal: an idle shell starts the session, a running Claude switches via /resume, a busy terminal gets a new tab.", "Always open a new tab."], "description": "Where the play button opens a session." },
+        "claudeSessions.syncSessionName": { "type": "boolean", "default": true, "description": "Use a tab name you set as the Claude session name (sent as /rename while the session is idle)." },
+        "claudeSessions.autoCaptureLayout": { "type": "boolean", "default": true, "description": "Capture splits and order when a terminal opens or closes. Focus briefly cycles through the terminals while doing so." },
+        "claudeSessions.pollSeconds": { "type": "number", "default": 5, "description": "How often tab names and sessions are re-read." },
+        "claudeSessions.historyDays": { "type": "number", "default": 14, "description": "How far back the Closed list reaches, by last message." }
+      }
+    }
+  }
+}
