@@ -8,37 +8,30 @@ vscode, vs code, extension, claude code, terminal tabs, restore tabs, restore se
 
 ## The view
 
-Activity bar → **Claude Sessions** has two sections: **Notifications** (below) and **Sessions** with three folders:
+Activity bar → **Claude Sessions** has two sections:
 
-- **active** — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside; the icon on the left is always the tab's state — ⟳ working, 🔔 waiting for input, ✓ idle, ⊘ exited — and the tab you are working in carries a `●` after its name. The dot goes away when you click into the editor, into this view or another window, and comes back when you switch to a terminal or send a message in it (VS Code does not report a click back into the same terminal, so in that case the dot returns with your next message). Hovering an entry explains both in its first line.
-- **inactive** — every Claude session of this repository that is not running (default: last 30 days).
-- **archive** — sessions you archived; collapsed by default. Archiving only hides a session in this list; its files stay untouched.
+- **Inactive** (top) — every Claude session of this repository that is not running (default: last 30 days). Favorites first in alphabetical order, then the rest newest message first. At the bottom, the folder **archive** (collapsed) holds archived sessions; archiving only hides a session in this list, its files stay untouched.
+- **Active** (bottom) — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside. The icon on the left is the tab's state (⟳ working, ✓ idle, ⊘ exited); the tab you are working in carries a `●` after its name.
 
-Every session can be a favorite: ★ in front of the name, ☆ otherwise; the star button on the right toggles it. **inactive** and **archive** list favorites first in alphabetical order, then all other sessions newest message first. Every button explains itself on hover.
+Each entry shows only the time of its last message (`last 5 minutes ago`, up to 48 hours, then `22.9.`). The hover holds the rest as a small table (status, folder, last activity, start, session id), followed by the last message and the last reply.
 
-Buttons:
+### Notifications
+
+When a session in another tab finishes (`busy` → `idle`) or starts waiting for your input, its row in **Active** turns into a bell with `finished 3 minutes ago` / `waiting for input`, and the **Active** section shows a count badge. Focusing that tab clears it. The status comes from `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
+
+### Buttons
 
 | Where | Buttons |
 |---|---|
-| `active` folder | ＋ open a new tab, then the picker |
-| `split` | ＋ add a terminal to this split, then the same picker |
-| plain terminal (no Claude session) | ＋ start or resume a Claude session in this terminal · ⫼ split · ✕ close |
-| active tab | ☆/★ favorite and ✎ rename (only once the tab runs a Claude session) · ⫼ split: a terminal opens to the right at once, then the picker · ✕ close tab |
+| **Active** title bar | ＋ new tab (picker first) · restore saved tabs |
+| `split` | ＋ picker first, then a new terminal inside this split |
+| active tab | ⫼ split: picker first, then a terminal opens directly to the right · ☆/★ favorite and ✎ rename (only for Claude sessions) · ✕ close |
+| plain terminal (no Claude session) | ＋ picker, runs the choice in this terminal · ⫼ split · ✕ close |
 | inactive / archived session | ☆/★ favorite · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back |
 
-The picker offers a new Claude session and keeping the plain terminal first, then closed favorites newest first, then all other closed sessions newest first, archived last; type to search.
+The picker always opens before anything else, so cancelling it (Escape) changes nothing. It offers a new Claude session and a new plain terminal first, then closed favorites newest first, then all other closed sessions newest first, archived last; type to search. Every button explains itself on hover.
 
 ▶ resumes in the active terminal: an idle shell runs `claude --resume <id>`, a running Claude switches via `/resume <id>`, a busy terminal gets a new tab instead.
-
-Title bar: **Restore saved tabs** reopens every saved tab that is not running, with its name and split layout.
-
-## Notifications
-
-The **Notifications** section above the session list shows every session in this window that finished (`busy` → `idle`) or is waiting for your input (`waiting`), with name, time and age; after 30 minutes an entry is marked stale.
-
-- **Click** focuses the tab and clears the entry; focusing the tab any other way clears it too.
-- **Order:** favorites first, then newest; the star toggles a favorite here as well.
-- **Source:** Claude Code writes the status of every running session to `~/.claude*/sessions/<pid>.json`; the extension reads it on every poll.
 
 ## Names
 
@@ -70,7 +63,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 
 - **Session per tab:** terminal shell process → child `claude` process → `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
 - **Session list:** `~/.claude*/projects/<encoded repo path>*/*.jsonl`, read from the head and tail of each file only.
-- **Splits and order:** VS Code does not expose terminal groups to extensions. When a terminal opens or closes, the extension cycles focus through all terminals once and restores focus afterwards (`claudeSessions.autoCaptureLayout`). Every capture is checked against the layout VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`); on a mismatch it captures again more slowly. The same check runs every 10 seconds and when the window regains focus, so splits made by dragging tabs are picked up too. Captures are logged in the output channel **Claude Sessions**.
+- **Splits and order (automatic):** VS Code does not expose terminal groups to extensions. When a terminal opens or closes, the extension cycles focus through all terminals once and restores focus afterwards (`claudeSessions.autoCaptureLayout`). Every capture is checked against the layout VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`); on a mismatch it captures again more slowly. The same check runs every 10 seconds and when the window regains focus, so splits made by dragging tabs are picked up too. Captures are logged in the output channel **Claude Sessions**.
 - Terminals in the editor area are treated as separate tabs.
 
 ## Settings
@@ -93,6 +86,16 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - `node cli.js archive-duplicates [repo] [--days N]` archives every session whose name also belongs to a newer one; favorites and running sessions stay.
 - `node cli.js archive <repo> --name <name> [--days N] [--apply]` archives every session called `<name>` or `<name>-<n>` (e.g. all `misc`); preview unless `--apply`, running sessions are skipped, archiving only sets the flag in the state file.
 - `npm test` checks session parsing against generated session files.
+
+## Development procedure
+
+Every change goes through the same steps; a step that fails stops the release.
+
+1. **Test first for every bug:** reproduce the bug as a test in `test/` before fixing it. Logic that touches VS Code goes into small functions that the tests can call with a mocked `vscode` module (see `test/manifest.test.js`).
+2. **`npm run verify`:** syntax check of every file plus all tests. `test/manifest.test.js` keeps code and `package.json` in step: every contributed command is registered and vice versa, every view exists in code, every menu entry points to a command, every `viewItem` in a `when` clause is produced by the code, and activation in a mocked VS Code registers every command.
+3. **Cross-check for flow changes:** anything that changes a user flow (buttons, picker, splits, focus, renames) gets a fresh reviewer that walks the flow in the code, before release.
+4. **Release:** package, install, reload the window, then check the changed flow once by hand and read the output channel **Claude Sessions**.
+5. **Anything typed into a terminal** (`/rename`, `/resume`, `claude --resume`) is sent at most once per user action; automatic sends are rate-limited and covered by a test that reproduces a burst.
 
 ## Install
 

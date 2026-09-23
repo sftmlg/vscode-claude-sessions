@@ -69,9 +69,9 @@ test('finds the title in the middle of a mid-sized file', async () => {
   assert.strictEqual(meta.lastAssistant.text, 'late answer');
 });
 
-test('summary shows last activity before start', async () => {
+test('summary shows only the last activity', async () => {
   const newer = (await listRepoSessions(repo, 14)).find((s) => s.id.startsWith('bbbb'));
-  assert.match(sessionSummary(newer), /^last \d+ minutes? ago · started \d+ minutes? ago$/);
+  assert.match(sessionSummary(newer), /^last \d+ minutes? ago$/);
 });
 
 test('rename appends a custom title; any non-empty name is accepted', async () => {

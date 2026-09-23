@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -17,8 +17,9 @@
     "onStartupFinished"
   ],
   "scripts": {
-    "test": "node --test test/sessions.test.js test/notifications.test.js test/presentation.test.js test/archive.test.js",
-    "list": "node cli.js list"
+    "test": "node --test test/archive.test.js test/manifest.test.js test/notifications.test.js test/presentation.test.js test/sessions.test.js",
+    "list": "node cli.js list",
+    "verify": "node --check extension.js && node --check sessions.js && node --check cli.js && npm test"
   },
   "contributes": {
     "commands": [
@@ -88,23 +89,6 @@
         "icon": "$(edit)"
       },
       {
-        "command": "claudeSessions.openNotification",
-        "title": "Focus session",
-        "category": "Claude Sessions"
-      },
-      {
-        "command": "claudeSessions.dismissNotification",
-        "title": "Dismiss notification",
-        "category": "Claude Sessions",
-        "icon": "$(check)"
-      },
-      {
-        "command": "claudeSessions.dismissAll",
-        "title": "Dismiss all notifications",
-        "category": "Claude Sessions",
-        "icon": "$(clear-all)"
-      },
-      {
         "command": "claudeSessions.archive",
         "title": "Archive (files stay)",
         "category": "Claude Sessions",
@@ -171,58 +155,43 @@
     "views": {
       "claudeSessions": [
         {
-          "id": "claudeSessions.notifications",
-          "name": "Notifications"
+          "id": "claudeSessions.inactive",
+          "name": "Inactive"
         },
         {
-          "id": "claudeSessions.sessions",
-          "name": "Sessions"
+          "id": "claudeSessions.active",
+          "name": "Active"
         }
       ]
     },
     "menus": {
       "view/title": [
         {
-          "command": "claudeSessions.restore",
-          "when": "view == claudeSessions.sessions",
+          "command": "claudeSessions.openNew",
+          "when": "view == claudeSessions.active",
           "group": "navigation@1"
         },
         {
-          "command": "claudeSessions.captureLayout",
-          "when": "view == claudeSessions.sessions",
+          "command": "claudeSessions.restore",
+          "when": "view == claudeSessions.active",
           "group": "navigation@2"
         },
         {
-          "command": "claudeSessions.openStateFile",
-          "when": "view == claudeSessions.sessions",
-          "group": "navigation@3"
-        },
-        {
           "command": "claudeSessions.refresh",
-          "when": "view == claudeSessions.sessions",
+          "when": "view == claudeSessions.active || view == claudeSessions.inactive",
           "group": "navigation@9"
         },
         {
-          "command": "claudeSessions.dismissAll",
-          "when": "view == claudeSessions.notifications",
-          "group": "navigation@1"
+          "command": "claudeSessions.openStateFile",
+          "when": "view == claudeSessions.inactive",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
         {
-          "command": "claudeSessions.openNew",
-          "when": "viewItem == activeFolder",
-          "group": "inline@1"
-        },
-        {
           "command": "claudeSessions.addToSplit",
           "when": "viewItem == split",
           "group": "inline@1"
-        },
-        {
-          "command": "claudeSessions.favorite",
-          "when": "(viewItem =~ /^activeTab(\\.fav)?$/ || viewItem =~ /^activeTabInSplit(\\.fav)?$/ || viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/ || viewItem =~ /^notification(\\.fav)?$/) && !(viewItem =~ /\\.fav$/)",
-          "group": "inline@0"
         },
         {
           "command": "claudeSessions.unfavorite",
@@ -275,11 +244,6 @@
           "group": "1_copy"
         },
         {
-          "command": "claudeSessions.dismissNotification",
-          "when": "viewItem =~ /^notification(\\.fav)?$/",
-          "group": "inline@3"
-        },
-        {
           "command": "claudeSessions.splitTab",
           "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/ || viewItem == activeTerminal || viewItem == activeTerminalInSplit",
           "group": "inline@4"
@@ -308,10 +272,6 @@
           "when": "false"
         },
         {
-          "command": "claudeSessions.openNotification",
-          "when": "false"
-        },
-        {
           "command": "claudeSessions.resume",
           "when": "false"
         },
@@ -329,10 +289,6 @@
         },
         {
           "command": "claudeSessions.copyResume",
-          "when": "false"
-        },
-        {
-          "command": "claudeSessions.dismissNotification",
           "when": "false"
         },
         {

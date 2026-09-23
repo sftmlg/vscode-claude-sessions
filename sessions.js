@@ -137,8 +137,7 @@ function timeAgo(iso, now = Date.now()) {
 
 function sessionSummary(meta) {
   if (!meta) return '';
-  const started = timeAgo(meta.startedAt);
-  return started ? `last ${timeAgo(meta.lastActivity)} · started ${started}` : `last ${timeAgo(meta.lastActivity)}`;
+  return `last ${timeAgo(meta.lastActivity)}`;
 }
 
 
