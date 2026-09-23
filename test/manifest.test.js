@@ -32,6 +32,13 @@ test('every contributed view is created in code and vice versa', () => {
   assert.deepStrictEqual([...contributedViews].sort(), [...createdViews].sort());
 });
 
+test('every command hidden from the palette is reachable from a menu or a tree item', () => {
+  const hidden = (contributes.menus.commandPalette || []).filter((m) => m.when === 'false').map((m) => m.command);
+  const inMenus = new Set(Object.entries(contributes.menus).filter(([k]) => k !== 'commandPalette').flatMap(([, v]) => v.map((m) => m.command)));
+  const asItemCommand = new Set([...source.matchAll(/command: '([^']+)', title:/g)].map((m) => m[1]));
+  assert.deepStrictEqual(hidden.filter((c) => !inMenus.has(c) && !asItemCommand.has(c)), []);
+});
+
 test('every menu entry points to a contributed command', () => {
   assert.deepStrictEqual(menuEntries.filter((m) => !contributedCommands.has(m.command)).map((m) => m.command), []);
 });

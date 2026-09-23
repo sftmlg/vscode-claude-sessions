@@ -189,6 +189,11 @@
       ],
       "view/item/context": [
         {
+          "command": "claudeSessions.favorite",
+          "when": "viewItem =~ /^(session|savedTab|archivedSession|activeTab|activeTabInSplit)$/",
+          "group": "inline@0"
+        },
+        {
           "command": "claudeSessions.addToSplit",
           "when": "viewItem == split",
           "group": "inline@1"

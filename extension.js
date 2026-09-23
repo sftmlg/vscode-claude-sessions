@@ -10,7 +10,6 @@ const {
   cwdOfPid,
   withTimeout,
   sleep,
-  formatTime,
   oneLine,
   sessionSummary,
   metaForSession,
@@ -124,7 +123,6 @@ class Store {
 }
 
 const AUTO_RENAME_INTERVAL_MS = 30 * 60 * 1000;
-const STALE_MINUTES = 30;
 
 class Notifications {
   constructor(store) {
@@ -463,10 +461,6 @@ class SessionsProvider {
     return e;
   }
 
-  relative(cwd) {
-    return cwd && cwd !== this.store.wsPath ? path.relative(this.store.wsPath, cwd) : '';
-  }
-
   label(sessionId, name) {
     return sessionId ? `${this.notifications.isFavorite(sessionId) ? '★' : '☆'} ${name}` : name;
   }
@@ -491,7 +485,7 @@ class SessionsProvider {
       : new vscode.ThemeIcon(look.icon);
     const meta = await metaForSession(m.sessionId);
     const noticeText = notice ? `${notice.kind === 'waiting' ? 'waiting for input' : 'finished'} ${timeAgo(notice.at)}` : '';
-    item.description = [noticeText, noticeText ? '' : sessionSummary(meta), this.relative(m.cwd)].filter(Boolean).join(' · ');
+    item.description = noticeText || sessionSummary(meta);
     item.tooltip = m.sessionId
       ? sessionTooltip(name, meta, [['Status', noticeText || look.hoverLine], ['Folder', m.cwd]])
       : `${name}\n${look.hoverLine}`;
@@ -536,7 +530,7 @@ class SessionsProvider {
     const item = new vscode.TreeItem(this.label(s.id, s.title));
     item.contextValue = `${archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session'}${this.favSuffix(s.id)}`;
     item.iconPath = new vscode.ThemeIcon(archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
-    item.description = [sessionSummary(s.meta), this.relative(s.meta.cwd)].filter(Boolean).join(' · ');
+    item.description = sessionSummary(s.meta);
     item.tooltip = sessionTooltip(s.title, s.meta, [['Folder', s.meta.cwd]]);
     item.data = { tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } };
     return item;
@@ -873,7 +867,10 @@ function activate(context) {
     vscode.window.onDidOpenTerminal(scheduleScan),
     vscode.window.onDidCloseTerminal((t) => {
       const m = tracker.meta.get(t);
-      if (m && m.sessionId) tracker.forget(m.sessionId);
+      if (m && m.sessionId) {
+        tracker.forget(m.sessionId);
+        notifications.dismiss(m.sessionId);
+      }
       tracker.meta.delete(t);
       scheduleScan();
     }),

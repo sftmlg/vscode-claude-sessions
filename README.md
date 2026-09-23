@@ -92,7 +92,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 Every change goes through the same steps; a step that fails stops the release.
 
 1. **Test first for every bug:** reproduce the bug as a test in `test/` before fixing it. Logic that touches VS Code goes into small functions that the tests can call with a mocked `vscode` module (see `test/manifest.test.js`).
-2. **`npm run verify`:** syntax check of every file plus all tests. `test/manifest.test.js` keeps code and `package.json` in step: every contributed command is registered and vice versa, every view exists in code, every menu entry points to a command, every `viewItem` in a `when` clause is produced by the code, and activation in a mocked VS Code registers every command.
+2. **`npm run verify`:** syntax check of every file plus all tests. `test/manifest.test.js` keeps code and `package.json` in step: every contributed command is registered and vice versa, every view exists in code, every menu entry points to a command, every command hidden from the palette is reachable from a menu or a tree item, every `viewItem` in a `when` clause is produced by the code, and activation in a mocked VS Code registers every command.
 3. **Cross-check for flow changes:** anything that changes a user flow (buttons, picker, splits, focus, renames) gets a fresh reviewer that walks the flow in the code, before release.
 4. **Release:** package, install, reload the window, then check the changed flow once by hand and read the output channel **Claude Sessions**.
 5. **Anything typed into a terminal** (`/rename`, `/resume`, `claude --resume`) is sent at most once per user action; automatic sends are rate-limited and covered by a test that reproduces a burst.
