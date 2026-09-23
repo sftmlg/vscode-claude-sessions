@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -17,9 +17,10 @@
     "onStartupFinished"
   ],
   "scripts": {
-    "test": "node --test test/archive.test.js test/manifest.test.js test/notifications.test.js test/presentation.test.js test/sessions.test.js",
+    "test": "node --test test/*.test.js",
     "list": "node cli.js list",
-    "verify": "node --check extension.js && node --check sessions.js && node --check cli.js && npm test"
+    "verify": "node --check extension.js && node --check sessions.js && node --check cli.js && npm test",
+    "release": "./release.sh"
   },
   "contributes": {
     "commands": [
@@ -165,6 +166,24 @@
         "title": "Delete session completely (files go to the Trash)",
         "category": "Claude Sessions",
         "icon": "$(trash)"
+      },
+      {
+        "command": "claudeSessions.openSessionFile",
+        "title": "Open session file",
+        "category": "Claude Sessions",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "claudeSessions.checkForUpdates",
+        "title": "Check for plugin updates",
+        "category": "Claude Sessions",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "claudeSessions.reloadWindow",
+        "title": "Reload to use the new version",
+        "category": "Claude Sessions",
+        "icon": "$(debug-restart)"
       }
     ],
     "viewsContainers": {
@@ -190,6 +209,11 @@
     },
     "menus": {
       "view/title": [
+        {
+          "command": "claudeSessions.reloadWindow",
+          "when": "view == claudeSessions.inactive && claudeSessions.updated",
+          "group": "navigation@-1"
+        },
         {
           "command": "claudeSessions.searchInactive",
           "when": "view == claudeSessions.inactive",
@@ -219,6 +243,11 @@
           "command": "claudeSessions.openStateFile",
           "when": "view == claudeSessions.inactive",
           "group": "navigation@3"
+        },
+        {
+          "command": "claudeSessions.checkForUpdates",
+          "when": "view == claudeSessions.inactive",
+          "group": "navigation@8"
         }
       ],
       "view/item/context": [
@@ -306,6 +335,11 @@
           "command": "claudeSessions.deleteSession",
           "when": "viewItem =~ /^(session|savedTab|archivedSession)(\\.fav)?$/",
           "group": "inline@6"
+        },
+        {
+          "command": "claudeSessions.openSessionFile",
+          "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/",
+          "group": "1_copy"
         }
       ],
       "terminal/title/context": [
@@ -384,6 +418,10 @@
         {
           "command": "claudeSessions.deleteSession",
           "when": "false"
+        },
+        {
+          "command": "claudeSessions.openSessionFile",
+          "when": "false"
         }
       ]
     },
@@ -428,6 +466,11 @@
           "type": "number",
           "default": 30,
           "description": "How far back the inactive and archive lists reach, by last message."
+        },
+        "claudeSessions.autoUpdate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check the GitHub releases of this extension every hour and install a newer version automatically."
         }
       }
     }

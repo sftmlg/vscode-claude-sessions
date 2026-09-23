@@ -1,3 +1,5 @@
 test/**
 *.vsix
+dist/**
+release.sh
 .gitignore

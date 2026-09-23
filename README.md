@@ -13,6 +13,8 @@ Activity bar → **Claude Sessions** has two sections:
 - **Inactive** (top) — every Claude session of this repository that is not running (default: last 30 days). Favorites first in alphabetical order, then the rest newest message first. At the bottom, the folder **archive** (collapsed) holds archived sessions; archiving only hides a session in this list, its files stay untouched.
 - **Active** (bottom) — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside. The icon on the left is the tab's state (⟳ working, ✓ idle, ⊘ exited); the tab you are working in carries a `●` after its name.
 
+Clicking an inactive or archived session opens its session file (JSONL) in the editor; clicking an active tab focuses that tab, its context menu opens the file.
+
 Each entry shows only the time of its last message (`last 5 minutes ago`, up to 48 hours, then `22.9.`). The hover holds the rest as a small table (status, folder, last activity, start, session id), followed by the last message and the last reply.
 
 ### Notifications
@@ -107,8 +109,12 @@ Every change goes through the same steps; a step that fails stops the release.
 1. **Test first for every bug:** reproduce the bug as a test in `test/` before fixing it. Logic that touches VS Code goes into small functions that the tests can call with a mocked `vscode` module (see `test/manifest.test.js`).
 2. **`npm run verify`:** syntax check of every file plus all tests. `test/manifest.test.js` keeps code and `package.json` in step: every contributed command is registered and vice versa, every view exists in code, every menu entry points to a command, every command hidden from the palette is reachable from a menu or a tree item, every `viewItem` in a `when` clause is produced by the code, and activation in a mocked VS Code registers every command.
 3. **Cross-check for flow changes:** anything that changes a user flow (buttons, picker, splits, focus, renames) gets a fresh reviewer that walks the flow in the code, before release.
-4. **Release:** package, install, reload the window, then check the changed flow once by hand and read the output channel **Claude Sessions**.
+4. **Release:** bump `version` in `package.json`, commit, then `npm run release` (verify, package, push, GitHub release with the `.vsix`). Every installed copy picks the release up within an hour; check the changed flow once by hand and read the output channel **Claude Sessions**.
 5. **Anything typed into a terminal** (`/resume`, `claude --resume`) is sent only as the direct result of a user action, never automatically.
+
+## Updates
+
+The extension checks the latest GitHub release of `sftmlg/vscode-claude-sessions` 30 seconds after start and then every hour (`claudeSessions.autoUpdate`). A newer release is downloaded and installed automatically; the **Inactive** header then shows `updated to <version> · reload to use it` with a reload button. The cloud button in the same header checks immediately.
 
 ## Install
 

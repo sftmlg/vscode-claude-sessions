@@ -3,6 +3,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
+const updater = require('./updater');
 const {
   readRunningSessions,
   processChildren,
@@ -538,6 +539,7 @@ class SessionsProvider {
     item.description = sessionSummary(s.meta);
     item.tooltip = sessionTooltip(s.title, s.meta, [['Folder', s.meta.cwd]]);
     item.data = { tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } };
+    item.command = { command: 'claudeSessions.openSessionFile', title: 'Open session file', arguments: [item] };
     return item;
   }
 
@@ -592,6 +594,30 @@ function activate(context) {
     },
     inactiveSessions: () => inactiveView.inactiveSessions(),
   };
+  const currentVersion = (context.extension && context.extension.packageJSON.version) || '0.0.0';
+  let updating = false;
+  const checkForUpdates = async (manual) => {
+    if (updating) return;
+    updating = true;
+    try {
+      const release = await updater.latestRelease();
+      if (!release || !updater.isNewer(release.version, currentVersion)) {
+        if (manual) vscode.window.showInformationMessage(`Claude Sessions ${currentVersion} is up to date.`);
+        return;
+      }
+      const file = await updater.downloadRelease(release, context.globalStorageUri.fsPath);
+      await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file));
+      inactiveTree.description = `updated to ${release.version} · reload to use it`;
+      vscode.commands.executeCommand('setContext', 'claudeSessions.updated', true);
+      tracker.log(`updated from ${currentVersion} to ${release.version}`);
+    } catch (err) {
+      tracker.log(`update check failed: ${err.message}`);
+      if (manual) vscode.window.showWarningMessage(`Update check failed: ${err.message}`);
+    } finally {
+      updating = false;
+    }
+  };
+
   const updateBadge = () => {
     const count = notifications.list().length;
     activeTree.badge = count ? { value: count, tooltip: `${count} Claude sessions finished or are waiting for input` } : undefined;
@@ -1000,6 +1026,17 @@ function activate(context) {
     vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeSessions') && startTimer()),
     { dispose: () => clearInterval(timer) },
     vscode.commands.registerCommand('claudeSessions.restore', () => tracker.restore()),
+    vscode.commands.registerCommand('claudeSessions.openSessionFile', async (item) => {
+      const id = item && item.data && item.data.tab && item.data.tab.sessionId;
+      const meta = id ? await metaForSession(id) : null;
+      if (!meta || !meta.file) {
+        vscode.window.showWarningMessage('No session file found.');
+        return;
+      }
+      await vscode.window.showTextDocument(vscode.Uri.file(meta.file), { preview: true, preserveFocus: false });
+    }),
+    vscode.commands.registerCommand('claudeSessions.checkForUpdates', () => checkForUpdates(true)),
+    vscode.commands.registerCommand('claudeSessions.reloadWindow', () => vscode.commands.executeCommand('workbench.action.reloadWindow')),
     vscode.commands.registerCommand('claudeSessions.captureLayout', async () => {
       await tracker.scanLayout();
       vscode.window.showInformationMessage('Tab layout captured.');
@@ -1077,6 +1114,11 @@ function activate(context) {
     if (tracker.liveTerminals().length > 1 && canScan()) scan('startup');
   }, 4000);
   setTimeout(checkLayout, 15000);
+  if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
+    setTimeout(() => checkForUpdates(false), 30000);
+    const updateTimer = setInterval(() => checkForUpdates(false), 60 * 60 * 1000);
+    context.subscriptions.push({ dispose: () => clearInterval(updateTimer) });
+  }
   setTimeout(async () => {
     const started = Date.now();
     await loadTextCache();
