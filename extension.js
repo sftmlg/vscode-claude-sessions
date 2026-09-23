@@ -14,6 +14,7 @@ const {
   sessionSummary,
   metaForSession,
   listRepoSessions,
+  renameSession,
 } = require('./sessions');
 
 const AUTO_TITLE = /^[\u2800-\u28ff✳✻✽✶✢✦·*●○◐◓◑◒]\s*/u;
@@ -385,10 +386,17 @@ class Tracker {
   }
 }
 
+const CIRCLED = ['', '①', '②', '③', '④', '⑤'];
+
+function byPriorityThenName(priorityOf) {
+  return (a, b) => priorityOf(a.id) - priorityOf(b.id) || a.title.localeCompare(b.title);
+}
+
 class SessionsProvider {
-  constructor(store, tracker) {
+  constructor(store, tracker, notifications) {
     this.store = store;
     this.tracker = tracker;
+    this.notifications = notifications;
     this.emitter = new vscode.EventEmitter();
     this.onDidChangeTreeData = this.emitter.event;
   }
@@ -401,10 +409,11 @@ class SessionsProvider {
     return e;
   }
 
-  folder(label, kind, count) {
-    const item = new vscode.TreeItem(`${label} (${count})`, vscode.TreeItemCollapsibleState.Expanded);
+  folder(label, kind, count, collapsed) {
+    const state = collapsed ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded;
+    const item = new vscode.TreeItem(`${label} (${count})`, state);
     item.contextValue = kind;
-    item.iconPath = new vscode.ThemeIcon(kind === 'openFolder' ? 'terminal' : 'archive');
+    item.iconPath = new vscode.ThemeIcon({ activeFolder: 'terminal', inactiveFolder: 'history', archiveFolder: 'archive' }[kind]);
     item.data = { kind };
     return item;
   }
@@ -413,11 +422,15 @@ class SessionsProvider {
     return cwd && cwd !== this.store.wsPath ? path.relative(this.store.wsPath, cwd) : '';
   }
 
-  async openTabItem(t) {
+  label(sessionId, name) {
+    return sessionId ? `${CIRCLED[this.notifications.priorityOf(sessionId)]} ${name}` : name;
+  }
+
+  async activeTabItem(t, inSplit) {
     const m = this.tracker.meta.get(t) || {};
     const name = m.name || t.name;
-    const item = new vscode.TreeItem(name);
-    item.contextValue = 'openTab';
+    const item = new vscode.TreeItem(this.label(m.sessionId, name));
+    item.contextValue = inSplit ? 'activeTabInSplit' : 'activeTab';
     const focused = vscode.window.activeTerminal === t;
     const statusIcon = { busy: 'loading~spin', waiting: 'bell-dot', idle: 'pass-filled', exited: 'circle-slash' }[m.status] || 'terminal';
     item.iconPath = new vscode.ThemeIcon(focused ? 'eye' : statusIcon, focused ? new vscode.ThemeColor('charts.blue') : undefined);
@@ -430,14 +443,13 @@ class SessionsProvider {
     return item;
   }
 
-  async openChildren() {
+  activeChildren() {
     this.tracker.syncGroups();
-    const groups = this.tracker.groups.map((g) => g.filter((t) => (this.tracker.meta.get(t) || {}).sessionId)).filter((g) => g.length);
+    const groups = this.tracker.groups.filter((g) => g.length);
     return Promise.all(
       groups.map(async (g) => {
-        if (g.length === 1) return this.openTabItem(g[0]);
-        const names = g.map((t) => (this.tracker.meta.get(t) || {}).name || t.name);
-        const item = new vscode.TreeItem(`Split: ${names.join(' | ')}`, vscode.TreeItemCollapsibleState.Expanded);
+        if (g.length === 1) return this.activeTabItem(g[0], false);
+        const item = new vscode.TreeItem('split', vscode.TreeItemCollapsibleState.Expanded);
         item.contextValue = 'split';
         item.iconPath = new vscode.ThemeIcon('split-horizontal');
         item.data = { terminals: g };
@@ -446,37 +458,53 @@ class SessionsProvider {
     );
   }
 
-  async closedChildren() {
+  async inactiveSessions() {
     const [metas, running] = await Promise.all([
-      listRepoSessions(this.store.wsPath, settings().get('historyDays') || 14),
+      listRepoSessions(this.store.wsPath, settings().get('historyDays') || 30),
       readRunningSessions(),
     ]);
     const live = new Set([...running.values()].map((s) => s.sessionId));
     const saved = new Map(this.store.read().map((t) => [t.sessionId, t.name]));
     return metas
       .filter((m) => !live.has(m.id))
-      .map((m) => {
-        const title = saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id;
-        const item = new vscode.TreeItem(title);
-        item.contextValue = saved.has(m.id) ? 'savedTab' : 'session';
-        item.iconPath = new vscode.ThemeIcon(saved.has(m.id) ? 'bookmark' : 'comment-discussion');
-        item.description = [sessionSummary(m), this.relative(m.cwd)].filter(Boolean).join(' · ');
-        item.tooltip = sessionTooltip(title, m, m.firstPrompt ? [`First message: ${oneLine(m.firstPrompt, 200)}`] : []);
-        item.data = { tab: { name: title, sessionId: m.id, cwd: m.cwd } };
-        return item;
-      });
+      .map((m) => ({
+        id: m.id,
+        meta: m,
+        saved: saved.has(m.id),
+        title: saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
+      }));
+  }
+
+  sessionItem(s, archived) {
+    const item = new vscode.TreeItem(this.label(s.id, s.title));
+    item.contextValue = archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session';
+    item.iconPath = new vscode.ThemeIcon(archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
+    item.description = [sessionSummary(s.meta), this.relative(s.meta.cwd)].filter(Boolean).join(' · ');
+    item.tooltip = sessionTooltip(s.title, s.meta, s.meta.firstPrompt ? [`First message: ${oneLine(s.meta.firstPrompt, 200)}`] : []);
+    item.data = { tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } };
+    return item;
   }
 
   async getChildren(e) {
     if (!e) {
-      const [open, closed] = await Promise.all([this.openChildren(), this.closedChildren()]);
-      this.cache = { open, closed };
-      const openCount = open.reduce((n, i) => n + (i.data.terminals ? i.data.terminals.length : 1), 0);
-      return [this.folder('Open', 'openFolder', openCount), this.folder('Closed', 'closedFolder', closed.length)];
+      const [active, sessions] = await Promise.all([this.activeChildren(), this.inactiveSessions()]);
+      const archived = this.store.readState().archived || {};
+      const sort = byPriorityThenName((id) => this.notifications.priorityOf(id));
+      const inactive = sessions.filter((s) => !archived[s.id]).sort(sort);
+      const archive = sessions.filter((s) => archived[s.id]).sort(sort);
+      this.cache = { active, inactive, archive };
+      const activeCount = active.reduce((n, i) => n + (i.data.terminals ? i.data.terminals.length : 1), 0);
+      return [
+        this.folder('active', 'activeFolder', activeCount, false),
+        this.folder('inactive', 'inactiveFolder', inactive.length, false),
+        this.folder('archive', 'archiveFolder', archive.length, true),
+      ];
     }
-    if (e.data.kind === 'openFolder') return this.cache ? this.cache.open : this.openChildren();
-    if (e.data.kind === 'closedFolder') return this.cache ? this.cache.closed : this.closedChildren();
-    if (e.data.terminals) return Promise.all(e.data.terminals.map((t) => this.openTabItem(t)));
+    if (!this.cache) await this.getChildren();
+    if (e.data.kind === 'activeFolder') return this.cache.active;
+    if (e.data.kind === 'inactiveFolder') return this.cache.inactive.map((s) => this.sessionItem(s, false));
+    if (e.data.kind === 'archiveFolder') return this.cache.archive.map((s) => this.sessionItem(s, true));
+    if (e.data.terminals) return Promise.all(e.data.terminals.map((t) => this.activeTabItem(t, true)));
     return [];
   }
 }
@@ -547,7 +575,7 @@ function activate(context) {
     notificationsTree.badge = count ? { value: count, tooltip: `${count} Claude sessions need attention` } : undefined;
   };
   const terminalFor = (sessionId) => tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === sessionId);
-  const view = new SessionsProvider(store, tracker);
+  const view = new SessionsProvider(store, tracker, notifications);
 
   const renameTerminal = async (t, name) => {
     if (vscode.window.activeTerminal !== t) {
@@ -606,6 +634,67 @@ function activate(context) {
     tracker.save();
   };
 
+  const openInLayout = async (choice, parent) => {
+    const location = parent ? { parentTerminal: parent } : undefined;
+    if (choice.kind === 'terminal') {
+      const t = vscode.window.createTerminal({ cwd: store.wsPath, location });
+      t.show(false);
+      return t;
+    }
+    if (choice.kind === 'newSession') {
+      const t = vscode.window.createTerminal({ name: 'claude', cwd: store.wsPath, location, iconPath: new vscode.ThemeIcon('sparkle') });
+      t.show(false);
+      t.sendText(claudeCommand());
+      return t;
+    }
+    const tab = choice.tab;
+    const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
+    const t = vscode.window.createTerminal({ name: tab.name, cwd, location, iconPath: new vscode.ThemeIcon('sparkle') });
+    tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd });
+    tracker.syncedNames.set(tab.sessionId, tab.name);
+    t.show(false);
+    t.sendText(`${claudeCommand()} --resume ${tab.sessionId}`);
+    return t;
+  };
+
+  const pickAndOpen = async (parent) => {
+    const sessions = await view.inactiveSessions();
+    const archived = store.readState().archived || {};
+    const prio = (id) => notifications.priorityOf(id);
+    sessions.sort((a, b) => prio(a.id) - prio(b.id) || Date.parse(b.meta.lastActivity) - Date.parse(a.meta.lastActivity));
+    const items = [
+      { label: '$(sparkle) New Claude session', choice: { kind: 'newSession' } },
+      { label: '$(terminal) New terminal', choice: { kind: 'terminal' } },
+      { label: 'Inactive sessions', kind: vscode.QuickPickItemKind.Separator },
+      ...sessions.map((s) => ({
+        label: `${CIRCLED[prio(s.id)]} ${s.title}`,
+        description: `${sessionSummary(s.meta)}${archived[s.id] ? ' · archived' : ''}`,
+        choice: { kind: 'session', tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } },
+      })),
+    ];
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: parent ? 'Open in this split: search a session or start something new' : 'Open in a new tab: search a session or start something new',
+      matchOnDescription: true,
+    });
+    if (!picked || !picked.choice) return;
+    const t = await openInLayout(picked.choice, parent);
+    if (parent) {
+      const group = tracker.groups.find((g) => g.includes(parent));
+      if (group && !group.includes(t)) group.push(t);
+    } else if (!tracker.groups.some((g) => g.includes(t))) {
+      tracker.groups.push([t]);
+    }
+    view.refresh();
+  };
+
+  const setArchived = (sessionId, value) => {
+    const archived = { ...(store.readState().archived || {}) };
+    if (value) archived[sessionId] = true;
+    else delete archived[sessionId];
+    store.writeState({ archived });
+    view.refresh();
+  };
+
   let focusRefresh = null;
   const minuteTimer = setInterval(() => notificationsView.refresh(), 60000);
   updateBadge();
@@ -631,8 +720,16 @@ function activate(context) {
     notificationsTree,
     notifications.onChange.event(() => {
       notificationsView.refresh();
+      view.refresh();
       updateBadge();
     }),
+    vscode.commands.registerCommand('claudeSessions.archive', (item) => setArchived(item.data.tab.sessionId, true)),
+    vscode.commands.registerCommand('claudeSessions.unarchive', (item) => setArchived(item.data.tab.sessionId, false)),
+    vscode.commands.registerCommand('claudeSessions.raiseSessionPriority', (item) => item.data.tab.sessionId && notifications.shiftPriority(item.data.tab.sessionId, -1)),
+    vscode.commands.registerCommand('claudeSessions.lowerSessionPriority', (item) => item.data.tab.sessionId && notifications.shiftPriority(item.data.tab.sessionId, 1)),
+    vscode.commands.registerCommand('claudeSessions.closeTab', (item) => item.data.terminal && item.data.terminal.dispose()),
+    vscode.commands.registerCommand('claudeSessions.addToSplit', (item) => pickAndOpen(item.data.terminals ? item.data.terminals[0] : item.data.terminal)),
+    vscode.commands.registerCommand('claudeSessions.openNew', () => pickAndOpen(null)),
     vscode.window.onDidChangeActiveTerminal((t) => {
       if (tracker.scanning || !t) return;
       const m = tracker.meta.get(t);
@@ -680,8 +777,12 @@ function activate(context) {
       const name = await askName(tab.name);
       if (!name) return;
       const tabs = store.read();
-      const known = tabs.some((t) => t.sessionId === tab.sessionId);
-      store.write(known ? tabs.map((t) => (t.sessionId === tab.sessionId ? { ...t, name } : t)) : tabs.concat([{ ...tab, name, group: tab.sessionId }]));
+      if (tabs.some((t) => t.sessionId === tab.sessionId)) store.write(tabs.map((t) => (t.sessionId === tab.sessionId ? { ...t, name } : t)));
+      try {
+        await renameSession(tab.sessionId, name);
+      } catch (err) {
+        vscode.window.showWarningMessage(err.message);
+      }
       view.refresh();
     }),
     vscode.commands.registerCommand('claudeSessions.removeSaved', (item) => tracker.forget(item.data.tab.sessionId)),
@@ -710,4 +811,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, Notifications, Store };
+module.exports = { activate, deactivate, Notifications, Store, byPriorityThenName, CIRCLED };

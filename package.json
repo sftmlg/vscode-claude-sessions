@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -115,6 +115,48 @@
         "title": "Dismiss all notifications",
         "category": "Claude Sessions",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "claudeSessions.archive",
+        "title": "Archive",
+        "category": "Claude Sessions",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "claudeSessions.unarchive",
+        "title": "Move back to inactive",
+        "category": "Claude Sessions",
+        "icon": "$(history)"
+      },
+      {
+        "command": "claudeSessions.raiseSessionPriority",
+        "title": "Raise priority",
+        "category": "Claude Sessions",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "claudeSessions.lowerSessionPriority",
+        "title": "Lower priority",
+        "category": "Claude Sessions",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "claudeSessions.closeTab",
+        "title": "Close tab",
+        "category": "Claude Sessions",
+        "icon": "$(close)"
+      },
+      {
+        "command": "claudeSessions.addToSplit",
+        "title": "Add to split…",
+        "category": "Claude Sessions",
+        "icon": "$(add)"
+      },
+      {
+        "command": "claudeSessions.openNew",
+        "title": "New tab…",
+        "category": "Claude Sessions",
+        "icon": "$(add)"
       }
     ],
     "viewsContainers": {
@@ -168,34 +210,84 @@
       ],
       "view/item/context": [
         {
-          "command": "claudeSessions.resume",
-          "when": "viewItem == savedTab || viewItem == session",
+          "command": "claudeSessions.openNew",
+          "when": "viewItem == activeFolder",
           "group": "inline@1"
         },
         {
-          "command": "claudeSessions.resumeNewTab",
-          "when": "viewItem == savedTab || viewItem == session",
+          "command": "claudeSessions.addToSplit",
+          "when": "viewItem == split",
+          "group": "inline@1"
+        },
+        {
+          "command": "claudeSessions.raiseSessionPriority",
+          "when": "viewItem == activeTab || viewItem == activeTabInSplit",
+          "group": "inline@1"
+        },
+        {
+          "command": "claudeSessions.lowerSessionPriority",
+          "when": "viewItem == activeTab || viewItem == activeTabInSplit",
           "group": "inline@2"
         },
         {
-          "command": "claudeSessions.renameSaved",
-          "when": "viewItem == savedTab || viewItem == session",
+          "command": "claudeSessions.renameTab",
+          "when": "viewItem == activeTab || viewItem == activeTabInSplit",
           "group": "inline@3"
+        },
+        {
+          "command": "claudeSessions.addToSplit",
+          "when": "viewItem == activeTab",
+          "group": "inline@4"
+        },
+        {
+          "command": "claudeSessions.closeTab",
+          "when": "viewItem == activeTab || viewItem == activeTabInSplit",
+          "group": "inline@5"
+        },
+        {
+          "command": "claudeSessions.raiseSessionPriority",
+          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
+          "group": "inline@1"
+        },
+        {
+          "command": "claudeSessions.lowerSessionPriority",
+          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
+          "group": "inline@2"
+        },
+        {
+          "command": "claudeSessions.resume",
+          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
+          "group": "inline@3"
+        },
+        {
+          "command": "claudeSessions.resumeNewTab",
+          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
+          "group": "inline@4"
+        },
+        {
+          "command": "claudeSessions.renameSaved",
+          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
+          "group": "inline@5"
+        },
+        {
+          "command": "claudeSessions.archive",
+          "when": "viewItem == session || viewItem == savedTab",
+          "group": "inline@6"
+        },
+        {
+          "command": "claudeSessions.unarchive",
+          "when": "viewItem == archivedSession",
+          "group": "inline@6"
         },
         {
           "command": "claudeSessions.removeSaved",
           "when": "viewItem == savedTab",
-          "group": "inline@4"
+          "group": "2_manage"
         },
         {
           "command": "claudeSessions.copyResume",
-          "when": "viewItem == savedTab || viewItem == session || viewItem == openTab",
+          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession || viewItem == activeTab || viewItem == activeTabInSplit",
           "group": "1_copy"
-        },
-        {
-          "command": "claudeSessions.renameTab",
-          "when": "viewItem == openTab",
-          "group": "inline@1"
         },
         {
           "command": "claudeSessions.raisePriority",
@@ -231,6 +323,10 @@
           "when": "false"
         },
         {
+          "command": "claudeSessions.openNotification",
+          "when": "false"
+        },
+        {
           "command": "claudeSessions.resume",
           "when": "false"
         },
@@ -251,10 +347,6 @@
           "when": "false"
         },
         {
-          "command": "claudeSessions.openNotification",
-          "when": "false"
-        },
-        {
           "command": "claudeSessions.lowerPriority",
           "when": "false"
         },
@@ -264,6 +356,30 @@
         },
         {
           "command": "claudeSessions.dismissNotification",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.archive",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.unarchive",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.raiseSessionPriority",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.lowerSessionPriority",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.closeTab",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.addToSplit",
           "when": "false"
         }
       ]
@@ -312,8 +428,8 @@
         },
         "claudeSessions.historyDays": {
           "type": "number",
-          "default": 14,
-          "description": "How far back the Closed list reaches, by last message."
+          "default": 30,
+          "description": "How far back the inactive and archive lists reach, by last message."
         }
       }
     }

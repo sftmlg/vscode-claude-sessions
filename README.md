@@ -8,21 +8,26 @@ vscode, vs code, extension, claude code, terminal tabs, restore tabs, restore se
 
 ## The view
 
-Activity bar → **Claude Sessions** shows one list with two folders:
+Activity bar → **Claude Sessions** has two sections: **Notifications** (below) and **Sessions** with three folders:
 
-- **Open** — Claude sessions running in terminal tabs of this window, in tab order, with splits shown as `Split: A | B`. Clicking an entry focuses its tab.
-- **Closed** — every Claude session of this repository that is not running, newest last message first (default: last 14 days). Sessions you named are marked with a bookmark icon.
+- **active** — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside; the tab you are on shows an eye icon and `● focused`, every tab shows its state (working, waiting for input, idle).
+- **inactive** — every Claude session of this repository that is not running (default: last 30 days).
+- **archive** — sessions you archived; collapsed by default. Archiving only hides a session in this list; its files stay untouched.
 
-Each entry shows `last <date time> · started <date time>`; hovering shows your last message and the last reply.
+Every session carries a priority from ① to ⑤ (default ①), shared with the notifications. **inactive** and **archive** sort by priority, then by name.
 
-Buttons on an entry:
+Buttons:
 
-| Button | Action |
+| Where | Buttons |
 |---|---|
-| ▶ | Resume in the active terminal: an idle shell runs `claude --resume <id>`, a running Claude switches via `/resume <id>`, a busy terminal gets a new tab instead |
-| ＋ | Resume in a new tab |
-| ✎ | Rename |
-| ✕ | Remove from saved tabs |
+| `active` folder | ＋ open a new tab: new Claude session, new terminal, or search an inactive session |
+| `split` | ＋ add to this split (same picker) |
+| active tab | ↑ ↓ priority · ✎ rename tab and session · ＋ split with this tab (only when not in a split yet) · ✕ close tab |
+| inactive / archived session | ↑ ↓ priority · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back |
+
+The picker lists new session and new terminal first, then sessions by priority and most recent message; type to search.
+
+▶ resumes in the active terminal: an idle shell runs `claude --resume <id>`, a running Claude switches via `/resume <id>`, a busy terminal gets a new tab instead.
 
 Title bar: **Restore saved tabs** reopens every saved tab that is not running, with its name and split layout.
 
@@ -57,7 +62,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 ## What is saved
 
 - One file per repository: `.vscode/claude-sessions.json`.
-- It holds only named tabs that run a Claude session (name, session id, working directory, split group), plus open notifications and session priorities.
+- It holds only named tabs that run a Claude session (name, session id, working directory, split group), plus open notifications, session priorities and archive flags.
 - A tab you close is removed from it; tabs lost in a crash stay, so they can be restored.
 - Whether the file is committed is up to the repository's `.gitignore`.
 
@@ -78,11 +83,11 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.syncSessionName` | `true` | Use tab names as Claude session names |
 | `claudeSessions.autoCaptureLayout` | `true` | Capture splits and order automatically |
 | `claudeSessions.pollSeconds` | `5` | How often names and sessions are re-read |
-| `claudeSessions.historyDays` | `14` | Reach of the Closed list |
+| `claudeSessions.historyDays` | `30` | Reach of the inactive and archive lists |
 
 ## Command line and tests
 
-- `node cli.js list [repo] [--days N] [--json]` lists the sessions of a repository like the Closed folder.
+- `node cli.js list [repo] [--days N] [--json]` lists the sessions of a repository.
 - `node cli.js rename <session-id> <name>` names a closed session (running sessions are renamed through their tab).
 - `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
 - `npm test` checks session parsing against generated session files.
