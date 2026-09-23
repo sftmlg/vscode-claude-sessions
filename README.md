@@ -25,7 +25,7 @@ When a session in another tab finishes (`busy` → `idle`) or starts waiting for
 |---|---|
 | **Active** title bar | ＋ new tab (picker first) · restore saved tabs |
 | `split` | ＋ picker first, then a new terminal inside this split |
-| active tab | ⫼ split: picker first, then a terminal opens directly to the right · ☆/★ favorite and ✎ rename (only for Claude sessions) · ✕ close |
+| active tab | 🔍 search a session and open it in this tab (`/resume`; „New Claude session“ runs `/clear`; refused while the session is working) · ⫼ split: picker first, then a terminal opens directly to the right · ☆/★ favorite and ✎ rename (only for Claude sessions) · ✕ close |
 | plain terminal (no Claude session) | ＋ picker, runs the choice in this terminal · ⫼ split · ✕ close |
 | inactive / archived session | ☆/★ favorite · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back |
 

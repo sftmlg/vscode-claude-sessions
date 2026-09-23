@@ -763,7 +763,32 @@ function activate(context) {
   const pickIntoExisting = async (t) => {
     const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
     const pid = await withTimeout(t.processId, 1000).catch(() => undefined);
-    const idle = pid && !findSession(pid, children, running) && (children.get(pid) || []).length === 0;
+    const current = pid ? findSession(pid, children, running) : null;
+    if (current) {
+      if (current.status === 'busy') {
+        vscode.window.showWarningMessage('This Claude session is working right now; switch it once it is idle.');
+        return;
+      }
+      const choice = await choose({ allowPlain: false });
+      if (!choice || !vscode.window.terminals.includes(t)) return;
+      t.show(false);
+      if (choice.kind === 'newSession') {
+        t.sendText('/clear');
+        tracker.meta.set(t, { ...(tracker.meta.get(t) || {}), name: '', nameSource: 'auto', sessionId: null });
+        view.refresh();
+        return;
+      }
+      if (choice.tab.sessionId === current.sessionId) return;
+      const tab = choice.tab;
+      t.sendText(`/resume ${tab.sessionId}`);
+      await renameTerminal(t, tab.name);
+      tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd: tab.cwd || current.cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
+      tracker.rememberName(tab.sessionId, tab.name);
+      tracker.save();
+      view.refresh();
+      return;
+    }
+    const idle = pid && (children.get(pid) || []).length === 0;
     if (!idle) {
       vscode.window.showWarningMessage('This terminal is busy; pick a session for a new tab instead.');
       return openFreshThenPick(null);
@@ -771,6 +796,7 @@ function activate(context) {
     const choice = await choose({ allowPlain: false });
     if (choice) await applyChoice(t, choice);
   };
+
 
   const setArchived = (sessionId, value) => {
     const archived = { ...(store.readState().archived || {}) };
@@ -872,6 +898,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.splitTab', (item) => openFreshThenPick(item.data.terminal)),
     vscode.commands.registerCommand('claudeSessions.openNew', () => openFreshThenPick(null)),
     vscode.commands.registerCommand('claudeSessions.openInTerminal', (item) => pickIntoExisting(item.data.terminal)),
+    vscode.commands.registerCommand('claudeSessions.switchSession', (item) => pickIntoExisting(item.data.terminal)),
     vscode.window.onDidChangeWindowState(() => view.refresh()),
     vscode.window.onDidChangeActiveTerminal((t) => {
       if (tracker.scanning || !t) return;
