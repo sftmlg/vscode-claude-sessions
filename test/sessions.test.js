@@ -8,7 +8,7 @@ const path = require('path');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sessions-test-'));
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
-const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState, timeAgo, readStateFile, writeStatePatch, archiveInState } = require('../sessions');
+const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState, timeAgo, readStateFile, writeStatePatch, archiveInState, searchSessions, foldText } = require('../sessions');
 
 const repo = '/work/demo-repo';
 const projectDir = path.join(home, '.claude', 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'));
@@ -135,4 +135,26 @@ test('state writes merge keys and a corrupt file is kept, never overwritten sile
   assert.throws(() => writeStatePatch(file, { favorites: {} }), /not valid JSON/);
   assert.ok(fs.readdirSync(path.dirname(file)).some((f) => f.includes('.corrupt-')));
   assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"tabs": [');
+});
+
+test('search: every word must occur, title hits beat body hits, frequency beats recency', async () => {
+  const dir = path.join(home, '.claude', 'projects', '-search-ws');
+  fs.mkdirSync(dir, { recursive: true });
+  const put = (id, minutesAgo, texts) => {
+    const file = path.join(dir, `${id}.jsonl`);
+    fs.writeFileSync(file, texts.map((text, i) => JSON.stringify({ type: i % 2 ? 'assistant' : 'user', timestamp: iso(minutesAgo + i), message: { content: text } })).join('\n') + '\n');
+    return file;
+  };
+  const rows = [
+    { id: 'title', title: 'invoice-schmid', meta: { file: put('title', 50, ['hello']), lastActivity: iso(50) } },
+    { id: 'many', title: 'misc', meta: { file: put('many', 1, ['Invoice for Schmid', 'invoice invoice invoice schmid']), lastActivity: iso(1) } },
+    { id: 'once', title: 'misc', meta: { file: put('once', 0, ['one INVOICE to schmid']), lastActivity: iso(0) } },
+    { id: 'half', title: 'misc', meta: { file: put('half', 0, ['only invoice']), lastActivity: iso(0) } },
+  ];
+  const hits = (await searchSessions(rows, 'Invoice SCHMID')).map((r) => r.id);
+  assert.deepStrictEqual(hits, ['title', 'many', 'once']);
+});
+
+test('search folds case and umlauts', () => {
+  assert.strictEqual(foldText('Prüfung GRÖSSE Straße'), 'pruefung groesse strasse');
 });

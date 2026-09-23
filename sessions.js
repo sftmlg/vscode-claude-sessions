@@ -122,6 +122,97 @@ function oneLine(text, max) {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+function foldText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/ä/g, 'ae')
+    .replace(/ö/g, 'oe')
+    .replace(/ü/g, 'ue')
+    .replace(/ß/g, 'ss')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '');
+}
+
+const conversationCache = new Map();
+
+async function conversationText(file) {
+  const st = await fsp.stat(file);
+  const cached = conversationCache.get(file);
+  if (cached && cached.mtimeMs === st.mtimeMs) return cached.text;
+  const raw = await fsp.readFile(file, 'utf8');
+  const parts = [];
+  for (const line of raw.split('\n')) {
+    if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"') && !line.includes('"customTitle"')) continue;
+    let o;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (o.customTitle) parts.push(o.customTitle);
+    if (o.type !== 'user' && o.type !== 'assistant') continue;
+    const text = messageText(o);
+    if (text && !(o.type === 'user' && isSyntheticPrompt(text))) parts.push(text);
+  }
+  const text = foldText(parts.join('\n'));
+  conversationCache.set(file, { mtimeMs: st.mtimeMs, text });
+  return text;
+}
+
+function countOccurrences(text, term) {
+  let n = 0;
+  for (let i = text.indexOf(term); i >= 0; i = text.indexOf(term, i + term.length)) n++;
+  return n;
+}
+
+async function searchSessions(sessions, query) {
+  const terms = foldText(query).split(/\s+/).filter(Boolean);
+  if (!terms.length) return sessions;
+  const scored = [];
+  for (const s of sessions) {
+    const m = s.meta || s;
+    const fields = searchFields(s);
+    const body = m.file ? await conversationText(m.file).catch(() => '') : '';
+    let score = 0;
+    let all = true;
+    for (const term of terms) {
+      const fieldWeight = fields.reduce((acc, [text, weight]) => (text.includes(term) ? Math.max(acc, weight) : acc), 0);
+      const count = countOccurrences(body, term);
+      if (!fieldWeight && !count) {
+        all = false;
+        break;
+      }
+      score += fieldWeight * 10 + Math.log2(1 + count);
+    }
+    if (all) scored.push({ s, score, recency: Date.parse(m.lastActivity || 0) || 0 });
+  }
+  return scored.sort((a, b) => b.score - a.score || b.recency - a.recency).map((x) => x.s);
+}
+
+function searchFields(s) {
+  const m = s.meta || s;
+  return [
+    [s.title || '', 4],
+    [m.customTitle || '', 3],
+    [m.aiTitle || '', 2],
+    [m.firstPrompt || '', 1],
+    [(m.lastUser && m.lastUser.text) || '', 1],
+    [(m.lastAssistant && m.lastAssistant.text) || '', 1],
+    [m.cwd ? path.basename(m.cwd) : '', 1],
+  ].map(([text, weight]) => [foldText(text), weight]);
+}
+
+function matchSnippet(s, query) {
+  const terms = foldText(query).split(/\s+/).filter(Boolean);
+  const m = s.meta || s;
+  const texts = [m.firstPrompt, m.lastUser && m.lastUser.text, m.lastAssistant && m.lastAssistant.text].filter(Boolean);
+  const hit = terms.length ? texts.find((t) => terms.some((term) => foldText(t).includes(term))) : texts[0];
+  if (!hit) return '';
+  const folded = foldText(hit);
+  const at = terms.length ? Math.max(0, Math.min(...terms.map((t) => folded.indexOf(t)).filter((i) => i >= 0)) - 30) : 0;
+  return oneLine(hit.slice(at), 120);
+}
+
 const RELATIVE_HOURS = 48;
 
 function timeAgo(iso, now = Date.now()) {
@@ -432,4 +523,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { searchSessions, conversationText, foldText, matchSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

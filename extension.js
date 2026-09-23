@@ -14,9 +14,11 @@ const {
   sessionSummary,
   metaForSession,
   listRepoSessions,
-  renameSession,
   tabPresentation,
   timeAgo,
+  searchSessions,
+  matchSnippet,
+  conversationText,
   readStateFile,
   writeStatePatch,
 } = require('./sessions');
@@ -122,7 +124,6 @@ class Store {
   }
 }
 
-const AUTO_RENAME_INTERVAL_MS = 60 * 1000;
 
 class Notifications {
   constructor(store) {
@@ -184,9 +185,6 @@ class Tracker {
     this.groups = [];
     this.meta = new Map();
     this.titles = new Map();
-    this.syncedNames = new Map();
-    this.nameSeen = new Map();
-    this.lastAutoRename = new Map();
     this.restoring = false;
     this.scanning = false;
     this.terminalFocused = true;
@@ -217,26 +215,16 @@ class Tracker {
     }
   }
 
-  async syncSessionName(t, m, running, explicit = false) {
-    if (m.nameSource !== 'user' || !running || !m.name || running.status === 'busy') return;
-    if (!explicit) {
-      if (!settings().get('syncSessionName')) return;
-      const seen = this.nameSeen.get(t);
-      this.nameSeen.set(t, m.name);
-      if (seen !== m.name) return;
-      const last = this.lastAutoRename.get(running.sessionId) || 0;
-      if (Date.now() - last < AUTO_RENAME_INTERVAL_MS) return;
-    }
-    if (this.syncedNames.get(running.sessionId) === m.name) return;
-    this.syncedNames.set(running.sessionId, m.name);
-    const meta = await metaForSession(running.sessionId);
-    if (meta && meta.customTitle === m.name) return;
-    if (!explicit) this.lastAutoRename.set(running.sessionId, Date.now());
-    t.sendText(`/rename ${m.name.replace(/[\r\n]+/g, ' ')}`);
-  }
+
 
   editorFocusedSince(time) {
     return Boolean(this.editorFocusAt && this.editorFocusAt > (time || 0));
+  }
+
+  rememberName(sessionId, name) {
+    const names = this.store.readState().names || {};
+    if (names[sessionId] === name) return;
+    this.store.writeState({ names: { ...names, [sessionId]: name } });
   }
 
   setTerminalFocus(value) {
@@ -288,7 +276,7 @@ class Tracker {
         m.cwd = si ? si.fsPath : pid ? await cwdOfPid(pid) : null;
       }
       this.observeName(t, m);
-      await this.syncSessionName(t, m, s);
+      if (m.nameSource === 'user' && m.sessionId && m.name) this.rememberName(m.sessionId, m.name);
       const status = s ? s.status || 'idle' : m.sessionId ? 'exited' : null;
       if (status === 'busy' && m.status !== 'busy' && vscode.window.activeTerminal === t && vscode.window.state.focused && !this.editorFocusedSince(m.statusChangedAt)) this.setTerminalFocus(true);
       if (status !== m.status) m.statusChangedAt = Date.now();
@@ -471,7 +459,8 @@ class SessionsProvider {
 
   async activeTabItem(t, inSplit) {
     const m = this.tracker.meta.get(t) || {};
-    const name = m.name || t.name;
+    const known = m.sessionId && (this.store.readState().names || {})[m.sessionId];
+    const name = (m.nameSource === 'user' && m.name) || known || m.name || t.name;
     const item = new vscode.TreeItem(this.label(m.sessionId, name));
     item.contextValue = m.sessionId
       ? `${inSplit ? 'activeTabInSplit' : 'activeTab'}${this.favSuffix(m.sessionId)}`
@@ -516,13 +505,14 @@ class SessionsProvider {
     ]);
     const live = new Set([...running.values()].map((s) => s.sessionId));
     const saved = new Map(this.store.read().map((t) => [t.sessionId, t.name]));
+    const names = this.store.readState().names || {};
     return metas
       .filter((m) => !live.has(m.id))
       .map((m) => ({
         id: m.id,
         meta: m,
         saved: saved.has(m.id),
-        title: saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
+        title: names[m.id] || saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
       }));
   }
 
@@ -549,6 +539,11 @@ class SessionsProvider {
     this.sessionsCache = sessions;
     const archived = this.store.readState().archived || {};
     const isFavorite = (id) => this.notifications.isFavorite(id);
+    if (this.filter) {
+      const hits = await searchSessions(sessions, this.filter);
+      if (this.onSearched) this.onSearched(hits.length);
+      return hits.map((s) => this.sessionItem(s, Boolean(archived[s.id])));
+    }
     const inactive = sortSessions(sessions.filter((s) => !archived[s.id]), isFavorite);
     this.archive = sortSessions(sessions.filter((s) => archived[s.id]), isFavorite);
     const folder = new vscode.TreeItem(`archive (${this.archive.length})`, vscode.TreeItemCollapsibleState.Collapsed);
@@ -571,6 +566,9 @@ function activate(context) {
   const inactiveView = new SessionsProvider('inactive', store, tracker, notifications);
   const activeTree = vscode.window.createTreeView('claudeSessions.active', { treeDataProvider: activeView });
   const inactiveTree = vscode.window.createTreeView('claudeSessions.inactive', { treeDataProvider: inactiveView });
+  inactiveView.onSearched = (count) => {
+    inactiveTree.message = `Search "${inactiveView.filter}" · ${count} matching sessions`;
+  };
   const view = {
     refresh: (fast = false) => {
       activeView.refresh(fast);
@@ -636,7 +634,6 @@ function activate(context) {
     }
     await renameTerminal(t, tab.name);
     tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
-    tracker.syncedNames.set(tab.sessionId, tab.name);
     tracker.save();
     view.refresh();
   };
@@ -685,29 +682,52 @@ function activate(context) {
 
   const choose = async ({ allowPlain }) => {
     pickerOpen = true;
+    const qp = vscode.window.createQuickPick();
     try {
+      qp.placeholder = 'Search sessions by name or content, or start a new Claude session';
+      qp.matchOnDescription = false;
+      qp.busy = true;
+      qp.show();
       const sessions = await view.inactiveSessions().catch(() => []);
       const archived = store.readState().archived || {};
       const isFavorite = (id) => notifications.isFavorite(id);
-      const ordered = pickerOrder(sessions, isFavorite, (id) => Boolean(archived[id]));
-      const picked = await vscode.window.showQuickPick(
-        [
-          { label: '$(sparkle) New Claude session', choice: { kind: 'newSession' } },
-          ...(allowPlain ? [{ label: '$(terminal) New plain terminal', choice: { kind: 'terminal' } }] : []),
-          { label: 'Sessions', kind: vscode.QuickPickItemKind.Separator },
-          ...ordered.map((s) => ({
-            label: `${isFavorite(s.id) ? '★' : '☆'} ${s.title}`,
-            description: `${sessionSummary(s.meta)}${archived[s.id] ? ' · archived' : ''}`,
-            choice: { kind: 'session', tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } },
-          })),
-        ],
-        { placeHolder: 'Search a session, or start a new Claude session', matchOnDescription: true }
-      );
+      const fixed = [
+        { label: '$(sparkle) New Claude session', alwaysShow: true, choice: { kind: 'newSession' } },
+        ...(allowPlain ? [{ label: '$(terminal) New plain terminal', alwaysShow: true, choice: { kind: 'terminal' } }] : []),
+      ];
+      const toItem = (s, query) => ({
+        label: `${isFavorite(s.id) ? '★' : '☆'} ${s.title}`,
+        description: `${sessionSummary(s.meta)}${archived[s.id] ? ' · archived' : ''}`,
+        detail: query ? matchSnippet(s, query) : undefined,
+        alwaysShow: true,
+        choice: { kind: 'session', tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } },
+      });
+      let run = 0;
+      const render = async (query) => {
+        const mine = ++run;
+        qp.busy = true;
+        const list = query.trim() ? await searchSessions(sessions, query) : pickerOrder(sessions, isFavorite, (id) => Boolean(archived[id]));
+        if (mine !== run) return;
+        qp.items = [...fixed, { label: query.trim() ? `${list.length} matching sessions` : 'Sessions', kind: vscode.QuickPickItemKind.Separator }, ...list.map((x) => toItem(x, query))];
+        qp.busy = false;
+      };
+      let debounce;
+      qp.onDidChangeValue((value) => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => render(value), 150);
+      });
+      await render('');
+      const picked = await new Promise((resolve) => {
+        qp.onDidAccept(() => resolve(qp.selectedItems[0]));
+        qp.onDidHide(() => resolve(undefined));
+      });
       return picked ? picked.choice : null;
     } finally {
+      qp.dispose();
       pickerOpen = false;
     }
   };
+
 
   const applyChoice = async (t, choice) => {
     if (!vscode.window.terminals.includes(t)) return;
@@ -721,7 +741,6 @@ function activate(context) {
     const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
     t.sendText(`cd ${shellQuote(cwd)} && ${claudeCommand()} --resume ${tab.sessionId}`);
     tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
-    tracker.syncedNames.set(tab.sessionId, tab.name);
     await renameTerminal(t, tab.name);
     tracker.save();
     view.refresh();
@@ -858,6 +877,11 @@ function activate(context) {
       if (tracker.scanning || !t) return;
       const m = tracker.meta.get(t);
       if (m && m.sessionId && vscode.window.state.focused) notifications.dismiss(m.sessionId);
+      const known = m && m.sessionId && (store.readState().names || {})[m.sessionId];
+      if (known && (m.nameSource !== 'user' || m.name !== known)) {
+        vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: known });
+        tracker.meta.set(t, { ...m, name: known, nameSource: 'user' });
+      }
       tracker.setTerminalFocus(true);
       clearTimeout(focusRefresh);
       focusRefresh = setTimeout(() => view.refresh(), 30);
@@ -900,12 +924,38 @@ function activate(context) {
       if (!name) return;
       const tabs = store.read();
       if (tabs.some((t) => t.sessionId === tab.sessionId)) store.write(tabs.map((t) => (t.sessionId === tab.sessionId ? { ...t, name } : t)));
-      try {
-        await renameSession(tab.sessionId, name);
-      } catch (err) {
-        vscode.window.showWarningMessage(err.message);
+      tracker.rememberName(tab.sessionId, name);
+      const open = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === tab.sessionId);
+      if (open) {
+        await renameTerminal(open, name);
+        tracker.meta.set(open, { ...tracker.meta.get(open), name, nameSource: 'user' });
       }
       view.refresh();
+    }),
+    vscode.commands.registerCommand('claudeSessions.searchInactive', async () => {
+      const box = vscode.window.createInputBox();
+      box.placeholder = 'Search inactive sessions by name or content';
+      box.value = inactiveView.filter || '';
+      let debounce;
+      const apply = (value) => {
+        inactiveView.filter = value.trim();
+        vscode.commands.executeCommand('setContext', 'claudeSessions.searching', Boolean(inactiveView.filter));
+        if (!inactiveView.filter) inactiveTree.message = undefined;
+        inactiveView.refresh(true);
+      };
+      box.onDidChangeValue((value) => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => apply(value), 200);
+      });
+      box.onDidAccept(() => box.hide());
+      box.onDidHide(() => box.dispose());
+      box.show();
+    }),
+    vscode.commands.registerCommand('claudeSessions.clearSearch', () => {
+      inactiveView.filter = '';
+      inactiveTree.message = undefined;
+      vscode.commands.executeCommand('setContext', 'claudeSessions.searching', false);
+      inactiveView.refresh(true);
     }),
     vscode.commands.registerCommand('claudeSessions.removeSaved', (item) => tracker.forget(item.data.tab.sessionId)),
     vscode.commands.registerCommand('claudeSessions.renameTab', async (arg) => {
@@ -918,10 +968,7 @@ function activate(context) {
       await renameTerminal(t, name);
       const updated = { ...m, name, nameSource: 'user' };
       tracker.meta.set(t, updated);
-      const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
-      const pid = await withTimeout(t.processId, 1000);
-      tracker.syncedNames.delete(updated.sessionId);
-      await tracker.syncSessionName(t, updated, pid ? findSession(pid, children, running) : null, true);
+      if (updated.sessionId) tracker.rememberName(updated.sessionId, name);
       tracker.save();
     })
   );
@@ -931,6 +978,14 @@ function activate(context) {
     if (tracker.liveTerminals().length > 1 && canScan()) scan('startup');
   }, 4000);
   setTimeout(checkLayout, 15000);
+  setTimeout(async () => {
+    const sessions = await view.inactiveSessions().catch(() => []);
+    for (const s of sessions) {
+      if (s.meta.file) await conversationText(s.meta.file).catch(() => '');
+      await sleep(20);
+    }
+    tracker.log(`search cache ready for ${sessions.length} sessions`);
+  }, 10000);
 }
 
 function vscodeGroupSizes(stateDb) {

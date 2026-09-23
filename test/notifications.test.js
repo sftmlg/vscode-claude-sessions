@@ -18,7 +18,7 @@ Module._load = (request, ...rest) => {
         this.fired = (this.fired || 0) + 1;
       }
     },
-    workspace: { getConfiguration: () => ({ get: (key) => (key === 'syncSessionName' ? true : undefined) }) },
+    workspace: { getConfiguration: () => ({ get: () => undefined }) },
   };
 };
 const { Notifications, Store, Tracker, sortSessions, pickerOrder, parseGroupSizes } = require('../extension');
@@ -83,36 +83,13 @@ function fakeTracker() {
   return new Tracker(store, new Notifications(store));
 }
 
-test('alternating tab names never produce a /rename storm', async () => {
+test('a tab name is remembered per session id and never typed into the terminal', () => {
   const tracker = fakeTracker();
-  const sent = [];
-  const terminal = { sendText: (text) => sent.push(text) };
-  const running = { sessionId: 'no-such-session', status: 'idle' };
-  for (let i = 0; i < 40; i++) {
-    const name = i % 2 ? 'schmid' : 'Schmid email configuration';
-    await tracker.syncSessionName(terminal, { name, nameSource: 'user' }, running);
-  }
-  assert.strictEqual(sent.length, 0);
-});
-
-test('a stable new name is sent once, overlapping polls do not repeat it', async () => {
-  const tracker = fakeTracker();
-  const sent = [];
-  const terminal = { sendText: (text) => sent.push(text) };
-  const running = { sessionId: 'no-such-session', status: 'idle' };
-  const m = { name: 'schmid', nameSource: 'user' };
-  await tracker.syncSessionName(terminal, m, running);
-  await Promise.all([1, 2, 3, 4, 5].map(() => tracker.syncSessionName(terminal, m, running)));
-  assert.deepStrictEqual(sent, ['/rename schmid']);
-});
-
-test('an explicit rename is sent immediately even inside the rate limit', async () => {
-  const tracker = fakeTracker();
-  const sent = [];
-  const terminal = { sendText: (text) => sent.push(text) };
-  const running = { sessionId: 'no-such-session', status: 'idle' };
-  await tracker.syncSessionName(terminal, { name: 'kreil', nameSource: 'user' }, running, true);
-  assert.deepStrictEqual(sent, ['/rename kreil']);
+  tracker.rememberName('s-1', 'kreil');
+  tracker.rememberName('s-1', 'kreil');
+  assert.deepStrictEqual(tracker.store.readState().names, { 's-1': 'kreil' });
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.ok(!source.includes('/rename'), 'the extension must not send /rename');
 });
 
 test('terminal focus flag fires only on real changes', () => {

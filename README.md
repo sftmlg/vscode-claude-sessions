@@ -35,9 +35,16 @@ The picker always opens before anything else, so cancelling it (Escape) changes 
 
 ## Names
 
-- A name you give a terminal tab is saved and also becomes the Claude session name (`/rename <name>`, sent while the session is idle). An automatic rename needs the same name on two consecutive polls and happens at most once per session per minute; alternating titles never count as stable, so they cannot flood a session.
-- Right-click a tab → **Rename tab (and session)** does both immediately.
+- The plugin keeps its own name per session id in the state file; Claude's own session title is not used and nothing is typed into a Claude session.
+- Renaming a tab (VS Code's own rename or **Rename tab**) stores the name for that session id; ✎ on an inactive session does the same and renames its tab if it is open.
+- A session resumed by its id gets its stored name as tab name, and a tab that still shows Claude's title takes the stored name as soon as it becomes active.
 - VS Code reports Claude's own title (`✳ …`) through the API rather than a custom tab name; a custom name is recognised as soon as it does not look like a Claude or shell title.
+
+## Search
+
+- The picker searches while you type; the 🔍 button on **Inactive** filters that list the same way (✕ clears it).
+- Every word must occur (case and umlauts ignored). Ranking: a hit in the name or title first, then how often the words occur in the whole conversation, then the most recent session.
+- The conversation text of every session (user and Claude messages, not tool output) is cached in memory and filled in the background after start; a warm search over 340 sessions takes about 60 ms, the first cold one about 6 s.
 
 ## Naming convention
 
@@ -73,7 +80,6 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.storageFile` | `.vscode/claude-sessions.json` | State file inside the repository |
 | `claudeSessions.claudeCommand` | `claude` | Command used to resume; `--resume <id>` is appended |
 | `claudeSessions.openIn` | `activeTerminal` | `activeTerminal` or `newTab` for the ▶ button |
-| `claudeSessions.syncSessionName` | `true` | Use tab names as Claude session names |
 | `claudeSessions.autoCaptureLayout` | `true` | Capture splits and order automatically |
 | `claudeSessions.pollSeconds` | `5` | How often names and sessions are re-read |
 | `claudeSessions.historyDays` | `30` | Reach of the inactive and archive lists |
@@ -81,6 +87,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 ## Command line and tests
 
 - `node cli.js list [repo] [--days N] [--json]` lists the sessions of a repository.
+- `node cli.js search <query> [repo] [--days N]` runs the same search as the plugin and prints the timing.
 - `node cli.js rename <session-id> <name>` names a closed session (running sessions are renamed through their tab).
 - `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
 - `node cli.js archive-duplicates [repo] [--days N]` archives every session whose name also belongs to a newer one; favorites and running sessions stay.
@@ -95,7 +102,7 @@ Every change goes through the same steps; a step that fails stops the release.
 2. **`npm run verify`:** syntax check of every file plus all tests. `test/manifest.test.js` keeps code and `package.json` in step: every contributed command is registered and vice versa, every view exists in code, every menu entry points to a command, every command hidden from the palette is reachable from a menu or a tree item, every `viewItem` in a `when` clause is produced by the code, and activation in a mocked VS Code registers every command.
 3. **Cross-check for flow changes:** anything that changes a user flow (buttons, picker, splits, focus, renames) gets a fresh reviewer that walks the flow in the code, before release.
 4. **Release:** package, install, reload the window, then check the changed flow once by hand and read the output channel **Claude Sessions**.
-5. **Anything typed into a terminal** (`/rename`, `/resume`, `claude --resume`) is sent at most once per user action; automatic sends are rate-limited and covered by a test that reproduces a burst.
+5. **Anything typed into a terminal** (`/resume`, `claude --resume`) is sent only as the direct result of a user action, never automatically.
 
 ## Install
 

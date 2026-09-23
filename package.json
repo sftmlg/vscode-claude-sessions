@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -66,7 +66,7 @@
       },
       {
         "command": "claudeSessions.renameSaved",
-        "title": "Rename session",
+        "title": "Rename",
         "category": "Claude Sessions",
         "icon": "$(edit)"
       },
@@ -84,7 +84,7 @@
       },
       {
         "command": "claudeSessions.renameTab",
-        "title": "Rename tab and session",
+        "title": "Rename tab",
         "category": "Claude Sessions",
         "icon": "$(edit)"
       },
@@ -141,6 +141,18 @@
         "title": "Start or resume a Claude session in this terminal",
         "category": "Claude Sessions",
         "icon": "$(add)"
+      },
+      {
+        "command": "claudeSessions.searchInactive",
+        "title": "Search inactive sessions by name or content",
+        "category": "Claude Sessions",
+        "icon": "$(search)"
+      },
+      {
+        "command": "claudeSessions.clearSearch",
+        "title": "Clear search",
+        "category": "Claude Sessions",
+        "icon": "$(clear-all)"
       }
     ],
     "viewsContainers": {
@@ -166,6 +178,16 @@
     },
     "menus": {
       "view/title": [
+        {
+          "command": "claudeSessions.searchInactive",
+          "when": "view == claudeSessions.inactive",
+          "group": "navigation@0"
+        },
+        {
+          "command": "claudeSessions.clearSearch",
+          "when": "view == claudeSessions.inactive && claudeSessions.searching",
+          "group": "navigation@1"
+        },
         {
           "command": "claudeSessions.openNew",
           "when": "view == claudeSessions.active",
@@ -356,11 +378,6 @@
             "Always open a new tab."
           ],
           "description": "Where the play button opens a session."
-        },
-        "claudeSessions.syncSessionName": {
-          "type": "boolean",
-          "default": true,
-          "description": "Use a tab name you set as the Claude session name (sent as /rename while the session is idle)."
         },
         "claudeSessions.autoCaptureLayout": {
           "type": "boolean",

@@ -2,11 +2,12 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions, archiveDuplicates } = require('./sessions');
+const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions, archiveDuplicates, searchSessions } = require('./sessions');
 
 const USAGE = [
   'Usage:',
   '  node cli.js list [repo-path] [--days N] [--json]',
+  '  node cli.js search <query> [repo-path] [--days N]   (all words must occur; ranked by title hits, then frequency, then recency)',
   '  node cli.js rename <session-id> <name>',
   '  node cli.js archive-duplicates [repo-path] [--days N]   (keeps the newest session per name)',
   '  node cli.js rename-batch <mapping.json> [--keep-existing]   (JSON object: session id -> name)',
@@ -69,6 +70,20 @@ async function main(argv) {
       .sort((a, b) => b[1] - a[1])
       .forEach(([name, n]) => console.log(`${String(n).padStart(4)}  ${name}`));
     console.log(`${moved.length} older duplicates archived`);
+    return 0;
+  }
+  if (command === 'search' && rest.length >= 1) {
+    const daysIndex = rest.indexOf('--days');
+    const days = daysIndex >= 0 ? Number(rest[daysIndex + 1]) : 30;
+    const free = rest.filter((a, i) => !a.startsWith('--') && rest[i - 1] !== '--days');
+    const repo = path.resolve(free[1] || process.cwd());
+    const t0 = Date.now();
+    const sessions = await listRepoSessions(repo, days);
+    const t1 = Date.now();
+    const hits = await searchSessions(sessions.map((m) => ({ id: m.id, title: m.customTitle || m.aiTitle || '', meta: m })), free[0]);
+    const t2 = Date.now();
+    for (const s of hits.slice(0, 15)) console.log(`${sessionSummary(s.meta).padEnd(28)} | ${oneLine(s.title || s.id, 50)}`);
+    console.log(`${hits.length} of ${sessions.length} sessions match · list ${t1 - t0} ms · search ${t2 - t1} ms`);
     return 0;
   }
   if (command !== 'list') {
