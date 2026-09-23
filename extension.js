@@ -20,6 +20,21 @@ const AUTO_TITLE = /^[\u2800-\u28ff✳✻✽✶✢✦·*●○◐◓◑◒]\s*/u
 const SHELL_NAMES = new Set(['', 'zsh', '-zsh', 'bash', '-bash', 'sh', 'fish', 'node', 'claude', 'login', 'Claude Code']);
 const LEGACY_DIR = '.vscode/claude-sessions';
 
+const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+){0,4}$/;
+
+function toSlug(text) {
+  return text
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .slice(0, 5)
+    .join('-');
+}
+
 const settings = () => vscode.workspace.getConfiguration('claudeSessions');
 const claudeCommand = () => settings().get('claudeCommand') || 'claude';
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -141,14 +156,11 @@ class Tracker {
 
   async syncSessionName(t, m, running) {
     if (!settings().get('syncSessionName') || m.nameSource !== 'user' || !running || !m.name) return;
-    if (this.syncedNames.get(running.sessionId) === m.name) return;
-    const meta = await metaForSession(running.sessionId);
-    const current = meta && (meta.customTitle || meta.aiTitle);
-    if (current !== m.name) {
-      if (running.status === 'busy') return;
-      t.sendText(`/rename ${m.name.replace(/[\r\n]+/g, ' ')}`);
-    }
+    if (running.status === 'busy' || this.syncedNames.get(running.sessionId) === m.name) return;
     this.syncedNames.set(running.sessionId, m.name);
+    const meta = await metaForSession(running.sessionId);
+    if (meta && meta.customTitle === m.name) return;
+    t.sendText(`/rename ${m.name.replace(/[\r\n]+/g, ' ')}`);
   }
 
   forget(sessionId) {
@@ -162,7 +174,16 @@ class Tracker {
   }
 
   async poll() {
-    if (this.scanning) return;
+    if (this.scanning || this.polling) return;
+    this.polling = true;
+    try {
+      await this.pollOnce();
+    } finally {
+      this.polling = false;
+    }
+  }
+
+  async pollOnce() {
     this.syncGroups();
     const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
     for (const t of this.liveTerminals()) {
@@ -411,6 +432,35 @@ function activate(context) {
   const tracker = new Tracker(store);
   const view = new SessionsProvider(store, tracker);
 
+  const renameTerminal = async (t, name) => {
+    if (vscode.window.activeTerminal !== t) {
+      const shown = new Promise((resolve) => {
+        const sub = vscode.window.onDidChangeActiveTerminal((a) => {
+          if (a === t) {
+            sub.dispose();
+            resolve();
+          }
+        });
+        setTimeout(() => {
+          sub.dispose();
+          resolve();
+        }, 1000);
+      });
+      t.show(false);
+      await shown;
+    } else {
+      t.show(false);
+    }
+    await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name });
+  };
+
+  const askName = (value) =>
+    vscode.window.showInputBox({
+      prompt: 'Name: 1–5 lowercase words joined by hyphens, e.g. vibe-coding',
+      value: toSlug(value || ''),
+      validateInput: (v) => (SLUG_RE.test(v) ? null : 'Use lowercase words joined by hyphens (at most 5), e.g. client-billing-fix'),
+    });
+
   const resumeInNewTab = (tab) => {
     const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
     const t = vscode.window.createTerminal({ name: tab.name, cwd, iconPath: new vscode.ThemeIcon('sparkle') });
@@ -438,9 +488,9 @@ function activate(context) {
     } else {
       return resumeInNewTab(tab);
     }
-    t.show(false);
-    await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: tab.name });
+    await renameTerminal(t, tab.name);
     tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd });
+    tracker.syncedNames.set(tab.sessionId, tab.name);
     tracker.save();
   };
 
@@ -488,7 +538,7 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('claudeSessions.renameSaved', async (item) => {
       const { tab } = item.data;
-      const name = await vscode.window.showInputBox({ prompt: 'Tab name', value: tab.name });
+      const name = await askName(tab.name);
       if (!name) return;
       const tabs = store.read();
       const known = tabs.some((t) => t.sessionId === tab.sessionId);
@@ -497,13 +547,13 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('claudeSessions.removeSaved', (item) => tracker.forget(item.data.tab.sessionId)),
     vscode.commands.registerCommand('claudeSessions.renameTab', async (arg) => {
-      const t = arg && typeof arg.sendText === 'function' ? arg : vscode.window.activeTerminal;
+      const fromItem = arg && arg.data && arg.data.terminal;
+      const t = fromItem || (arg && typeof arg.sendText === 'function' ? arg : vscode.window.activeTerminal);
       if (!t) return;
       const m = tracker.meta.get(t) || { nameSource: 'auto', sessionId: null, cwd: null };
-      const name = await vscode.window.showInputBox({ prompt: 'New tab name', value: m.name || t.name });
+      const name = await askName(m.name || t.name);
       if (!name) return;
-      t.show(false);
-      await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name });
+      await renameTerminal(t, name);
       const updated = { ...m, name, nameSource: 'user' };
       tracker.meta.set(t, updated);
       const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);

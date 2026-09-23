@@ -288,9 +288,16 @@ async function metasFor(files) {
   return metas.length ? mergeMetas(metas) : null;
 }
 
+let allFiles = null;
+let allFilesAt = 0;
+
 async function metaForSession(sessionId) {
   if (!sessionId) return null;
-  const byId = await collectSessionFiles(() => true).then((m) => m.get(sessionId));
+  if (!allFiles || Date.now() - allFilesAt > 30000 || !allFiles.has(sessionId)) {
+    allFiles = await collectSessionFiles(() => true);
+    allFilesAt = Date.now();
+  }
+  const byId = allFiles.get(sessionId);
   return byId ? metasFor(byId) : null;
 }
 
