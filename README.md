@@ -42,7 +42,7 @@ The **Notifications** section above the session list shows every session in this
 
 ## Names
 
-- A name you give a terminal tab is saved and also becomes the Claude session name (`/rename <name>`, sent while the session is idle).
+- A name you give a terminal tab is saved and also becomes the Claude session name (`/rename <name>`, sent while the session is idle). An automatic rename needs the same name on two consecutive polls and happens at most once per session every 30 minutes, so alternating titles cannot flood a session.
 - Right-click a tab → **Rename tab (and session)** does both immediately.
 - VS Code reports Claude's own title (`✳ …`) through the API rather than a custom tab name; a custom name is recognised as soon as it does not look like a Claude or shell title.
 

@@ -16,10 +16,10 @@ Module._load = (request, ...rest) => {
       }
       fire() {}
     },
-    workspace: { getConfiguration: () => ({ get: () => undefined }) },
+    workspace: { getConfiguration: () => ({ get: (key) => (key === 'syncSessionName' ? true : undefined) }) },
   };
 };
-const { Notifications, Store, byPriorityThenName, CIRCLED } = require('../extension');
+const { Notifications, Store, Tracker, byPriorityThenName, CIRCLED } = require('../extension');
 
 function fresh() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-notifications-test-'));
@@ -73,4 +73,42 @@ test('archive flags live in the state file next to tabs and priorities', () => {
   store.writeState({ archived: { old1: true } });
   assert.deepStrictEqual(store.readState().archived, { old1: true });
   assert.strictEqual(store.read()[0].name, 'kreil');
+});
+
+function fakeTracker() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-rename-test-'));
+  const store = new Store(dir);
+  return new Tracker(store, new Notifications(store));
+}
+
+test('alternating tab names never produce a /rename storm', async () => {
+  const tracker = fakeTracker();
+  const sent = [];
+  const terminal = { sendText: (text) => sent.push(text) };
+  const running = { sessionId: 'no-such-session', status: 'idle' };
+  for (let i = 0; i < 40; i++) {
+    const name = i % 2 ? 'schmid' : 'Schmid email configuration';
+    await tracker.syncSessionName(terminal, { name, nameSource: 'user' }, running);
+  }
+  assert.strictEqual(sent.length, 0);
+});
+
+test('a stable new name is sent once, overlapping polls do not repeat it', async () => {
+  const tracker = fakeTracker();
+  const sent = [];
+  const terminal = { sendText: (text) => sent.push(text) };
+  const running = { sessionId: 'no-such-session', status: 'idle' };
+  const m = { name: 'schmid', nameSource: 'user' };
+  await tracker.syncSessionName(terminal, m, running);
+  await Promise.all([1, 2, 3, 4, 5].map(() => tracker.syncSessionName(terminal, m, running)));
+  assert.deepStrictEqual(sent, ['/rename schmid']);
+});
+
+test('an explicit rename is sent immediately even inside the rate limit', async () => {
+  const tracker = fakeTracker();
+  const sent = [];
+  const terminal = { sendText: (text) => sent.push(text) };
+  const running = { sessionId: 'no-such-session', status: 'idle' };
+  await tracker.syncSessionName(terminal, { name: 'kreil', nameSource: 'user' }, running, true);
+  assert.deepStrictEqual(sent, ['/rename kreil']);
 });

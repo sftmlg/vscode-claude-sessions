@@ -115,6 +115,7 @@ class Store {
 }
 
 const MAX_PRIORITY = 5;
+const AUTO_RENAME_INTERVAL_MS = 30 * 60 * 1000;
 const STALE_MINUTES = 30;
 
 class Notifications {
@@ -177,6 +178,8 @@ class Tracker {
     this.meta = new Map();
     this.titles = new Map();
     this.syncedNames = new Map();
+    this.nameSeen = new Map();
+    this.lastAutoRename = new Map();
     this.restoring = false;
     this.scanning = false;
     this.onChange = new vscode.EventEmitter();
@@ -205,12 +208,21 @@ class Tracker {
     }
   }
 
-  async syncSessionName(t, m, running) {
-    if (!settings().get('syncSessionName') || m.nameSource !== 'user' || !running || !m.name) return;
-    if (running.status === 'busy' || this.syncedNames.get(running.sessionId) === m.name) return;
+  async syncSessionName(t, m, running, explicit = false) {
+    if (m.nameSource !== 'user' || !running || !m.name || running.status === 'busy') return;
+    if (!explicit) {
+      if (!settings().get('syncSessionName')) return;
+      const seen = this.nameSeen.get(t);
+      this.nameSeen.set(t, m.name);
+      if (seen !== m.name) return;
+      const last = this.lastAutoRename.get(running.sessionId) || 0;
+      if (Date.now() - last < AUTO_RENAME_INTERVAL_MS) return;
+    }
+    if (this.syncedNames.get(running.sessionId) === m.name) return;
     this.syncedNames.set(running.sessionId, m.name);
     const meta = await metaForSession(running.sessionId);
     if (meta && meta.customTitle === m.name) return;
+    if (!explicit) this.lastAutoRename.set(running.sessionId, Date.now());
     t.sendText(`/rename ${m.name.replace(/[\r\n]+/g, ' ')}`);
   }
 
@@ -798,7 +810,8 @@ function activate(context) {
       tracker.meta.set(t, updated);
       const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
       const pid = await withTimeout(t.processId, 1000);
-      await tracker.syncSessionName(t, updated, pid ? findSession(pid, children, running) : null);
+      tracker.syncedNames.delete(updated.sessionId);
+      await tracker.syncSessionName(t, updated, pid ? findSession(pid, children, running) : null, true);
       tracker.save();
     })
   );
@@ -811,4 +824,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, Notifications, Store, byPriorityThenName, CIRCLED };
+module.exports = { activate, deactivate, Notifications, Store, Tracker, byPriorityThenName, CIRCLED };
