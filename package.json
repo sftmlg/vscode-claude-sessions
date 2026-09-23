@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -53,19 +53,19 @@
       },
       {
         "command": "claudeSessions.resume",
-        "title": "Resume in active terminal",
+        "title": "Resume in the active terminal",
         "category": "Claude Sessions",
         "icon": "$(play)"
       },
       {
         "command": "claudeSessions.resumeNewTab",
-        "title": "Resume in new tab",
+        "title": "Resume in a new tab",
         "category": "Claude Sessions",
         "icon": "$(add)"
       },
       {
         "command": "claudeSessions.renameSaved",
-        "title": "Rename",
+        "title": "Rename session",
         "category": "Claude Sessions",
         "icon": "$(edit)"
       },
@@ -83,7 +83,7 @@
       },
       {
         "command": "claudeSessions.renameTab",
-        "title": "Rename tab (and session)",
+        "title": "Rename tab and session",
         "category": "Claude Sessions",
         "icon": "$(edit)"
       },
@@ -93,20 +93,8 @@
         "category": "Claude Sessions"
       },
       {
-        "command": "claudeSessions.lowerPriority",
-        "title": "Lower priority",
-        "category": "Claude Sessions",
-        "icon": "$(arrow-down)"
-      },
-      {
-        "command": "claudeSessions.raisePriority",
-        "title": "Raise priority",
-        "category": "Claude Sessions",
-        "icon": "$(arrow-up)"
-      },
-      {
         "command": "claudeSessions.dismissNotification",
-        "title": "Dismiss",
+        "title": "Dismiss notification",
         "category": "Claude Sessions",
         "icon": "$(check)"
       },
@@ -118,7 +106,7 @@
       },
       {
         "command": "claudeSessions.archive",
-        "title": "Archive",
+        "title": "Archive (files stay)",
         "category": "Claude Sessions",
         "icon": "$(archive)"
       },
@@ -129,34 +117,34 @@
         "icon": "$(history)"
       },
       {
-        "command": "claudeSessions.raiseSessionPriority",
-        "title": "Raise priority",
-        "category": "Claude Sessions",
-        "icon": "$(arrow-up)"
-      },
-      {
-        "command": "claudeSessions.lowerSessionPriority",
-        "title": "Lower priority",
-        "category": "Claude Sessions",
-        "icon": "$(arrow-down)"
-      },
-      {
         "command": "claudeSessions.closeTab",
-        "title": "Close tab",
+        "title": "Close tab (session stays resumable)",
         "category": "Claude Sessions",
         "icon": "$(close)"
       },
       {
         "command": "claudeSessions.addToSplit",
-        "title": "Add to split…",
+        "title": "Open in this split: new session, terminal or inactive session",
         "category": "Claude Sessions",
         "icon": "$(add)"
       },
       {
         "command": "claudeSessions.openNew",
-        "title": "New tab…",
+        "title": "Open in a new tab: new session, terminal or inactive session",
         "category": "Claude Sessions",
         "icon": "$(add)"
+      },
+      {
+        "command": "claudeSessions.favorite",
+        "title": "Add to favorites",
+        "category": "Claude Sessions",
+        "icon": "$(star-empty)"
+      },
+      {
+        "command": "claudeSessions.unfavorite",
+        "title": "Remove from favorites",
+        "category": "Claude Sessions",
+        "icon": "$(star-full)"
       }
     ],
     "viewsContainers": {
@@ -220,88 +208,68 @@
           "group": "inline@1"
         },
         {
-          "command": "claudeSessions.raiseSessionPriority",
-          "when": "viewItem == activeTab || viewItem == activeTabInSplit",
-          "group": "inline@1"
+          "command": "claudeSessions.favorite",
+          "when": "(viewItem =~ /^activeTab(\\.fav)?$/ || viewItem =~ /^activeTabInSplit(\\.fav)?$/ || viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/ || viewItem =~ /^notification(\\.fav)?$/) && !(viewItem =~ /\\.fav$/)",
+          "group": "inline@0"
         },
         {
-          "command": "claudeSessions.lowerSessionPriority",
-          "when": "viewItem == activeTab || viewItem == activeTabInSplit",
-          "group": "inline@2"
+          "command": "claudeSessions.unfavorite",
+          "when": "viewItem =~ /\\.fav$/",
+          "group": "inline@0"
         },
         {
           "command": "claudeSessions.renameTab",
-          "when": "viewItem == activeTab || viewItem == activeTabInSplit",
+          "when": "viewItem =~ /^activeTab(\\.fav)?$/ || viewItem =~ /^activeTabInSplit(\\.fav)?$/",
           "group": "inline@3"
         },
         {
           "command": "claudeSessions.addToSplit",
-          "when": "viewItem == activeTab",
+          "when": "viewItem =~ /^activeTab(\\.fav)?$/",
           "group": "inline@4"
         },
         {
           "command": "claudeSessions.closeTab",
-          "when": "viewItem == activeTab || viewItem == activeTabInSplit",
+          "when": "viewItem =~ /^activeTab(\\.fav)?$/ || viewItem =~ /^activeTabInSplit(\\.fav)?$/",
           "group": "inline@5"
         },
         {
-          "command": "claudeSessions.raiseSessionPriority",
-          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
-          "group": "inline@1"
-        },
-        {
-          "command": "claudeSessions.lowerSessionPriority",
-          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
-          "group": "inline@2"
-        },
-        {
           "command": "claudeSessions.resume",
-          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
+          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/",
           "group": "inline@3"
         },
         {
           "command": "claudeSessions.resumeNewTab",
-          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
+          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/",
           "group": "inline@4"
         },
         {
           "command": "claudeSessions.renameSaved",
-          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession",
+          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/",
           "group": "inline@5"
         },
         {
           "command": "claudeSessions.archive",
-          "when": "viewItem == session || viewItem == savedTab",
+          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/",
           "group": "inline@6"
         },
         {
           "command": "claudeSessions.unarchive",
-          "when": "viewItem == archivedSession",
+          "when": "viewItem =~ /^archivedSession(\\.fav)?$/",
           "group": "inline@6"
         },
         {
           "command": "claudeSessions.removeSaved",
-          "when": "viewItem == savedTab",
+          "when": "viewItem =~ /^savedTab(\\.fav)?$/",
           "group": "2_manage"
         },
         {
           "command": "claudeSessions.copyResume",
-          "when": "viewItem == session || viewItem == savedTab || viewItem == archivedSession || viewItem == activeTab || viewItem == activeTabInSplit",
+          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/ || viewItem =~ /^activeTab(\\.fav)?$/ || viewItem =~ /^activeTabInSplit(\\.fav)?$/",
           "group": "1_copy"
         },
         {
-          "command": "claudeSessions.raisePriority",
-          "when": "viewItem == notification",
-          "group": "inline@1"
-        },
-        {
-          "command": "claudeSessions.lowerPriority",
-          "when": "viewItem == notification",
-          "group": "inline@2"
-        },
-        {
           "command": "claudeSessions.dismissNotification",
-          "when": "viewItem == notification",
+          "when": "viewItem =~ /^notification(\\.fav)?$/",
           "group": "inline@3"
         }
       ],
@@ -347,14 +315,6 @@
           "when": "false"
         },
         {
-          "command": "claudeSessions.lowerPriority",
-          "when": "false"
-        },
-        {
-          "command": "claudeSessions.raisePriority",
-          "when": "false"
-        },
-        {
           "command": "claudeSessions.dismissNotification",
           "when": "false"
         },
@@ -367,19 +327,19 @@
           "when": "false"
         },
         {
-          "command": "claudeSessions.raiseSessionPriority",
-          "when": "false"
-        },
-        {
-          "command": "claudeSessions.lowerSessionPriority",
-          "when": "false"
-        },
-        {
           "command": "claudeSessions.closeTab",
           "when": "false"
         },
         {
           "command": "claudeSessions.addToSplit",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.favorite",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.unfavorite",
           "when": "false"
         }
       ]

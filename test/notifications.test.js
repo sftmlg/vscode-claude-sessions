@@ -19,7 +19,7 @@ Module._load = (request, ...rest) => {
     workspace: { getConfiguration: () => ({ get: (key) => (key === 'syncSessionName' ? true : undefined) }) },
   };
 };
-const { Notifications, Store, Tracker, byPriorityThenName, CIRCLED } = require('../extension');
+const { Notifications, Store, Tracker, sortSessions } = require('../extension');
 
 function fresh() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-notifications-test-'));
@@ -45,25 +45,25 @@ test('waiting creates a waiting notification; unknown previous state and visible
   assert.deepStrictEqual(n.list().map((x) => x.sessionId), ['s2']);
 });
 
-test('priority defaults to 1 and stays within 1..5', () => {
+test('favorites toggle per session and are stored in the state file', () => {
   const n = fresh();
-  assert.strictEqual(n.priorityOf('s1'), 1);
-  n.shiftPriority('s1', -1);
-  assert.strictEqual(n.priorityOf('s1'), 1);
-  [1, 1, 1, 1, 1, 1].forEach(() => n.shiftPriority('s1', 1));
-  assert.strictEqual(n.priorityOf('s1'), 5);
+  assert.strictEqual(n.isFavorite('s1'), false);
+  n.setFavorite('s1', true);
+  assert.strictEqual(n.isFavorite('s1'), true);
+  n.setFavorite('s1', false);
+  assert.strictEqual(n.isFavorite('s1'), false);
 });
 
-test('lists sort by priority first, then by name', () => {
-  const prio = { a: 2, b: 1, c: 1 };
+test('favorites come first in alphabetical order, the rest newest message first', () => {
+  const at = (h) => ({ lastActivity: new Date(Date.UTC(2026, 8, 23, h)).toISOString() });
   const rows = [
-    { id: 'a', title: 'alpha' },
-    { id: 'b', title: 'zulu' },
-    { id: 'c', title: 'kreil' },
+    { id: 'a', title: 'zulu', meta: at(9) },
+    { id: 'b', title: 'kreil', meta: at(8) },
+    { id: 'c', title: 'old', meta: at(1) },
+    { id: 'd', title: 'new', meta: at(12) },
   ];
-  rows.sort(byPriorityThenName((id) => prio[id]));
-  assert.deepStrictEqual(rows.map((r) => r.title), ['kreil', 'zulu', 'alpha']);
-  assert.strictEqual(CIRCLED[3], '③');
+  const favorites = new Set(['a', 'b']);
+  assert.deepStrictEqual(sortSessions(rows, (id) => favorites.has(id)).map((r) => r.title), ['kreil', 'zulu', 'new', 'old']);
 });
 
 test('archive flags live in the state file next to tabs and priorities', () => {

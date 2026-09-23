@@ -14,7 +14,7 @@ Activity bar → **Claude Sessions** has two sections: **Notifications** (below)
 - **inactive** — every Claude session of this repository that is not running (default: last 30 days).
 - **archive** — sessions you archived; collapsed by default. Archiving only hides a session in this list; its files stay untouched.
 
-Every session carries a priority from ① to ⑤ (default ①), shared with the notifications. **inactive** and **archive** sort by priority, then by name.
+Every session can be a favorite: ★ in front of the name, ☆ otherwise; the star button on the right toggles it. **inactive** and **archive** list favorites first in alphabetical order, then all other sessions newest message first. Every button explains itself on hover.
 
 Buttons:
 
@@ -22,10 +22,10 @@ Buttons:
 |---|---|
 | `active` folder | ＋ open a new tab: new Claude session, new terminal, or search an inactive session |
 | `split` | ＋ add to this split (same picker) |
-| active tab | ↑ ↓ priority · ✎ rename tab and session · ＋ split with this tab (only when not in a split yet) · ✕ close tab |
-| inactive / archived session | ↑ ↓ priority · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back |
+| active tab | ☆/★ favorite · ✎ rename tab and session · ＋ split with this tab (only when not in a split yet) · ✕ close tab |
+| inactive / archived session | ☆/★ favorite · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back |
 
-The picker lists new session and new terminal first, then sessions by priority and most recent message; type to search.
+The picker lists new session and new terminal first, then favorites, then the most recent sessions; type to search.
 
 ▶ resumes in the active terminal: an idle shell runs `claude --resume <id>`, a running Claude switches via `/resume <id>`, a busy terminal gets a new tab instead.
 
@@ -36,7 +36,7 @@ Title bar: **Restore saved tabs** reopens every saved tab that is not running, w
 The **Notifications** section above the session list shows every session in this window that finished (`busy` → `idle`) or is waiting for your input (`waiting`), with name, time and age; after 30 minutes an entry is marked stale.
 
 - **Click** focuses the tab and clears the entry; focusing the tab any other way clears it too.
-- **Priority:** every session starts at priority 1; ↓ moves it down (up to 5), ↑ moves it up. The priority is remembered per session and groups the list.
+- **Order:** favorites first, then newest; the star toggles a favorite here as well.
 - **Source:** Claude Code writes the status of every running session to `~/.claude*/sessions/<pid>.json`; the extension reads it on every poll.
 
 ## Names
@@ -61,7 +61,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 ## What is saved
 
 - One file per repository: `.vscode/claude-sessions.json`.
-- It holds only named tabs that run a Claude session (name, session id, working directory, split group), plus open notifications, session priorities and archive flags.
+- It holds only named tabs that run a Claude session (name, session id, working directory, split group), plus open notifications, favorites and archive flags.
 - A tab you close is removed from it; tabs lost in a crash stay, so they can be restored.
 - Whether the file is committed is up to the repository's `.gitignore`.
 
@@ -89,6 +89,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - `node cli.js list [repo] [--days N] [--json]` lists the sessions of a repository.
 - `node cli.js rename <session-id> <name>` names a closed session (running sessions are renamed through their tab).
 - `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
+- `node cli.js archive-duplicates [repo] [--days N]` archives every session whose name also belongs to a newer one; favorites and running sessions stay.
 - `node cli.js archive <repo> --name <name> [--days N] [--apply]` archives every session called `<name>` or `<name>-<n>` (e.g. all `misc`); preview unless `--apply`, running sessions are skipped, archiving only sets the flag in the state file.
 - `npm test` checks session parsing against generated session files.
 

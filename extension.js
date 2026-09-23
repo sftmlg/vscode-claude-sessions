@@ -115,7 +115,6 @@ class Store {
   }
 }
 
-const MAX_PRIORITY = 5;
 const AUTO_RENAME_INTERVAL_MS = 30 * 60 * 1000;
 const STALE_MINUTES = 30;
 
@@ -130,12 +129,12 @@ class Notifications {
     return Array.isArray(items) ? items : [];
   }
 
-  priorities() {
-    return this.store.readState().priorities || {};
+  favorites() {
+    return this.store.readState().favorites || {};
   }
 
-  priorityOf(sessionId) {
-    return this.priorities()[sessionId] || 1;
+  isFavorite(sessionId) {
+    return Boolean(sessionId && this.favorites()[sessionId]);
   }
 
   save(items) {
@@ -155,10 +154,11 @@ class Notifications {
     if (kept.length !== items.length) this.save(kept);
   }
 
-  shiftPriority(sessionId, delta) {
-    const priorities = this.priorities();
-    const next = Math.min(MAX_PRIORITY, Math.max(1, (priorities[sessionId] || 1) + delta));
-    this.store.writeState({ priorities: { ...priorities, [sessionId]: next } });
+  setFavorite(sessionId, value) {
+    const favorites = { ...this.favorites() };
+    if (value) favorites[sessionId] = true;
+    else delete favorites[sessionId];
+    this.store.writeState({ favorites });
     this.onChange.fire();
   }
 
@@ -399,10 +399,10 @@ class Tracker {
   }
 }
 
-const CIRCLED = ['', '①', '②', '③', '④', '⑤'];
-
-function byPriorityThenName(priorityOf) {
-  return (a, b) => priorityOf(a.id) - priorityOf(b.id) || a.title.localeCompare(b.title);
+function sortSessions(sessions, isFavorite) {
+  const favorites = sessions.filter((s) => isFavorite(s.id)).sort((a, b) => a.title.localeCompare(b.title));
+  const others = sessions.filter((s) => !isFavorite(s.id)).sort((a, b) => Date.parse(b.meta.lastActivity) - Date.parse(a.meta.lastActivity));
+  return favorites.concat(others);
 }
 
 class SessionsProvider {
@@ -436,14 +436,18 @@ class SessionsProvider {
   }
 
   label(sessionId, name) {
-    return sessionId ? `${CIRCLED[this.notifications.priorityOf(sessionId)]} ${name}` : name;
+    return sessionId ? `${this.notifications.isFavorite(sessionId) ? '★' : '☆'} ${name}` : name;
+  }
+
+  favSuffix(sessionId) {
+    return this.notifications.isFavorite(sessionId) ? '.fav' : '';
   }
 
   async activeTabItem(t, inSplit) {
     const m = this.tracker.meta.get(t) || {};
     const name = m.name || t.name;
     const item = new vscode.TreeItem(this.label(m.sessionId, name));
-    item.contextValue = inSplit ? 'activeTabInSplit' : 'activeTab';
+    item.contextValue = `${inSplit ? 'activeTabInSplit' : 'activeTab'}${this.favSuffix(m.sessionId)}`;
     const focused = vscode.window.state.focused && vscode.window.activeTerminal === t;
     const look = tabPresentation({ status: m.status, focused });
     item.label = `${this.label(m.sessionId, name)}${look.nameSuffix}`;
@@ -490,7 +494,7 @@ class SessionsProvider {
 
   sessionItem(s, archived) {
     const item = new vscode.TreeItem(this.label(s.id, s.title));
-    item.contextValue = archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session';
+    item.contextValue = `${archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session'}${this.favSuffix(s.id)}`;
     item.iconPath = new vscode.ThemeIcon(archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
     item.description = [sessionSummary(s.meta), this.relative(s.meta.cwd)].filter(Boolean).join(' · ');
     item.tooltip = sessionTooltip(s.title, s.meta, s.meta.firstPrompt ? [`First message: ${oneLine(s.meta.firstPrompt, 200)}`] : []);
@@ -502,9 +506,9 @@ class SessionsProvider {
     if (!e) {
       const [active, sessions] = await Promise.all([this.activeChildren(), this.inactiveSessions()]);
       const archived = this.store.readState().archived || {};
-      const sort = byPriorityThenName((id) => this.notifications.priorityOf(id));
-      const inactive = sessions.filter((s) => !archived[s.id]).sort(sort);
-      const archive = sessions.filter((s) => archived[s.id]).sort(sort);
+      const isFavorite = (id) => this.notifications.isFavorite(id);
+      const inactive = sortSessions(sessions.filter((s) => !archived[s.id]), isFavorite);
+      const archive = sortSessions(sessions.filter((s) => archived[s.id]), isFavorite);
       this.cache = { active, inactive, archive };
       const activeCount = active.reduce((n, i) => n + (i.data.terminals ? i.data.terminals.length : 1), 0);
       return [
@@ -541,36 +545,25 @@ class NotificationsProvider {
   item(n) {
     const minutes = Math.round((Date.now() - Date.parse(n.at)) / 60000);
     const stale = minutes >= STALE_MINUTES;
-    const item = new vscode.TreeItem(n.name || n.sessionId.slice(0, 8));
-    item.contextValue = 'notification';
+    const favorite = this.notifications.isFavorite(n.sessionId);
+    const item = new vscode.TreeItem(`${favorite ? '★' : '☆'} ${n.name || n.sessionId.slice(0, 8)}`);
+    item.contextValue = favorite ? 'notification.fav' : 'notification';
     item.iconPath = new vscode.ThemeIcon(stale ? 'history' : n.kind === 'waiting' ? 'bell-dot' : 'check');
     const what = n.kind === 'waiting' ? 'waiting for input' : 'finished';
     item.description = `${what} ${formatTime(n.at)} · ${minutes < 1 ? 'just now' : `${minutes} min ago`}${stale ? ' · stale' : ''}`;
-    item.tooltip = `${n.name}\n${what} at ${formatTime(n.at)}\nPriority ${this.notifications.priorityOf(n.sessionId)}\nClick to focus the tab.`;
+    item.tooltip = `${n.name}\n${what} at ${formatTime(n.at)}${favorite ? '\n★ Favorite' : ''}\nClick to focus the tab.`;
     item.command = { command: 'claudeSessions.openNotification', title: 'Focus session', arguments: [n] };
     item.data = { notification: n };
     return item;
   }
 
   getChildren(e) {
-    const items = this.notifications.list();
-    if (e) return e.data.items.map((n) => this.item(n));
-    const groups = new Map();
-    for (const n of items) {
-      const p = this.notifications.priorityOf(n.sessionId);
-      if (!groups.has(p)) groups.set(p, []);
-      groups.get(p).push(n);
-    }
-    return [...groups.keys()]
-      .sort((a, b) => a - b)
-      .map((p) => {
-        const list = groups.get(p).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-        const group = new vscode.TreeItem(`Priority ${p} (${list.length})`, vscode.TreeItemCollapsibleState.Expanded);
-        group.contextValue = 'priorityGroup';
-        group.iconPath = new vscode.ThemeIcon(p === 1 ? 'flame' : 'list-ordered');
-        group.data = { items: list };
-        return group;
-      });
+    if (e) return [];
+    const fav = (n) => (this.notifications.isFavorite(n.sessionId) ? 0 : 1);
+    return this.notifications
+      .list()
+      .sort((a, b) => fav(a) - fav(b) || Date.parse(b.at) - Date.parse(a.at))
+      .map((n) => this.item(n));
   }
 }
 
@@ -673,14 +666,14 @@ function activate(context) {
   const pickAndOpen = async (parent) => {
     const sessions = await view.inactiveSessions();
     const archived = store.readState().archived || {};
-    const prio = (id) => notifications.priorityOf(id);
-    sessions.sort((a, b) => prio(a.id) - prio(b.id) || Date.parse(b.meta.lastActivity) - Date.parse(a.meta.lastActivity));
+    const isFavorite = (id) => notifications.isFavorite(id);
+    const ordered = sortSessions(sessions, isFavorite);
     const items = [
       { label: '$(sparkle) New Claude session', choice: { kind: 'newSession' } },
       { label: '$(terminal) New terminal', choice: { kind: 'terminal' } },
       { label: 'Inactive sessions', kind: vscode.QuickPickItemKind.Separator },
-      ...sessions.map((s) => ({
-        label: `${CIRCLED[prio(s.id)]} ${s.title}`,
+      ...ordered.map((s) => ({
+        label: `${isFavorite(s.id) ? '★' : '☆'} ${s.title}`,
         description: `${sessionSummary(s.meta)}${archived[s.id] ? ' · archived' : ''}`,
         choice: { kind: 'session', tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } },
       })),
@@ -738,8 +731,14 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('claudeSessions.archive', (item) => setArchived(item.data.tab.sessionId, true)),
     vscode.commands.registerCommand('claudeSessions.unarchive', (item) => setArchived(item.data.tab.sessionId, false)),
-    vscode.commands.registerCommand('claudeSessions.raiseSessionPriority', (item) => item.data.tab.sessionId && notifications.shiftPriority(item.data.tab.sessionId, -1)),
-    vscode.commands.registerCommand('claudeSessions.lowerSessionPriority', (item) => item.data.tab.sessionId && notifications.shiftPriority(item.data.tab.sessionId, 1)),
+    vscode.commands.registerCommand('claudeSessions.favorite', (item) => {
+      const id = item.data.tab ? item.data.tab.sessionId : item.data.notification.sessionId;
+      if (id) notifications.setFavorite(id, true);
+    }),
+    vscode.commands.registerCommand('claudeSessions.unfavorite', (item) => {
+      const id = item.data.tab ? item.data.tab.sessionId : item.data.notification.sessionId;
+      if (id) notifications.setFavorite(id, false);
+    }),
     vscode.commands.registerCommand('claudeSessions.closeTab', (item) => item.data.terminal && item.data.terminal.dispose()),
     vscode.commands.registerCommand('claudeSessions.addToSplit', (item) => pickAndOpen(item.data.terminals ? item.data.terminals[0] : item.data.terminal)),
     vscode.commands.registerCommand('claudeSessions.openNew', () => pickAndOpen(null)),
@@ -758,8 +757,6 @@ function activate(context) {
       else vscode.window.showWarningMessage(`${n.name} is no longer open in this window.`);
       notifications.dismiss(n.sessionId);
     }),
-    vscode.commands.registerCommand('claudeSessions.lowerPriority', (item) => notifications.shiftPriority(item.data.notification.sessionId, 1)),
-    vscode.commands.registerCommand('claudeSessions.raisePriority', (item) => notifications.shiftPriority(item.data.notification.sessionId, -1)),
     vscode.commands.registerCommand('claudeSessions.dismissNotification', (item) => notifications.dismiss(item.data.notification.sessionId)),
     vscode.commands.registerCommand('claudeSessions.dismissAll', () => notifications.save([])),
     tracker.onChange.event(() => view.refresh()),
@@ -826,4 +823,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, Notifications, Store, Tracker, byPriorityThenName, CIRCLED };
+module.exports = { activate, deactivate, Notifications, Store, Tracker, sortSessions };
