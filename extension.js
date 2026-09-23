@@ -16,6 +16,7 @@ const {
   listRepoSessions,
   renameSession,
   tabPresentation,
+  timeAgo,
 } = require('./sessions');
 
 const AUTO_TITLE = /^[\u2800-\u28ff✳✻✽✶✢✦·*●○◐◓◑◒]\s*/u;
@@ -408,6 +409,16 @@ class Tracker {
   }
 }
 
+function pickerOrder(sessions, isFavorite, isArchived) {
+  const newest = (a, b) => Date.parse(b.meta.lastActivity) - Date.parse(a.meta.lastActivity);
+  const live = sessions.filter((s) => !isArchived(s.id));
+  return live
+    .filter((s) => isFavorite(s.id))
+    .sort(newest)
+    .concat(live.filter((s) => !isFavorite(s.id)).sort(newest))
+    .concat(sessions.filter((s) => isArchived(s.id)).sort(newest));
+}
+
 function sortSessions(sessions, isFavorite) {
   const favorites = sessions.filter((s) => isFavorite(s.id)).sort((a, b) => a.title.localeCompare(b.title));
   const others = sessions.filter((s) => !isFavorite(s.id)).sort((a, b) => Date.parse(b.meta.lastActivity) - Date.parse(a.meta.lastActivity));
@@ -456,7 +467,9 @@ class SessionsProvider {
     const m = this.tracker.meta.get(t) || {};
     const name = m.name || t.name;
     const item = new vscode.TreeItem(this.label(m.sessionId, name));
-    item.contextValue = `${inSplit ? 'activeTabInSplit' : 'activeTab'}${this.favSuffix(m.sessionId)}`;
+    item.contextValue = m.sessionId
+      ? `${inSplit ? 'activeTabInSplit' : 'activeTab'}${this.favSuffix(m.sessionId)}`
+      : inSplit ? 'activeTerminalInSplit' : 'activeTerminal';
     const focused = this.tracker.terminalFocused && vscode.window.state.focused && vscode.window.activeTerminal === t;
     const look = tabPresentation({ status: m.status, focused });
     item.label = `${this.label(m.sessionId, name)}${look.nameSuffix}`;
@@ -559,7 +572,7 @@ class NotificationsProvider {
     item.contextValue = favorite ? 'notification.fav' : 'notification';
     item.iconPath = new vscode.ThemeIcon(stale ? 'history' : n.kind === 'waiting' ? 'bell-dot' : 'check');
     const what = n.kind === 'waiting' ? 'waiting for input' : 'finished';
-    item.description = `${what} ${formatTime(n.at)} · ${minutes < 1 ? 'just now' : `${minutes} min ago`}${stale ? ' · stale' : ''}`;
+    item.description = `${what} ${timeAgo(n.at)}${stale ? ' · stale' : ''}`;
     item.tooltip = `${n.name}\n${what} at ${formatTime(n.at)}${favorite ? '\n★ Favorite' : ''}\nClick to focus the tab.`;
     item.command = { command: 'claudeSessions.openNotification', title: 'Focus session', arguments: [n] };
     item.data = { notification: n };
@@ -650,56 +663,42 @@ function activate(context) {
     tracker.save();
   };
 
-  const openInLayout = async (choice, parent) => {
+  const openFreshThenPick = async (parent) => {
     const location = parent ? { parentTerminal: parent } : undefined;
-    if (choice.kind === 'terminal') {
-      const t = vscode.window.createTerminal({ cwd: store.wsPath, location });
-      t.show(false);
-      return t;
-    }
-    if (choice.kind === 'newSession') {
-      const t = vscode.window.createTerminal({ name: 'claude', cwd: store.wsPath, location, iconPath: new vscode.ThemeIcon('sparkle') });
-      t.show(false);
-      t.sendText(claudeCommand());
-      return t;
-    }
-    const tab = choice.tab;
-    const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
-    const t = vscode.window.createTerminal({ name: tab.name, cwd, location, iconPath: new vscode.ThemeIcon('sparkle') });
-    tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd });
-    tracker.syncedNames.set(tab.sessionId, tab.name);
+    const t = vscode.window.createTerminal({ cwd: store.wsPath, location });
     t.show(false);
-    t.sendText(`${claudeCommand()} --resume ${tab.sessionId}`);
-    return t;
-  };
-
-  const pickAndOpen = async (parent) => {
+    const group = parent && tracker.groups.find((g) => g.includes(parent));
+    if (group) group.push(t);
+    else tracker.groups.push([t]);
+    view.refresh();
     const sessions = await view.inactiveSessions();
     const archived = store.readState().archived || {};
     const isFavorite = (id) => notifications.isFavorite(id);
-    const ordered = sortSessions(sessions, isFavorite);
-    const items = [
-      { label: '$(sparkle) New Claude session', choice: { kind: 'newSession' } },
-      { label: '$(terminal) New terminal', choice: { kind: 'terminal' } },
-      { label: 'Inactive sessions', kind: vscode.QuickPickItemKind.Separator },
-      ...ordered.map((s) => ({
-        label: `${isFavorite(s.id) ? '★' : '☆'} ${s.title}`,
-        description: `${sessionSummary(s.meta)}${archived[s.id] ? ' · archived' : ''}`,
-        choice: { kind: 'session', tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } },
-      })),
-    ];
-    const picked = await vscode.window.showQuickPick(items, {
-      placeHolder: parent ? 'Open in this split: search a session or start something new' : 'Open in a new tab: search a session or start something new',
-      matchOnDescription: true,
-    });
-    if (!picked || !picked.choice) return;
-    const t = await openInLayout(picked.choice, parent);
-    if (parent) {
-      const group = tracker.groups.find((g) => g.includes(parent));
-      if (group && !group.includes(t)) group.push(t);
-    } else if (!tracker.groups.some((g) => g.includes(t))) {
-      tracker.groups.push([t]);
+    const ordered = pickerOrder(sessions, isFavorite, (id) => Boolean(archived[id]));
+    const picked = await vscode.window.showQuickPick(
+      [
+        { label: '$(sparkle) New Claude session', choice: { kind: 'newSession' } },
+        { label: '$(terminal) Keep as plain terminal', choice: { kind: 'terminal' } },
+        { label: 'Sessions', kind: vscode.QuickPickItemKind.Separator },
+        ...ordered.map((s) => ({
+          label: `${isFavorite(s.id) ? '★' : '☆'} ${s.title}`,
+          description: `${sessionSummary(s.meta)}${archived[s.id] ? ' · archived' : ''}`,
+          choice: { kind: 'session', tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } },
+        })),
+      ],
+      { placeHolder: 'Search a session, or start a new Claude session in this terminal', matchOnDescription: true }
+    );
+    if (!picked || picked.choice.kind === 'terminal') return;
+    if (picked.choice.kind === 'newSession') {
+      t.sendText(claudeCommand());
+      return;
     }
+    const tab = picked.choice.tab;
+    const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
+    t.sendText(`cd ${shellQuote(cwd)} && ${claudeCommand()} --resume ${tab.sessionId}`);
+    tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd });
+    tracker.syncedNames.set(tab.sessionId, tab.name);
+    await renameTerminal(t, tab.name);
     view.refresh();
   };
 
@@ -758,8 +757,9 @@ function activate(context) {
       if (id) notifications.setFavorite(id, false);
     }),
     vscode.commands.registerCommand('claudeSessions.closeTab', (item) => item.data.terminal && item.data.terminal.dispose()),
-    vscode.commands.registerCommand('claudeSessions.addToSplit', (item) => pickAndOpen(item.data.terminals ? item.data.terminals[0] : item.data.terminal)),
-    vscode.commands.registerCommand('claudeSessions.openNew', () => pickAndOpen(null)),
+    vscode.commands.registerCommand('claudeSessions.addToSplit', (item) => openFreshThenPick(item.data.terminals ? item.data.terminals[0] : item.data.terminal)),
+    vscode.commands.registerCommand('claudeSessions.splitTab', (item) => openFreshThenPick(item.data.terminal)),
+    vscode.commands.registerCommand('claudeSessions.openNew', () => openFreshThenPick(null)),
     vscode.window.onDidChangeWindowState(() => view.refresh()),
     vscode.window.onDidChangeActiveTerminal((t) => {
       if (tracker.scanning || !t) return;
@@ -849,4 +849,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, Notifications, Store, Tracker, sortSessions };
+module.exports = { activate, deactivate, Notifications, Store, Tracker, sortSessions, pickerOrder };

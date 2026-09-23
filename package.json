@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -124,13 +124,13 @@
       },
       {
         "command": "claudeSessions.addToSplit",
-        "title": "Open in this split: new session, terminal or inactive session",
+        "title": "Add a terminal to this split, then pick a session or start a new one",
         "category": "Claude Sessions",
         "icon": "$(add)"
       },
       {
         "command": "claudeSessions.openNew",
-        "title": "Open in a new tab: new session, terminal or inactive session",
+        "title": "New tab: open a terminal, then pick a session or start a new one",
         "category": "Claude Sessions",
         "icon": "$(add)"
       },
@@ -145,6 +145,12 @@
         "title": "Remove from favorites",
         "category": "Claude Sessions",
         "icon": "$(star-full)"
+      },
+      {
+        "command": "claudeSessions.splitTab",
+        "title": "Split: open a terminal to the right, then pick a session or start a new one",
+        "category": "Claude Sessions",
+        "icon": "$(split-horizontal)"
       }
     ],
     "viewsContainers": {
@@ -223,13 +229,8 @@
           "group": "inline@3"
         },
         {
-          "command": "claudeSessions.addToSplit",
-          "when": "viewItem =~ /^activeTab(\\.fav)?$/",
-          "group": "inline@4"
-        },
-        {
           "command": "claudeSessions.closeTab",
-          "when": "viewItem =~ /^activeTab(\\.fav)?$/ || viewItem =~ /^activeTabInSplit(\\.fav)?$/",
+          "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/ || viewItem == activeTerminal || viewItem == activeTerminalInSplit",
           "group": "inline@5"
         },
         {
@@ -271,6 +272,11 @@
           "command": "claudeSessions.dismissNotification",
           "when": "viewItem =~ /^notification(\\.fav)?$/",
           "group": "inline@3"
+        },
+        {
+          "command": "claudeSessions.splitTab",
+          "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/ || viewItem == activeTerminal || viewItem == activeTerminalInSplit",
+          "group": "inline@4"
         }
       ],
       "terminal/title/context": [
@@ -340,6 +346,10 @@
         },
         {
           "command": "claudeSessions.unfavorite",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.splitTab",
           "when": "false"
         }
       ]

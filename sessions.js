@@ -122,10 +122,20 @@ function oneLine(text, max) {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+function timeAgo(iso, now = Date.now()) {
+  if (!iso) return '';
+  const minutes = Math.floor((now - Date.parse(iso)) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
 function sessionSummary(meta) {
   if (!meta) return '';
-  const sameDay = meta.startedAt && meta.lastActivity && new Date(meta.startedAt).toDateString() === new Date(meta.lastActivity).toDateString();
-  return `last ${formatTime(meta.lastActivity)} · started ${formatTime(meta.startedAt, !sameDay)}`;
+  return `last ${timeAgo(meta.lastActivity)} · started ${formatTime(meta.startedAt)}`;
 }
 
 
@@ -404,4 +414,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

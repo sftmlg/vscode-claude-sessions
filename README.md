@@ -20,12 +20,12 @@ Buttons:
 
 | Where | Buttons |
 |---|---|
-| `active` folder | ＋ open a new tab: new Claude session, new terminal, or search an inactive session |
-| `split` | ＋ add to this split (same picker) |
-| active tab | ☆/★ favorite · ✎ rename tab and session · ＋ split with this tab (only when not in a split yet) · ✕ close tab |
+| `active` folder | ＋ open a new tab, then the picker |
+| `split` | ＋ add a terminal to this split, then the same picker |
+| active tab | ☆/★ favorite and ✎ rename (only once the tab runs a Claude session) · ⫼ split: a terminal opens to the right at once, then the picker · ✕ close tab |
 | inactive / archived session | ☆/★ favorite · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back |
 
-The picker lists new session and new terminal first, then favorites, then the most recent sessions; type to search.
+The picker offers a new Claude session and keeping the plain terminal first, then closed favorites newest first, then all other closed sessions newest first, archived last; type to search.
 
 ▶ resumes in the active terminal: an idle shell runs `claude --resume <id>`, a running Claude switches via `/resume <id>`, a busy terminal gets a new tab instead.
 

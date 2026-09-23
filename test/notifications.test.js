@@ -21,7 +21,7 @@ Module._load = (request, ...rest) => {
     workspace: { getConfiguration: () => ({ get: (key) => (key === 'syncSessionName' ? true : undefined) }) },
   };
 };
-const { Notifications, Store, Tracker, sortSessions } = require('../extension');
+const { Notifications, Store, Tracker, sortSessions, pickerOrder } = require('../extension');
 
 function fresh() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-notifications-test-'));
@@ -124,4 +124,18 @@ test('terminal focus flag fires only on real changes', () => {
   tracker.setTerminalFocus(false);
   assert.strictEqual(tracker.terminalFocused, false);
   assert.strictEqual(tracker.onFocusChange.fired, 1);
+});
+
+test('picker order: unopened favorites newest first, then the rest newest first, archived last', () => {
+  const at = (h) => ({ lastActivity: new Date(Date.UTC(2026, 8, 23, h)).toISOString() });
+  const rows = [
+    { id: 'f-old', title: 'a', meta: at(1) },
+    { id: 'f-new', title: 'z', meta: at(9) },
+    { id: 'n-old', title: 'b', meta: at(2) },
+    { id: 'n-new', title: 'c', meta: at(11) },
+    { id: 'arch', title: 'd', meta: at(12) },
+  ];
+  const fav = new Set(['f-old', 'f-new']);
+  const order = pickerOrder(rows, (id) => fav.has(id), (id) => id === 'arch').map((r) => r.id);
+  assert.deepStrictEqual(order, ['f-new', 'f-old', 'n-new', 'n-old', 'arch']);
 });
