@@ -344,10 +344,10 @@ class Tracker {
   }
 
   async scanLayout(stepMs = 250) {
-    this.stepMs = stepMs;
     const live = this.liveTerminals();
     if (!live.length || this.scanning) return;
     this.scanning = true;
+    this.stepMs = stepMs;
     const original = vscode.window.activeTerminal;
     const creationIndex = new Map(live.map((t, i) => [t, i]));
     const groups = [];
