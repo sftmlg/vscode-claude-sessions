@@ -122,7 +122,7 @@ class Store {
   }
 }
 
-const AUTO_RENAME_INTERVAL_MS = 30 * 60 * 1000;
+const AUTO_RENAME_INTERVAL_MS = 60 * 1000;
 
 class Notifications {
   constructor(store) {
