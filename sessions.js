@@ -608,4 +608,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, conversationText, foldText, matchSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { filesForSession, sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, conversationText, foldText, matchSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

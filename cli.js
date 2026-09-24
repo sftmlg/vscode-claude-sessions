@@ -2,7 +2,7 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions, archiveDuplicates, searchSessions } = require('./sessions');
+const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions, archiveDuplicates, searchSessions, readState } = require('./sessions');
 
 const USAGE = [
   'Usage:',
@@ -12,10 +12,26 @@ const USAGE = [
   '  node cli.js archive-duplicates [repo-path] [--days N]   (keeps the newest session per name)',
   '  node cli.js rename-batch <mapping.json> [--keep-existing]   (JSON object: session id -> name)',
   '  node cli.js archive <repo-path> --name <name> [--days N] [--apply]   (preview unless --apply; running sessions are skipped)',
+  '  node cli.js state [repo-path]   (favorites, names, saved tabs and whether their session files and processes exist)',
 ].join('\n');
 
 async function main(argv) {
   const [command, ...rest] = argv;
+  if (command === 'state') {
+    const repo = path.resolve(rest[0] || process.cwd());
+    const state = readState(repo);
+    const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
+    const describe = async (id) => {
+      const meta = await metaForSession(id);
+      return `${id.slice(0, 8)} ${oneLine((state.names || {})[id] || (meta && (meta.customTitle || meta.aiTitle)) || '-', 30).padEnd(30)} ${meta ? 'file' : 'NO FILE'}${running.has(id) ? ' · running' : ''}`;
+    };
+    console.log('favorites:');
+    for (const id of Object.keys(state.favorites || {})) console.log(`  ${await describe(id)}`);
+    console.log('saved tabs:');
+    for (const t of state.tabs || []) console.log(`  ${await describe(t.sessionId)} · tab "${t.name}" · group ${String(t.group).slice(0, 8)}`);
+    console.log(`names ${Object.keys(state.names || {}).length} · archived ${Object.keys(state.archived || {}).length} · notifications ${(state.notifications || []).length}`);
+    return 0;
+  }
   if (command === 'rename' && rest.length === 2) {
     await renameSession(rest[0], rest[1]);
     console.log(`${rest[0]} -> ${rest[1]}`);

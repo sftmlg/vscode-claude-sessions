@@ -26,6 +26,7 @@ const {
   conversationText,
   readStateFile,
   writeStatePatch,
+  filesForSession,
 } = require('./sessions');
 
 const AUTO_TITLE = /^[\u2800-\u28ff✳✻✽✶✢✦·*●○◐◓◑◒]\s*/u;
@@ -249,6 +250,14 @@ class Tracker {
     }
   }
 
+  async hasSessionFile(sessionId) {
+    this.knownFiles = this.knownFiles || new Set();
+    if (this.knownFiles.has(sessionId)) return true;
+    if ((await filesForSession(sessionId)).length === 0) return false;
+    this.knownFiles.add(sessionId);
+    return true;
+  }
+
   async poll() {
     if (this.scanning || this.polling) return;
     this.polling = true;
@@ -270,7 +279,9 @@ class Tracker {
       const s = pid ? findSession(pid, children, running) : null;
       const expecting = m.expectedSessionId && Date.now() < (m.expectedUntil || 0);
       const staleRegistry = s && expecting && s.sessionId !== m.expectedSessionId;
-      if (s && !staleRegistry) {
+      const switching = s && !staleRegistry && m.sessionId && m.sessionId !== s.sessionId;
+      const unbacked = switching && !(await this.hasSessionFile(s.sessionId)) && (await this.hasSessionFile(m.sessionId));
+      if (s && !staleRegistry && !unbacked) {
         if (m.sessionId && m.sessionId !== s.sessionId) this.forget(m.sessionId);
         m.sessionId = s.sessionId;
         m.cwd = s.cwd;
@@ -405,7 +416,7 @@ class Tracker {
         const options = { name: tab.name, cwd, iconPath: new vscode.ThemeIcon('sparkle') };
         if (parent) options.location = { parentTerminal: parent };
         const t = vscode.window.createTerminal(options);
-        this.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd });
+        this.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
         pending.push([t, `${claudeCommand()} --resume ${tab.sessionId}`]);
         parent = parent || t;
         first = first || t;
@@ -451,7 +462,7 @@ class SessionsProvider {
   }
 
   refresh(fast = false) {
-    this.fast = fast && Boolean(this.sessionsCache);
+    if (!fast) this.needsFull = true;
     this.emitter.fire();
   }
 
@@ -551,8 +562,9 @@ class SessionsProvider {
     }
     if (e && e.data.kind === 'archiveFolder') return this.archive.map((s) => this.sessionItem(s, true));
     if (e) return [];
-    const sessions = this.fast ? this.sessionsCache : await this.inactiveSessions();
-    this.fast = false;
+    const full = this.needsFull || !this.sessionsCache;
+    this.needsFull = false;
+    const sessions = full ? await this.inactiveSessions() : this.sessionsCache;
     this.sessionsCache = sessions;
     const archived = this.store.readState().archived || {};
     const isFavorite = (id) => this.notifications.isFavorite(id);
@@ -650,7 +662,7 @@ function activate(context) {
   const resumeInNewTab = (tab) => {
     const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
     const t = vscode.window.createTerminal({ name: tab.name, cwd, iconPath: new vscode.ThemeIcon('sparkle') });
-    tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd });
+    tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
     t.show(false);
     t.sendText(`${claudeCommand()} --resume ${tab.sessionId}`);
   };
@@ -1137,6 +1149,7 @@ function activate(context) {
     }
     tracker.log(`search cache ready for ${sessions.length} sessions in ${Date.now() - started} ms`);
   }, 5000);
+  return { tracker, store, notifications, activeView, inactiveView };
 }
 
 function vscodeGroupSizes(stateDb) {
