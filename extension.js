@@ -287,6 +287,11 @@ class Tracker {
       const m = this.meta.get(t) || { name: '', nameSource: 'auto', sessionId: null, cwd: null };
       const pid = await withTimeout(t.processId, 1000).catch(() => undefined);
       const s = pid ? findSession(pid, children, running) : null;
+      if (s && !m.sessionId && !(await this.hasSessionFile(s.sessionId))) {
+        const claimed = new Set([...this.meta.values()].map((x) => x.sessionId));
+        const saved = this.store.read().find((tab) => tab.name === t.name && !claimed.has(tab.sessionId));
+        if (saved && (await this.hasSessionFile(saved.sessionId))) Object.assign(m, { name: saved.name, nameSource: 'user', sessionId: saved.sessionId, cwd: saved.cwd });
+      }
       const expecting = m.expectedSessionId && Date.now() < (m.expectedUntil || 0);
       const staleRegistry = s && expecting && s.sessionId !== m.expectedSessionId;
       const switching = s && !staleRegistry && m.sessionId && m.sessionId !== s.sessionId;

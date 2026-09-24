@@ -184,6 +184,36 @@ test('a provisional registry id without a session file never replaces the resume
   api.deactivate();
 });
 
+test('a favorite tab keeps its star across a window reload while the registry still reports a provisional id', async () => {
+  const real = '88888888-0000-0000-0000-000000000008';
+  const provisional = '88888888-0000-0000-0000-00000000000f';
+  writeSession(real, 'schmid reload');
+  const claude = startClaude(real);
+  const first = await setup();
+  const before = first.fake.vscode.window.createTerminal({ name: 'zsh', pid: claude.pid });
+  before.show();
+  await first.api.tracker.poll();
+  first.fake.inputAnswers.push('schmid-reload');
+  await first.fake.run('claudeSessions.renameTab', await activeItemFor(first.api, before));
+  await first.fake.run('claudeSessions.favorite', await activeItemFor(first.api, before));
+  assert.strictEqual(first.api.notifications.isFavorite(real), true);
+  first.api.deactivate();
+
+  fs.writeFileSync(path.join(registryDir, `${claude.pid}.json`), JSON.stringify({ pid: claude.pid, sessionId: provisional, cwd: workspace, status: 'idle' }));
+  const second = await setup();
+  const after = second.fake.vscode.window.createTerminal({ name: 'schmid-reload', pid: claude.pid });
+  after.show();
+  await second.api.tracker.poll();
+
+  assert.strictEqual(second.api.tracker.meta.get(after).sessionId, real, 'the reloaded tab keeps its saved session id');
+  assert.match((await activeItemFor(second.api, after)).label, /^★ /);
+  const saved = second.api.store.read().filter((t) => t.name === 'schmid-reload').map((t) => t.sessionId);
+  assert.deepStrictEqual(saved, [real], 'no tab is saved under the provisional id');
+  assert.strictEqual((second.api.store.readState().names || {})[provisional], undefined);
+  stopClaude(claude);
+  second.api.deactivate();
+});
+
 test('restoring saved tabs gives the registry the same grace period as ▶', async () => {
   const id = '55555555-0000-0000-0000-000000000005';
   writeSession(id, 'restore me');
