@@ -98,7 +98,7 @@ function withTimeout(promise, ms) {
 
 const metaCache = new Map();
 let cacheDir = null;
-let saveTimer = null;
+const saveTimers = {};
 
 function loadCache(dir) {
   cacheDir = dir;
@@ -116,16 +116,17 @@ async function loadTextCache() {
   } catch {}
 }
 
-function scheduleSave() {
-  if (!cacheDir || saveTimer) return;
-  saveTimer = setTimeout(async () => {
-    saveTimer = null;
+function scheduleSave(kind = 'meta') {
+  if (!cacheDir || saveTimers[kind]) return;
+  const [file, map, delay] = kind === 'text' ? ['text-cache.json', conversationCache, 60000] : ['meta-cache.json', metaCache, 5000];
+  saveTimers[kind] = setTimeout(async () => {
+    saveTimers[kind] = null;
     try {
       await fsp.mkdir(cacheDir, { recursive: true });
-      await fsp.writeFile(path.join(cacheDir, 'meta-cache.json'), JSON.stringify(Object.fromEntries(metaCache)));
-      await fsp.writeFile(path.join(cacheDir, 'text-cache.json'), JSON.stringify(Object.fromEntries(conversationCache)));
+      await fsp.writeFile(path.join(cacheDir, file), JSON.stringify(Object.fromEntries(map)));
     } catch {}
-  }, 5000);
+  }, delay);
+  if (saveTimers[kind].unref) saveTimers[kind].unref();
 }
 
 function clip(entry) {
@@ -193,7 +194,7 @@ async function conversationText(file) {
   }
   const text = foldText(parts.join('\n'));
   conversationCache.set(file, { mtimeMs: st.mtimeMs, text });
-  scheduleSave();
+  scheduleSave('text');
   return text;
 }
 

@@ -3,3 +3,4 @@ test/**
 dist/**
 release.sh
 .gitignore
+bench.js

@@ -193,6 +193,7 @@ class Tracker {
     this.titles = new Map();
     this.restoring = false;
     this.scanning = false;
+    this.placing = 0;
     this.terminalFocused = true;
     this.onChange = new vscode.EventEmitter();
     this.onFocusChange = new vscode.EventEmitter();
@@ -258,16 +259,25 @@ class Tracker {
     return true;
   }
 
-  async poll() {
-    if (this.scanning || this.polling) return;
-    this.polling = true;
-    try {
-      await this.pollOnce();
-    } catch (err) {
-      if (this.log) this.log(`poll failed: ${err && err.stack ? err.stack : err}`);
-    } finally {
-      this.polling = false;
+  poll() {
+    if (this.scanning) return Promise.resolve();
+    if (this.pollRun) {
+      this.pollAgain = true;
+      return this.pollRun;
     }
+    this.pollRun = (async () => {
+      do {
+        this.pollAgain = false;
+        try {
+          await this.pollOnce();
+        } catch (err) {
+          if (this.log) this.log(`poll failed: ${err && err.stack ? err.stack : err}`);
+        }
+      } while (this.pollAgain && !this.scanning);
+    })().finally(() => {
+      this.pollRun = null;
+    });
+    return this.pollRun;
   }
 
   async pollOnce() {
@@ -347,6 +357,41 @@ class Tracker {
     const before = vscode.window.activeTerminal;
     await vscode.commands.executeCommand(id);
     await this.waitForActive(before, this.stepMs);
+  }
+
+  noteOpened(t) {
+    this.openCount = (this.openCount || 0) + 1;
+    this.lastOpened = t;
+    clearTimeout(this.placeTimer);
+    this.placeTimer = setTimeout(() => this.placeNewTerminal(t), 600);
+  }
+
+  async placeNewTerminal(t) {
+    if (this.scanning || this.placing || vscode.window.activeTerminal !== t) return;
+    const opened = this.openCount;
+    this.syncGroups();
+    const own = this.groups.find((g) => g.includes(t));
+    if (!own || own.length > 1) return;
+    this.scanning = true;
+    this.stepMs = 250;
+    try {
+      await this.command('workbench.action.terminal.focusPreviousPane');
+      const neighbour = vscode.window.activeTerminal;
+      if (this.openCount !== opened) {
+        if (this.lastOpened && vscode.window.activeTerminal !== this.lastOpened) this.lastOpened.show(false);
+      } else if (neighbour && neighbour !== t) {
+        await this.command('workbench.action.terminal.focusNextPane');
+        if (vscode.window.activeTerminal !== t) t.show(false);
+        const group = this.groups.find((g) => g.includes(neighbour));
+        if (group && group !== own) {
+          this.groups = this.groups.filter((g) => g !== own);
+          group.splice(group.indexOf(neighbour) + 1, 0, t);
+        }
+      }
+    } finally {
+      this.scanning = false;
+    }
+    await this.poll();
   }
 
   async scanLayout(stepMs = 250) {
@@ -444,6 +489,13 @@ function pickerOrder(sessions, isFavorite, isArchived) {
     .concat(sessions.filter((s) => isArchived(s.id)).sort(newest));
 }
 
+const terminalKeys = new WeakMap();
+let nextTerminalKey = 1;
+function terminalKey(t) {
+  if (!terminalKeys.has(t)) terminalKeys.set(t, nextTerminalKey++);
+  return terminalKeys.get(t);
+}
+
 function sortSessions(sessions, isFavorite) {
   const favorites = sessions.filter((s) => isFavorite(s.id)).sort((a, b) => a.title.localeCompare(b.title));
   const others = sessions.filter((s) => !isFavorite(s.id)).sort((a, b) => Date.parse(b.meta.lastActivity) - Date.parse(a.meta.lastActivity));
@@ -483,6 +535,7 @@ class SessionsProvider {
     const known = m.sessionId && (this.store.readState().names || {})[m.sessionId];
     const name = (m.nameSource === 'user' && m.name) || known || m.name || t.name;
     const item = new vscode.TreeItem(this.label(m.sessionId, name));
+    item.id = `terminal:${terminalKey(t)}`;
     item.contextValue = m.sessionId
       ? `${inSplit ? 'activeTabInSplit' : 'activeTab'}${this.favSuffix(m.sessionId)}`
       : inSplit ? 'activeTerminalInSplit' : 'activeTerminal';
@@ -517,6 +570,7 @@ class SessionsProvider {
       groups.map(async (g) => {
         if (g.length === 1) return this.activeTabItem(g[0], false);
         const item = new vscode.TreeItem('split', vscode.TreeItemCollapsibleState.Expanded);
+        item.id = `split:${terminalKey(g[0])}`;
         item.contextValue = 'split';
         item.iconPath = new vscode.ThemeIcon('split-horizontal');
         item.data = { terminals: g };
@@ -545,6 +599,7 @@ class SessionsProvider {
 
   sessionItem(s, archived) {
     const item = new vscode.TreeItem(this.label(s.id, s.title));
+    item.id = `${archived ? 'archived' : 'session'}:${s.id}`;
     item.contextValue = `${archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session'}${this.favSuffix(s.id)}`;
     item.iconPath = new vscode.ThemeIcon(archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
     item.description = sessionSummary(s.meta);
@@ -576,6 +631,7 @@ class SessionsProvider {
     const inactive = sortSessions(sessions.filter((s) => !archived[s.id]), isFavorite);
     this.archive = sortSessions(sessions.filter((s) => archived[s.id]), isFavorite);
     const folder = new vscode.TreeItem(`archive (${this.archive.length})`, vscode.TreeItemCollapsibleState.Collapsed);
+    folder.id = 'archive-folder';
     folder.contextValue = 'archiveFolder';
     folder.iconPath = new vscode.ThemeIcon('archive');
     folder.data = { kind: 'archiveFolder' };
@@ -701,6 +757,15 @@ function activate(context) {
   };
 
   const splitOnce = async (parent) => {
+    tracker.placing++;
+    try {
+      return await splitInto(parent);
+    } finally {
+      tracker.placing--;
+    }
+  };
+
+  const splitInto = async (parent) => {
     if (vscode.window.activeTerminal !== parent) {
       const shown = new Promise((resolve) => {
         const sub = vscode.window.onDidChangeActiveTerminal((a) => {
@@ -814,6 +879,8 @@ function activate(context) {
     await applyChoice(t, choice);
   };
 
+  const terminalOf = (item) => (item && item.data && item.data.terminal) || vscode.window.activeTerminal;
+
   const pickIntoExisting = async (t) => {
     const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
     const pid = await withTimeout(t.processId, 1000).catch(() => undefined);
@@ -906,6 +973,11 @@ function activate(context) {
     if (!sizes) return;
     const signature = JSON.stringify(sizes);
     if (Date.now() - lastTerminalChange < 5000) return;
+    let savedAt = 0;
+    try {
+      savedAt = fs.statSync(stateDb).mtimeMs;
+    } catch {}
+    if (savedAt < lastTerminalChange) return;
     tracker.syncGroups();
     const ours = JSON.stringify(tracker.groups.map((g) => g.length));
     setLayoutStale(ours !== signature);
@@ -1011,11 +1083,11 @@ function activate(context) {
       tracker.log(`deleted session ${tab.sessionId} (${tab.name}): ${[...files, ...dirs].join(', ')}`);
       view.refresh();
     }),
-    vscode.commands.registerCommand('claudeSessions.addToSplit', (item) => openFreshThenPick(item.data.terminals ? item.data.terminals[0] : item.data.terminal)),
-    vscode.commands.registerCommand('claudeSessions.splitTab', (item) => openFreshThenPick(item.data.terminal)),
+    vscode.commands.registerCommand('claudeSessions.addToSplit', (item) => openFreshThenPick(item && item.data.terminals ? item.data.terminals[0] : terminalOf(item))),
+    vscode.commands.registerCommand('claudeSessions.splitTab', (item) => openFreshThenPick(terminalOf(item))),
     vscode.commands.registerCommand('claudeSessions.openNew', () => openFreshThenPick(null)),
-    vscode.commands.registerCommand('claudeSessions.openInTerminal', (item) => pickIntoExisting(item.data.terminal)),
-    vscode.commands.registerCommand('claudeSessions.switchSession', (item) => pickIntoExisting(item.data.terminal)),
+    vscode.commands.registerCommand('claudeSessions.openInTerminal', (item) => terminalOf(item) && pickIntoExisting(terminalOf(item))),
+    vscode.commands.registerCommand('claudeSessions.switchSession', (item) => terminalOf(item) && pickIntoExisting(terminalOf(item))),
     vscode.window.onDidChangeWindowState(() => view.refresh()),
     vscode.window.onDidChangeActiveTerminal((t) => {
       if (tracker.scanning || !t) return;
@@ -1032,7 +1104,10 @@ function activate(context) {
     }),
     { dispose: () => clearInterval(minuteTimer) },
     tracker.onChange.event(() => view.refresh()),
-    vscode.window.onDidOpenTerminal(scheduleScan),
+    vscode.window.onDidOpenTerminal((t) => {
+      scheduleScan();
+      tracker.noteOpened(t);
+    }),
     vscode.window.onDidCloseTerminal((t) => {
       const m = tracker.meta.get(t);
       if (m && m.sessionId) {
@@ -1129,6 +1204,7 @@ function activate(context) {
     })
   );
 
+  tracker.poll();
   setTimeout(() => {
     tracker.poll();
     if (settings().get('autoCaptureLayout') && tracker.liveTerminals().length > 1 && canScan()) scan('startup');

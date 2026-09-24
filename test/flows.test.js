@@ -114,6 +114,50 @@ test('a close followed by a fast refresh still lists the closed session', async 
   api.deactivate();
 });
 
+test('rows keep their ids across refreshes so a click on a refreshed row still resolves', async () => {
+  const id = '77777777-0000-0000-0000-000000000007';
+  writeSession(id, 'stable');
+  const { fake, api } = await setup();
+  fake.vscode.window.createTerminal({ name: 'plain' }).show();
+  const before = (await api.activeView.getChildren()).map((i) => i.id);
+  api.inactiveView.needsFull = true;
+  const inactiveBefore = (await api.inactiveView.getChildren()).map((i) => i.id);
+  api.activeView.refresh();
+  api.inactiveView.refresh();
+  assert.deepStrictEqual((await api.activeView.getChildren()).map((i) => i.id), before);
+  assert.deepStrictEqual((await api.inactiveView.getChildren()).map((i) => i.id), inactiveBefore);
+  assert.ok(before.every(Boolean) && inactiveBefore.every(Boolean));
+  assert.strictEqual(new Set(inactiveBefore).size, inactiveBefore.length);
+  api.deactivate();
+});
+
+test('🔍 without a row falls back to the active terminal instead of throwing', async () => {
+  const { fake, api } = await setup();
+  const t = fake.vscode.window.createTerminal({ name: 'zsh', pid: startClaude(null).pid });
+  t.show();
+  await fake.run('claudeSessions.switchSession', undefined);
+  await fake.run('claudeSessions.splitTab', undefined);
+  api.deactivate();
+});
+
+test('a split made with VS Code itself joins the parent group without a capture', async () => {
+  const { fake, api } = await setup();
+  const a = fake.vscode.window.createTerminal({ name: 'left' });
+  a.show();
+  await new Promise((r) => setTimeout(r, 700));
+  const b = await fake.run('workbench.action.terminal.split');
+  await new Promise((r) => setTimeout(r, 1000));
+  api.tracker.syncGroups();
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['left', 'zsh']]);
+  assert.strictEqual(fake.vscode.window.activeTerminal, b, 'focus is back on the new split');
+  const other = fake.vscode.window.createTerminal({ name: 'alone' });
+  other.show();
+  await new Promise((r) => setTimeout(r, 1000));
+  api.tracker.syncGroups();
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.length), [2, 1]);
+  api.deactivate();
+});
+
 test('a provisional registry id without a session file never replaces the resumed session', async () => {
   const real = '44444444-0000-0000-0000-000000000004';
   const provisional = '44444444-0000-0000-0000-00000000000f';

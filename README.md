@@ -52,7 +52,9 @@ The picker always opens before anything else, so cancelling it (Escape) changes 
 
 ## Startup
 
-The views render first, from a cache in VS Code's extension storage (`meta-cache.json`, `text-cache.json`), keyed by file and change time; only changed session files are read again. Listing 340 sessions takes about 0.1 s with the cache and 0.75 s without it; details for open tabs load one by one afterwards, and the search text last.
+The views render first, from a cache in VS Code's extension storage (`meta-cache.json`, `text-cache.json`), keyed by file and change time; only changed session files are read again. Listing 340 sessions takes about 0.1 s with the cache and 0.75 s without it; details for open tabs load one by one afterwards, and the search text last. The search text cache is written at most once a minute, the list cache every few seconds. Sessions of open tabs are read immediately on start.
+
+The extension shares one extension host with every other installed extension. Extensions that search the whole workspace on start (`workspaceContains` activation) or start language tools can hold that host for several seconds; the extension host log (`Developer: Show Logs…` → Extension Host) shows which ones run. `npm run bench -- <repo>` measures the extension's own share on real data.
 
 ## Naming convention
 
@@ -78,7 +80,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 
 - **Session per tab:** terminal shell process → child `claude` process → `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
 - **Session list:** `~/.claude*/projects/<encoded repo path>*/*.jsonl`, read from the head and tail of each file only.
-- **Splits and order:** VS Code does not expose terminal groups to extensions. Capturing them means cycling focus through all terminals once, which is visible, so it never runs on its own: every 10 seconds the extension compares its layout with the one VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`), and on a mismatch the **Active** header shows a note and the capture button. Splits the extension creates itself (split button, ＋ on a split, restore) are known without capturing. `claudeSessions.autoCaptureLayout` turns automatic capture back on. Captures are logged in the output channel **Claude Sessions**.
+- **Splits and order:** VS Code does not expose terminal groups to extensions. Capturing them means cycling focus through all terminals once, which is visible, so it never runs on its own: every 10 seconds the extension compares its layout with the one VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`), and on a mismatch the **Active** header shows a note and the capture button. Splits the extension creates itself (split button, ＋ on a split, restore) are known without capturing. A split made with VS Code itself is placed 0.6 s after it opens: focus moves once to the previous pane and back, only within that split. The note only counts once VS Code has saved its layout after the last terminal change. `claudeSessions.autoCaptureLayout` turns automatic capture back on. Captures are logged in the output channel **Claude Sessions**.
 - Terminals in the editor area are treated as separate tabs.
 
 ## Settings
@@ -100,13 +102,14 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
 - `node cli.js archive-duplicates [repo] [--days N]` archives every session whose name also belongs to a newer one; favorites and running sessions stay.
 - `node cli.js archive <repo> --name <name> [--days N] [--apply]` archives every session called `<name>` or `<name>-<n>` (e.g. all `misc`); preview unless `--apply`, running sessions are skipped, archiving only sets the flag in the state file.
-- `npm test` checks session parsing against generated session files.
+- `npm test` checks session parsing against generated session files and walks user flows (favorites, close, rename, splits, picker) in a fake VS Code (`test/fake-vscode.js`) with stand-in Claude processes.
+- `npm run bench -- [repo]` times cache load, session list, search index, search and the first render on real data.
 
 ## Development procedure
 
 Every change goes through the same steps; a step that fails stops the release.
 
-1. **Test first for every bug:** reproduce the bug as a test in `test/` before fixing it. Logic that touches VS Code goes into small functions that the tests can call with a mocked `vscode` module (see `test/manifest.test.js`).
+1. **Test first for every bug:** reproduce the bug as a test in `test/` before fixing it. Flows that click through the views go into `test/flows.test.js` on the fake VS Code; tree rows carry stable ids so a click on a row that was just refreshed still reaches its command.
 2. **`npm run verify`:** syntax check of every file plus all tests. `test/manifest.test.js` keeps code and `package.json` in step: every contributed command is registered and vice versa, every view exists in code, every menu entry points to a command, every command hidden from the palette is reachable from a menu or a tree item, every `viewItem` in a `when` clause is produced by the code, and activation in a mocked VS Code registers every command.
 3. **Cross-check for flow changes:** anything that changes a user flow (buttons, picker, splits, focus, renames) gets a fresh reviewer that walks the flow in the code, before release.
 4. **Release:** bump `version` in `package.json`, commit, then `npm run release` (verify, package, push, GitHub release with the `.vsix`). Every installed copy picks the release up within an hour; check the changed flow once by hand and read the output channel **Claude Sessions**.

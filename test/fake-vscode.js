@@ -27,6 +27,14 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
   const quickPickAnswers = [];
   const inputAnswers = [];
   const warningAnswers = [];
+  const panes = [];
+  const groupOf = (t) => panes.find((g) => g.includes(t));
+  const focusPane = (step) => {
+    const t = vscode.window.activeTerminal;
+    const g = t && groupOf(t);
+    if (!g || g.length < 2) return;
+    g[(g.indexOf(t) + step + g.length) % g.length].show();
+  };
 
   class FakeTerminal {
     constructor(options = {}) {
@@ -52,6 +60,8 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
       if (this.disposed) return;
       this.disposed = true;
       vscode.window.terminals = vscode.window.terminals.filter((t) => t !== this);
+      const g = groupOf(this);
+      if (g) g.splice(g.indexOf(this), 1);
       if (vscode.window.activeTerminal === this) vscode.window.activeTerminal = vscode.window.terminals[0];
       close.fire(this);
     }
@@ -99,6 +109,10 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
       createTerminal(options) {
         const t = new FakeTerminal(options);
         vscode.window.terminals.push(t);
+        const parent = options && options.location && options.location.parentTerminal;
+        const g = parent && groupOf(parent);
+        if (g) g.splice(g.indexOf(parent) + 1, 0, t);
+        else panes.push([t]);
         open.fire(t);
         return t;
       },
@@ -162,8 +176,12 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
           return undefined;
         }
         if (id === 'workbench.action.terminal.split' && vscode.window.activeTerminal) {
-          return vscode.window.createTerminal({ cwd: workspacePath });
+          const t = vscode.window.createTerminal({ cwd: workspacePath, location: { parentTerminal: vscode.window.activeTerminal } });
+          t.show();
+          return t;
         }
+        if (id === 'workbench.action.terminal.focusNextPane') return focusPane(1);
+        if (id === 'workbench.action.terminal.focusPreviousPane') return focusPane(-1);
         if (registered.has(id)) return registered.get(id)(...args);
         return undefined;
       },
@@ -206,6 +224,7 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
     quickPickAnswers,
     inputAnswers,
     warningAnswers,
+    panes,
     run: (id, ...args) => vscode.commands.executeCommand(id, ...args),
     fire: { windowState: (s) => windowState.fire(s) },
   };
