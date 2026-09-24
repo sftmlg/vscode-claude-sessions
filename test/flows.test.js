@@ -140,25 +140,25 @@ test('🔍 without a row falls back to the active terminal instead of throwing',
   api.deactivate();
 });
 
-test('a split made with VS Code itself joins the parent group without a capture', async () => {
+test('a split made with VS Code itself is captured automatically and focus returns to it', async () => {
   const { fake, api } = await setup();
   const a = fake.vscode.window.createTerminal({ name: 'left' });
   a.show();
   await new Promise((r) => setTimeout(r, 700));
   const b = await fake.run('workbench.action.terminal.split');
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 2500));
   api.tracker.syncGroups();
   assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['left', 'zsh']]);
   assert.strictEqual(fake.vscode.window.activeTerminal, b, 'focus is back on the new split');
   const other = fake.vscode.window.createTerminal({ name: 'alone' });
   other.show();
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 2500));
   api.tracker.syncGroups();
   assert.deepStrictEqual(api.tracker.groups.map((g) => g.length), [2, 1]);
   api.deactivate();
 });
 
-test('startup renders Active once, with VS Code\'s saved splits and without moving focus', async () => {
+test('startup captures the splits before Active renders once', async () => {
   const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
   const api = fake.activate();
   fake.vscode.window.createTerminal({ name: 'a' }).show();
@@ -171,7 +171,9 @@ test('startup renders Active once, with VS Code\'s saved splits and without movi
   assert.ok(api.tracker.ready, 'startup finished before the first rows were returned');
   assert.ok(rows.length > 0);
   assert.ok(fired <= 2, `Active redrew ${fired} times during startup`);
-  assert.ok(!fake.executed.some(([id]) => /focus(Next|Previous)Pane|focusAtIndex/.test(id)), 'no focus moves at startup');
+  assert.strictEqual(rows.filter((r) => r.contextValue === 'split').length, 1, 'the first render already shows the split');
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['a', 'b'], ['c']]);
+  assert.strictEqual(fake.vscode.window.activeTerminal.name, 'c', 'focus returns to where it was');
   api.deactivate();
 });
 

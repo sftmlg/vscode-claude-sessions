@@ -62,6 +62,7 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
       vscode.window.terminals = vscode.window.terminals.filter((t) => t !== this);
       const g = groupOf(this);
       if (g) g.splice(g.indexOf(this), 1);
+      if (g && !g.length) panes.splice(panes.indexOf(g), 1);
       if (vscode.window.activeTerminal === this) vscode.window.activeTerminal = vscode.window.terminals[0];
       close.fire(this);
     }
@@ -179,6 +180,11 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
           const t = vscode.window.createTerminal({ cwd: workspacePath, location: { parentTerminal: vscode.window.activeTerminal } });
           t.show();
           return t;
+        }
+        if (id === 'workbench.action.terminal.focusAtIndex1') return panes[0] && panes[0][0].show();
+        if (id === 'workbench.action.terminal.focusNext') {
+          const i = panes.findIndex((g) => g.includes(vscode.window.activeTerminal));
+          return panes.length && panes[(i + 1) % panes.length][0].show();
         }
         if (id === 'workbench.action.terminal.focusNextPane') return focusPane(1);
         if (id === 'workbench.action.terminal.focusPreviousPane') return focusPane(-1);

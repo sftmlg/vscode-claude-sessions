@@ -80,11 +80,12 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 
 - **Session per tab:** terminal shell process → child `claude` process → `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
 - **Session list:** `~/.claude*/projects/<encoded repo path>*/*.jsonl`, read from the head and tail of each file only.
-- **Splits and order:** VS Code does not expose terminal groups to extensions. Where the layout comes from:
-  - **On start:** from the layout VS Code saved itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`), applied in terminal order once the restored terminals stop arriving; nothing moves focus.
-  - **Splits the extension creates** (split button, ＋ on a split, restore) are known directly.
-  - **A split made with VS Code itself** is placed 0.6 s after it opens: focus moves once to the previous pane and back, only within that split, and never during start or restore.
-  - **Anything else:** every 10 seconds the layout is compared with VS Code's saved one; on a mismatch the **Active** header shows a note and the capture button, which cycles focus through all terminals once. Capture never runs on its own.
+- **Splits and order:** VS Code does not expose terminal groups to extensions, so the extension captures them by cycling focus through all terminals once and then returns focus to where it was. It captures automatically (`claudeSessions.autoCaptureLayout`, on by default):
+  - **On start,** once the restored terminals stop arriving and before **Active** is drawn; without capture the layout VS Code saved itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`) is applied in terminal order.
+  - **1.5 s after a terminal opens or closes,** once no further change arrives.
+  - **When VS Code's saved layout changes** and differs from the captured one (checked every 10 seconds, once per saved layout).
+  - **Never** while a restore or a split of the extension runs, while the picker is open, or while the window is in the background. Splits the extension creates itself are known without capturing.
+  - `Claude Sessions: Capture split layout` in the command palette captures by hand. Captures are logged in the output channel **Claude Sessions**.
 - Terminals in the editor area are treated as separate tabs.
 
 ## Settings
@@ -94,6 +95,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.storageFile` | `.vscode/claude-sessions.json` | State file inside the repository |
 | `claudeSessions.claudeCommand` | `claude` | Command used to resume; `--resume <id>` is appended |
 | `claudeSessions.openIn` | `activeTerminal` | `activeTerminal` or `newTab` for the ▶ button |
+| `claudeSessions.autoCaptureLayout` | `true` | Capture splits automatically (focus briefly cycles through the terminals) |
 | `claudeSessions.pollSeconds` | `5` | How often names and sessions are re-read |
 | `claudeSessions.historyDays` | `30` | Reach of the inactive and archive lists |
 
