@@ -158,6 +158,44 @@ test('a split made with VS Code itself joins the parent group without a capture'
   api.deactivate();
 });
 
+test('startup renders Active once, with VS Code\'s saved splits and without moving focus', async () => {
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  const api = fake.activate();
+  fake.vscode.window.createTerminal({ name: 'a' }).show();
+  fake.vscode.window.createTerminal({ name: 'b', location: { parentTerminal: fake.vscode.window.terminals[0] } }).show();
+  fake.vscode.window.createTerminal({ name: 'c' }).show();
+  let fired = 0;
+  api.activeView.onDidChangeTreeData(() => fired++);
+  const rows = await api.activeView.getChildren();
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.ok(api.tracker.ready, 'startup finished before the first rows were returned');
+  assert.ok(rows.length > 0);
+  assert.ok(fired <= 2, `Active redrew ${fired} times during startup`);
+  assert.ok(!fake.executed.some(([id]) => /focus(Next|Previous)Pane|focusAtIndex/.test(id)), 'no focus moves at startup');
+  api.deactivate();
+});
+
+test('seeding from the saved layout splits terminals in order and ignores a layout that does not fit', () => {
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: workspace });
+  const api = fake.activate();
+  for (const name of ['a', 'b', 'c']) fake.vscode.window.createTerminal({ name });
+  assert.strictEqual(api.tracker.seedGroups([2, 2]), false);
+  assert.strictEqual(api.tracker.seedGroups([2, 1]), true);
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['a', 'b'], ['c']]);
+  api.deactivate();
+});
+
+test('a burst of refreshes redraws a view once', async () => {
+  const { api } = await setup();
+  let fired = 0;
+  api.inactiveView.onDidChangeTreeData(() => fired++);
+  for (let i = 0; i < 20; i++) api.inactiveView.refresh(i % 2 === 0);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.strictEqual(fired, 1);
+  assert.strictEqual(api.inactiveView.needsFull, true, 'a full refresh in the burst is kept');
+  api.deactivate();
+});
+
 test('a provisional registry id without a session file never replaces the resumed session', async () => {
   const real = '44444444-0000-0000-0000-000000000004';
   const provisional = '44444444-0000-0000-0000-00000000000f';

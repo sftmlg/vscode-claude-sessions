@@ -52,7 +52,7 @@ The picker always opens before anything else, so cancelling it (Escape) changes 
 
 ## Startup
 
-The views render first, from a cache in VS Code's extension storage (`meta-cache.json`, `text-cache.json`), keyed by file and change time; only changed session files are read again. Listing 340 sessions takes about 0.1 s with the cache and 0.75 s without it; details for open tabs load one by one afterwards, and the search text last. The search text cache is written at most once a minute, the list cache every few seconds. Sessions of open tabs are read immediately on start.
+The views render first, from a cache in VS Code's extension storage (`meta-cache.json`, `text-cache.json`), keyed by file and change time; only changed session files are read again. Listing 340 sessions takes about 0.1 s with the cache and 0.75 s without it; details for open tabs load one by one afterwards, and the search text last. The search text cache is written at most once a minute, the list cache every few seconds. **Active** renders once, when the restored terminals, their sessions and their details are known; until then VS Code shows its loading bar. Every view redraws at most every 50 ms, however many changes arrive.
 
 The extension shares one extension host with every other installed extension. Extensions that search the whole workspace on start (`workspaceContains` activation) or start language tools can hold that host for several seconds; the extension host log (`Developer: Show Logs…` → Extension Host) shows which ones run. `npm run bench -- <repo>` measures the extension's own share on real data.
 
@@ -80,7 +80,11 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 
 - **Session per tab:** terminal shell process → child `claude` process → `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
 - **Session list:** `~/.claude*/projects/<encoded repo path>*/*.jsonl`, read from the head and tail of each file only.
-- **Splits and order:** VS Code does not expose terminal groups to extensions. Capturing them means cycling focus through all terminals once, which is visible, so it never runs on its own: every 10 seconds the extension compares its layout with the one VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`), and on a mismatch the **Active** header shows a note and the capture button. Splits the extension creates itself (split button, ＋ on a split, restore) are known without capturing. A split made with VS Code itself is placed 0.6 s after it opens: focus moves once to the previous pane and back, only within that split. The note only counts once VS Code has saved its layout after the last terminal change. `claudeSessions.autoCaptureLayout` turns automatic capture back on. Captures are logged in the output channel **Claude Sessions**.
+- **Splits and order:** VS Code does not expose terminal groups to extensions. Where the layout comes from:
+  - **On start:** from the layout VS Code saved itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`), applied in terminal order once the restored terminals stop arriving; nothing moves focus.
+  - **Splits the extension creates** (split button, ＋ on a split, restore) are known directly.
+  - **A split made with VS Code itself** is placed 0.6 s after it opens: focus moves once to the previous pane and back, only within that split, and never during start or restore.
+  - **Anything else:** every 10 seconds the layout is compared with VS Code's saved one; on a mismatch the **Active** header shows a note and the capture button, which cycles focus through all terminals once. Capture never runs on its own.
 - Terminals in the editor area are treated as separate tabs.
 
 ## Settings
@@ -90,7 +94,6 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.storageFile` | `.vscode/claude-sessions.json` | State file inside the repository |
 | `claudeSessions.claudeCommand` | `claude` | Command used to resume; `--resume <id>` is appended |
 | `claudeSessions.openIn` | `activeTerminal` | `activeTerminal` or `newTab` for the ▶ button |
-| `claudeSessions.autoCaptureLayout` | `false` | Capture splits automatically (focus briefly cycles through the terminals) |
 | `claudeSessions.pollSeconds` | `5` | How often names and sessions are re-read |
 | `claudeSessions.historyDays` | `30` | Reach of the inactive and archive lists |
 

@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -457,11 +457,6 @@
             "Always open a new tab."
           ],
           "description": "Where the play button opens a session."
-        },
-        "claudeSessions.autoCaptureLayout": {
-          "type": "boolean",
-          "default": false,
-          "description": "Capture splits automatically when a terminal opens or closes. Off by default because capturing briefly cycles focus through all terminals; when the layout changes, the Active header offers the capture button instead."
         },
         "claudeSessions.pollSeconds": {
           "type": "number",

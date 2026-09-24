@@ -359,7 +359,17 @@ class Tracker {
     await this.waitForActive(before, this.stepMs);
   }
 
+  seedGroups(sizes) {
+    const live = this.liveTerminals();
+    if (!sizes || sizes.reduce((a, b) => a + b, 0) !== live.length) return false;
+    if (this.groups.some((g) => g.length > 1)) return false;
+    let i = 0;
+    this.groups = sizes.map((n) => live.slice(i, (i += n)));
+    return true;
+  }
+
   noteOpened(t) {
+    if (!this.ready || this.restoring) return;
     this.openCount = (this.openCount || 0) + 1;
     this.lastOpened = t;
     clearTimeout(this.placeTimer);
@@ -453,28 +463,31 @@ class Tracker {
     const pending = [];
     let first = null;
     this.restoring = true;
-    for (const group of byGroup.values()) {
-      let parent = null;
-      const created = [];
-      for (const tab of group) {
-        const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : this.store.wsPath;
-        const options = { name: tab.name, cwd, iconPath: new vscode.ThemeIcon('sparkle') };
-        if (parent) options.location = { parentTerminal: parent };
-        const t = vscode.window.createTerminal(options);
-        this.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
-        pending.push([t, `${claudeCommand()} --resume ${tab.sessionId}`]);
-        parent = parent || t;
-        first = first || t;
-        created.push(t);
+    try {
+      for (const group of byGroup.values()) {
+        let parent = null;
+        const created = [];
+        for (const tab of group) {
+          const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : this.store.wsPath;
+          const options = { name: tab.name, cwd, iconPath: new vscode.ThemeIcon('sparkle') };
+          if (parent) options.location = { parentTerminal: parent };
+          const t = vscode.window.createTerminal(options);
+          this.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
+          pending.push([t, `${claudeCommand()} --resume ${tab.sessionId}`]);
+          parent = parent || t;
+          first = first || t;
+          created.push(t);
+        }
+        this.groups.push(created);
       }
-      this.groups.push(created);
+      if (first) first.show(false);
+      for (const [t, text] of pending) {
+        t.sendText(text);
+        await sleep(400);
+      }
+    } finally {
+      this.restoring = false;
     }
-    if (first) first.show(false);
-    for (const [t, text] of pending) {
-      t.sendText(text);
-      await sleep(400);
-    }
-    this.restoring = false;
     await this.poll();
   }
 }
@@ -515,7 +528,11 @@ class SessionsProvider {
 
   refresh(fast = false) {
     if (!fast) this.needsFull = true;
-    this.emitter.fire();
+    if (this.fireTimer) return;
+    this.fireTimer = setTimeout(() => {
+      this.fireTimer = null;
+      this.emitter.fire();
+    }, 50);
   }
 
   getTreeItem(e) {
@@ -611,6 +628,7 @@ class SessionsProvider {
 
   async getChildren(e) {
     if (this.mode === 'active') {
+      if (this.ready) await this.ready;
       if (!e) return this.activeChildren();
       if (e.data.terminals) return Promise.all(e.data.terminals.map((t) => this.activeTabItem(t, true)));
       return [];
@@ -748,7 +766,6 @@ function activate(context) {
     view.refresh();
   };
 
-  let pickerOpen = false;
   let splitting = Promise.resolve();
   const splitNextTo = (parent) => {
     const run = splitting.then(() => splitOnce(parent));
@@ -800,7 +817,6 @@ function activate(context) {
   };
 
   const choose = async ({ allowPlain }) => {
-    pickerOpen = true;
     const qp = vscode.window.createQuickPick();
     try {
       qp.placeholder = 'Search sessions by name or content, or start a new Claude session';
@@ -843,7 +859,6 @@ function activate(context) {
       return picked ? picked.choice : null;
     } finally {
       qp.dispose();
-      pickerOpen = false;
     }
   };
 
@@ -927,39 +942,21 @@ function activate(context) {
     view.refresh(true);
   };
 
-  let focusRefresh = null;
   const minuteTimer = setInterval(() => view.refresh(true), 60000);
   updateBadge();
 
   const log = vscode.window.createOutputChannel('Claude Sessions');
   tracker.log = (line) => log.appendLine(`${new Date().toISOString()} ${line}`);
-  const canScan = () => !tracker.restoring && !tracker.scanning && !pickerOpen && vscode.window.state.focused;
   const stateDb = context.storageUri ? path.join(path.dirname(context.storageUri.fsPath), 'state.vscdb') : null;
   const sizesOf = (groups) => JSON.stringify(groups.map((g) => g.length));
   const scan = async (reason) => {
     await tracker.scanLayout();
     const expected = await vscodeGroupSizes(stateDb);
-    let result = sizesOf(tracker.groups);
-    if (expected && JSON.stringify(expected) !== result) {
-      await tracker.scanLayout(900);
-      result = sizesOf(tracker.groups);
-    }
-    log.appendLine(`${new Date().toISOString()} layout scan (${reason}): ${result}${expected ? ` · VS Code ${JSON.stringify(expected)}` : ''}`);
+    if (expected && JSON.stringify(expected) !== sizesOf(tracker.groups)) await tracker.scanLayout(900);
+    log.appendLine(`${new Date().toISOString()} layout scan (${reason}): ${sizesOf(tracker.groups)}${expected ? ` · VS Code ${JSON.stringify(expected)}` : ''}`);
     view.refresh(true);
   };
 
-  let debounce = null;
-  const scheduleScan = () => {
-    lastTerminalChange = Date.now();
-    clearTimeout(debounce);
-    debounce = setTimeout(() => {
-      if (!settings().get('autoCaptureLayout')) return;
-      if (!canScan()) return scheduleScan();
-      scan('terminal opened or closed');
-    }, 1500);
-  };
-
-  let lastVscodeLayout = null;
   let layoutStale = false;
   const setLayoutStale = (value) => {
     if (layoutStale === value) return;
@@ -979,13 +976,7 @@ function activate(context) {
     } catch {}
     if (savedAt < lastTerminalChange) return;
     tracker.syncGroups();
-    const ours = JSON.stringify(tracker.groups.map((g) => g.length));
-    setLayoutStale(ours !== signature);
-    if (ours === signature || signature === lastVscodeLayout || !settings().get('autoCaptureLayout') || !canScan()) return;
-    lastVscodeLayout = signature;
-    await scan(`VS Code layout ${signature} differs from ${ours}`);
-    const after = JSON.stringify(tracker.groups.map((g) => g.length));
-    if (after !== signature) tracker.log(`layout still differs after one capture (${after} vs ${signature}); not retrying until VS Code's layout changes`);
+    setLayoutStale(sizesOf(tracker.groups) !== signature);
   };
   const layoutTimer = setInterval(checkLayout, 10000);
 
@@ -1010,10 +1001,7 @@ function activate(context) {
     inactiveTree.onDidChangeSelection(() => tracker.setTerminalFocus(false)),
     vscode.window.onDidChangeTextEditorSelection(() => tracker.setTerminalFocus(false)),
     vscode.window.onDidChangeActiveTextEditor((e) => e && tracker.setTerminalFocus(false)),
-    tracker.onFocusChange.event(() => {
-      clearTimeout(focusRefresh);
-      focusRefresh = setTimeout(() => view.refresh(), 30);
-    }),
+    tracker.onFocusChange.event(() => view.refresh(true)),
     notifications.onChange.event(() => {
       view.refresh(true);
       updateBadge();
@@ -1088,7 +1076,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.openNew', () => openFreshThenPick(null)),
     vscode.commands.registerCommand('claudeSessions.openInTerminal', (item) => terminalOf(item) && pickIntoExisting(terminalOf(item))),
     vscode.commands.registerCommand('claudeSessions.switchSession', (item) => terminalOf(item) && pickIntoExisting(terminalOf(item))),
-    vscode.window.onDidChangeWindowState(() => view.refresh()),
+    vscode.window.onDidChangeWindowState(() => view.refresh(true)),
     vscode.window.onDidChangeActiveTerminal((t) => {
       if (tracker.scanning || !t) return;
       const m = tracker.meta.get(t);
@@ -1099,13 +1087,12 @@ function activate(context) {
         tracker.meta.set(t, { ...m, name: known, nameSource: 'user' });
       }
       tracker.setTerminalFocus(true);
-      clearTimeout(focusRefresh);
-      focusRefresh = setTimeout(() => view.refresh(), 30);
+      view.refresh(true);
     }),
     { dispose: () => clearInterval(minuteTimer) },
     tracker.onChange.event(() => view.refresh()),
     vscode.window.onDidOpenTerminal((t) => {
-      scheduleScan();
+      lastTerminalChange = Date.now();
       tracker.noteOpened(t);
     }),
     vscode.window.onDidCloseTerminal((t) => {
@@ -1115,7 +1102,8 @@ function activate(context) {
         notifications.dismiss(m.sessionId);
       }
       tracker.meta.delete(t);
-      scheduleScan();
+      lastTerminalChange = Date.now();
+      view.refresh();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeSessions') && startTimer()),
     { dispose: () => clearInterval(timer) },
@@ -1204,11 +1192,32 @@ function activate(context) {
     })
   );
 
-  tracker.poll();
-  setTimeout(() => {
-    tracker.poll();
-    if (settings().get('autoCaptureLayout') && tracker.liveTerminals().length > 1 && canScan()) scan('startup');
-  }, 4000);
+  const terminalsSettled = async () => {
+    let count = -1;
+    for (let i = 0; i < 12 && count !== tracker.liveTerminals().length; i++) {
+      count = tracker.liveTerminals().length;
+      await sleep(250);
+    }
+  };
+  activeView.ready = (async () => {
+    await terminalsSettled();
+    const seeded = tracker.seedGroups(await vscodeGroupSizes(stateDb));
+    await tracker.poll();
+    const ids = [...tracker.meta.values()].map((m) => m.sessionId).filter(Boolean);
+    await Promise.all(ids.map((id) => metaForSession(id).catch(() => null)));
+    tracker.log(`ready: ${tracker.liveTerminals().length} terminals, layout ${seeded ? 'from VS Code' : 'unknown'}`);
+  })()
+    .catch((err) => tracker.log(`startup failed: ${err.stack || err}`))
+    .finally(() => {
+      tracker.ready = true;
+    });
+  context.subscriptions.push({
+    dispose: () => {
+      clearTimeout(activeView.fireTimer);
+      clearTimeout(inactiveView.fireTimer);
+      clearTimeout(tracker.placeTimer);
+    },
+  });
   setTimeout(checkLayout, 15000);
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
     setTimeout(() => checkForUpdates(false), 30000);
@@ -1231,7 +1240,7 @@ function activate(context) {
 function vscodeGroupSizes(stateDb) {
   if (!stateDb || !fs.existsSync(stateDb)) return Promise.resolve(null);
   return new Promise((resolve) =>
-    execFile('sqlite3', ['-readonly', stateDb, "select value from ItemTable where key='terminal.integrated.layoutInfo'"], (err, out) => {
+    execFile('sqlite3', ['-readonly', stateDb, "select value from ItemTable where key='terminal.integrated.layoutInfo'"], { timeout: 2000 }, (err, out) => {
       if (err || !out.trim()) return resolve(null);
       try {
         resolve(parseGroupSizes(out));
