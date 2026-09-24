@@ -194,6 +194,7 @@ class Tracker {
     this.restoring = false;
     this.scanning = false;
     this.placing = 0;
+    this.known = new WeakSet();
     this.terminalFocused = true;
     this.onChange = new vscode.EventEmitter();
     this.onFocusChange = new vscode.EventEmitter();
@@ -373,6 +374,31 @@ class Tracker {
     return true;
   }
 
+  async placeNewTerminal(t) {
+    if (this.scanning || this.placing || this.disposed || this.known.has(t) || vscode.window.activeTerminal !== t) return;
+    this.syncGroups();
+    const own = this.groups.find((g) => g.includes(t));
+    if (!own || own.length > 1) return;
+    this.scanning = true;
+    this.stepMs = 250;
+    try {
+      await this.command('workbench.action.terminal.focusPreviousPane');
+      const neighbour = vscode.window.activeTerminal;
+      if (neighbour && neighbour !== t) {
+        await this.command('workbench.action.terminal.focusNextPane');
+        if (vscode.window.activeTerminal !== t) t.show(false);
+        const group = this.groups.find((g) => g.includes(neighbour));
+        if (group && group !== own) {
+          this.groups = this.groups.filter((g) => g !== own);
+          group.splice(group.indexOf(neighbour) + 1, 0, t);
+        }
+      }
+    } finally {
+      this.scanning = false;
+    }
+    await this.poll();
+  }
+
 
   async scanLayout(stepMs = 250) {
     const live = this.liveTerminals();
@@ -442,6 +468,7 @@ class Tracker {
           const options = { name: tab.name, cwd, iconPath: new vscode.ThemeIcon('sparkle') };
           if (parent) options.location = { parentTerminal: parent };
           const t = vscode.window.createTerminal(options);
+          this.known.add(t);
           this.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
           pending.push([t, `${claudeCommand()} --resume ${tab.sessionId}`]);
           parent = parent || t;
@@ -706,6 +733,7 @@ function activate(context) {
   const resumeInNewTab = (tab) => {
     const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
     const t = vscode.window.createTerminal({ name: tab.name, cwd, iconPath: new vscode.ThemeIcon('sparkle') });
+    tracker.known.add(t);
     tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
     t.show(false);
     t.sendText(`${claudeCommand()} --resume ${tab.sessionId}`);
@@ -780,6 +808,7 @@ function activate(context) {
       }
     }
     if (!t) t = vscode.window.createTerminal({ cwd: store.wsPath, location: { parentTerminal: parent } });
+    tracker.known.add(t);
     tracker.groups = tracker.groups.map((g) => g.filter((x) => x !== t)).filter((g) => g.length);
     const group = tracker.groups.find((g) => g.includes(parent));
     if (group) group.splice(group.indexOf(parent) + 1, 0, t);
@@ -861,6 +890,7 @@ function activate(context) {
       t = await splitNextTo(parent);
     } else {
       t = vscode.window.createTerminal({ cwd: store.wsPath });
+      tracker.known.add(t);
       tracker.groups.push([t]);
     }
     view.refresh(true);
@@ -924,39 +954,19 @@ function activate(context) {
   const sizesOf = (groups) => JSON.stringify(groups.map((g) => g.length));
   const scan = async (reason) => {
     await tracker.scanLayout();
-    const expected = await vscodeGroupSizes(stateDb);
-    if (expected && JSON.stringify(expected) !== sizesOf(tracker.groups)) await tracker.scanLayout(900);
-    log.appendLine(`${new Date().toISOString()} layout scan (${reason}): ${sizesOf(tracker.groups)}${expected ? ` · VS Code ${JSON.stringify(expected)}` : ''}`);
+    log.appendLine(`${new Date().toISOString()} layout scan (${reason}): ${sizesOf(tracker.groups)}`);
     view.refresh(true);
   };
 
-  const canScan = () => settings().get('autoCaptureLayout') !== false && tracker.ready && !tracker.restoring && !tracker.scanning && !tracker.placing && !pickerOpen && vscode.window.state.focused;
-
-  let debounce = null;
-  const scheduleScan = () => {
-    lastTerminalChange = Date.now();
-    clearTimeout(debounce);
-    debounce = setTimeout(() => {
-      if (settings().get('autoCaptureLayout') === false || !tracker.ready || lastTerminalChange < tracker.readyAt) return;
-      if (!canScan()) return scheduleScan();
-      scan('terminal opened or closed');
-    }, 1500);
+  let placeTimer = null;
+  const placeOpened = (t) => {
+    if (!tracker.ready || tracker.restoring || tracker.known.has(t)) return;
+    clearTimeout(placeTimer);
+    placeTimer = setTimeout(() => {
+      if (settings().get('autoCaptureLayout') === false || pickerOpen || !vscode.window.state.focused) return;
+      tracker.placeNewTerminal(t);
+    }, 600);
   };
-
-  let lastVscodeLayout = null;
-  let lastTerminalChange = 0;
-  const checkLayout = async () => {
-    const sizes = await vscodeGroupSizes(stateDb);
-    if (!sizes) return;
-    const signature = JSON.stringify(sizes);
-    if (signature === lastVscodeLayout || !canScan()) return;
-    if (Date.now() - lastTerminalChange < 5000) return;
-    tracker.syncGroups();
-    lastVscodeLayout = signature;
-    if (sizesOf(tracker.groups) === signature) return;
-    await scan(`VS Code layout ${signature} differs from ${sizesOf(tracker.groups)}`);
-  };
-  const layoutTimer = setInterval(checkLayout, 10000);
 
   let timer = null;
   const startTimer = () => {
@@ -967,8 +977,6 @@ function activate(context) {
 
   context.subscriptions.push(
     log,
-    { dispose: () => clearInterval(layoutTimer) },
-    vscode.window.onDidChangeWindowState((w) => w.focused && checkLayout()),
     activeTree,
     inactiveTree,
     activeTree.onDidChangeSelection((e) => {
@@ -1069,7 +1077,7 @@ function activate(context) {
     }),
     { dispose: () => clearInterval(minuteTimer) },
     tracker.onChange.event(() => view.refresh()),
-    vscode.window.onDidOpenTerminal(scheduleScan),
+    vscode.window.onDidOpenTerminal(placeOpened),
     vscode.window.onDidCloseTerminal((t) => {
       const m = tracker.meta.get(t);
       if (m && m.sessionId) {
@@ -1077,7 +1085,6 @@ function activate(context) {
         notifications.dismiss(m.sessionId);
       }
       tracker.meta.delete(t);
-      scheduleScan();
       view.refresh();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeSessions') && startTimer()),
@@ -1183,17 +1190,15 @@ function activate(context) {
     .catch((err) => tracker.log(`startup failed: ${err.stack || err}`))
     .finally(() => {
       tracker.ready = true;
-      tracker.readyAt = Date.now();
     });
   context.subscriptions.push({
     dispose: () => {
       tracker.disposed = true;
       clearTimeout(activeView.fireTimer);
       clearTimeout(inactiveView.fireTimer);
-      clearTimeout(debounce);
+      clearTimeout(placeTimer);
     },
   });
-  setTimeout(checkLayout, 15000);
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
     setTimeout(() => checkForUpdates(false), 30000);
     const updateTimer = setInterval(() => checkForUpdates(false), 60 * 60 * 1000);

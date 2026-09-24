@@ -140,21 +140,40 @@ test('🔍 without a row falls back to the active terminal instead of throwing',
   api.deactivate();
 });
 
-test('a split made with VS Code itself is captured automatically and focus returns to it', async () => {
+const focusMoves = (fake) => fake.executed.filter(([id]) => /focus(Next|Previous)Pane|focusNext$|focusAtIndex/.test(id)).length;
+
+test('a split made with VS Code itself joins its group with one pane check and focus returns to it', async () => {
   const { fake, api } = await setup();
   const a = fake.vscode.window.createTerminal({ name: 'left' });
   a.show();
   await new Promise((r) => setTimeout(r, 700));
   const b = await fake.run('workbench.action.terminal.split');
-  await new Promise((r) => setTimeout(r, 2500));
+  await new Promise((r) => setTimeout(r, 1000));
   api.tracker.syncGroups();
   assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['left', 'zsh']]);
   assert.strictEqual(fake.vscode.window.activeTerminal, b, 'focus is back on the new split');
-  const other = fake.vscode.window.createTerminal({ name: 'alone' });
-  other.show();
-  await new Promise((r) => setTimeout(r, 2500));
+  assert.ok(!fake.executed.some(([id]) => /focusAtIndex|focusNext$/.test(id)), 'no full capture');
+  api.deactivate();
+});
+
+test('a plain new terminal and a closed one never move focus to another terminal', async () => {
+  const { fake, api } = await setup();
+  const a = fake.vscode.window.createTerminal({ name: 'left' });
+  a.show();
+  const b = await fake.run('workbench.action.terminal.split');
+  await new Promise((r) => setTimeout(r, 1000));
+  const seen = [];
+  fake.vscode.window.onDidChangeActiveTerminal((t) => seen.push(t && t.name));
+  const plain = fake.vscode.window.createTerminal({ name: 'plain' });
+  plain.show();
+  await new Promise((r) => setTimeout(r, 2000));
+  assert.deepStrictEqual(seen, ['plain'], 'only the new terminal itself became active');
+  const before = focusMoves(fake);
+  b.dispose();
+  await new Promise((r) => setTimeout(r, 2000));
+  assert.strictEqual(focusMoves(fake), before, 'closing moves no focus');
   api.tracker.syncGroups();
-  assert.deepStrictEqual(api.tracker.groups.map((g) => g.length), [2, 1]);
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['left'], ['plain']]);
   api.deactivate();
 });
 
