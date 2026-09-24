@@ -78,7 +78,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 
 - **Session per tab:** terminal shell process → child `claude` process → `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
 - **Session list:** `~/.claude*/projects/<encoded repo path>*/*.jsonl`, read from the head and tail of each file only.
-- **Splits and order (automatic):** VS Code does not expose terminal groups to extensions. When a terminal opens or closes, the extension cycles focus through all terminals once and restores focus afterwards (`claudeSessions.autoCaptureLayout`). Every capture is checked against the layout VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`); on a mismatch it captures again more slowly. The same check runs every 10 seconds and when the window regains focus, so splits made by dragging tabs are picked up too — but only after 5 quiet seconds without terminal changes, and at most once per VS Code layout, so the focus never keeps jumping. Captures are logged in the output channel **Claude Sessions**.
+- **Splits and order:** VS Code does not expose terminal groups to extensions. Capturing them means cycling focus through all terminals once, which is visible, so it never runs on its own: every 10 seconds the extension compares its layout with the one VS Code stores itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`), and on a mismatch the **Active** header shows a note and the capture button. Splits the extension creates itself (split button, ＋ on a split, restore) are known without capturing. `claudeSessions.autoCaptureLayout` turns automatic capture back on. Captures are logged in the output channel **Claude Sessions**.
 - Terminals in the editor area are treated as separate tabs.
 
 ## Settings
@@ -88,7 +88,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.storageFile` | `.vscode/claude-sessions.json` | State file inside the repository |
 | `claudeSessions.claudeCommand` | `claude` | Command used to resume; `--resume <id>` is appended |
 | `claudeSessions.openIn` | `activeTerminal` | `activeTerminal` or `newTab` for the ▶ button |
-| `claudeSessions.autoCaptureLayout` | `true` | Capture splits and order automatically |
+| `claudeSessions.autoCaptureLayout` | `false` | Capture splits automatically (focus briefly cycles through the terminals) |
 | `claudeSessions.pollSeconds` | `5` | How often names and sessions are re-read |
 | `claudeSessions.historyDays` | `30` | Reach of the inactive and archive lists |
 

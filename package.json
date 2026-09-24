@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -32,7 +32,7 @@
       },
       {
         "command": "claudeSessions.captureLayout",
-        "title": "Capture tab layout now",
+        "title": "Capture split layout (focus briefly cycles through the terminals)",
         "category": "Claude Sessions",
         "icon": "$(save)"
       },
@@ -209,6 +209,11 @@
     },
     "menus": {
       "view/title": [
+        {
+          "command": "claudeSessions.captureLayout",
+          "when": "view == claudeSessions.active && claudeSessions.layoutStale",
+          "group": "navigation@0"
+        },
         {
           "command": "claudeSessions.reloadWindow",
           "when": "view == claudeSessions.inactive && claudeSessions.updated",
@@ -454,8 +459,8 @@
         },
         "claudeSessions.autoCaptureLayout": {
           "type": "boolean",
-          "default": true,
-          "description": "Capture splits and order when a terminal opens or closes. Focus briefly cycles through the terminals while doing so."
+          "default": false,
+          "description": "Capture splits automatically when a terminal opens or closes. Off by default because capturing briefly cycles focus through all terminals; when the layout changes, the Active header offers the capture button instead."
         },
         "claudeSessions.pollSeconds": {
           "type": "number",

@@ -854,7 +854,7 @@ function activate(context) {
 
   const log = vscode.window.createOutputChannel('Claude Sessions');
   tracker.log = (line) => log.appendLine(`${new Date().toISOString()} ${line}`);
-  const canScan = () => settings().get('autoCaptureLayout') && !tracker.restoring && !tracker.scanning && !pickerOpen && vscode.window.state.focused;
+  const canScan = () => !tracker.restoring && !tracker.scanning && !pickerOpen && vscode.window.state.focused;
   const stateDb = context.storageUri ? path.join(path.dirname(context.storageUri.fsPath), 'state.vscdb') : null;
   const sizesOf = (groups) => JSON.stringify(groups.map((g) => g.length));
   const scan = async (reason) => {
@@ -881,17 +881,24 @@ function activate(context) {
   };
 
   let lastVscodeLayout = null;
+  let layoutStale = false;
+  const setLayoutStale = (value) => {
+    if (layoutStale === value) return;
+    layoutStale = value;
+    vscode.commands.executeCommand('setContext', 'claudeSessions.layoutStale', value);
+    activeTree.message = value ? 'The split layout changed. Use the capture button above to update it (focus briefly cycles through the terminals).' : undefined;
+  };
   let lastTerminalChange = 0;
   const checkLayout = async () => {
     const sizes = await vscodeGroupSizes(stateDb);
     if (!sizes) return;
     const signature = JSON.stringify(sizes);
-    if (signature === lastVscodeLayout || !canScan()) return;
     if (Date.now() - lastTerminalChange < 5000) return;
     tracker.syncGroups();
     const ours = JSON.stringify(tracker.groups.map((g) => g.length));
+    setLayoutStale(ours !== signature);
+    if (ours === signature || signature === lastVscodeLayout || !settings().get('autoCaptureLayout') || !canScan()) return;
     lastVscodeLayout = signature;
-    if (ours === signature) return;
     await scan(`VS Code layout ${signature} differs from ${ours}`);
     const after = JSON.stringify(tracker.groups.map((g) => g.length));
     if (after !== signature) tracker.log(`layout still differs after one capture (${after} vs ${signature}); not retrying until VS Code's layout changes`);
@@ -1038,8 +1045,9 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.checkForUpdates', () => checkForUpdates(true)),
     vscode.commands.registerCommand('claudeSessions.reloadWindow', () => vscode.commands.executeCommand('workbench.action.reloadWindow')),
     vscode.commands.registerCommand('claudeSessions.captureLayout', async () => {
-      await tracker.scanLayout();
-      vscode.window.showInformationMessage('Tab layout captured.');
+      await scan('manual');
+      lastTerminalChange = 0;
+      await checkLayout();
     }),
     vscode.commands.registerCommand('claudeSessions.refresh', () => view.refresh()),
     vscode.commands.registerCommand('claudeSessions.focusTab', (t) => {
@@ -1111,7 +1119,7 @@ function activate(context) {
 
   setTimeout(() => {
     tracker.poll();
-    if (tracker.liveTerminals().length > 1 && canScan()) scan('startup');
+    if (settings().get('autoCaptureLayout') && tracker.liveTerminals().length > 1 && canScan()) scan('startup');
   }, 4000);
   setTimeout(checkLayout, 15000);
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
