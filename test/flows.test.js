@@ -210,6 +210,58 @@ test('a capture keeps the known order inside a split even when the right pane is
   api.deactivate();
 });
 
+test('a status change redraws without re-reading the session list; a close re-reads it once', async () => {
+  const id = '99999999-0000-0000-0000-000000000009';
+  writeSession(id, 'status flip');
+  const claude = startClaude(id);
+  const { fake, api } = await setup();
+  const t = fake.vscode.window.createTerminal({ name: 'flip', pid: claude.pid });
+  t.show();
+  await api.activeView.ready;
+  await api.tracker.poll();
+  await new Promise((r) => setTimeout(r, 80));
+  await api.inactiveView.getChildren();
+  let reads = 0;
+  const original = api.inactiveView.inactiveSessions.bind(api.inactiveView);
+  api.inactiveView.inactiveSessions = () => {
+    reads++;
+    return original();
+  };
+  fs.writeFileSync(path.join(registryDir, `${claude.pid}.json`), JSON.stringify({ pid: claude.pid, sessionId: id, cwd: workspace, status: 'busy' }));
+  await api.tracker.poll();
+  await new Promise((r) => setTimeout(r, 80));
+  await api.inactiveView.getChildren();
+  assert.strictEqual(reads, 0, 'busy/idle only redraws');
+  stopClaude(claude);
+  t.dispose();
+  await new Promise((r) => setTimeout(r, 300));
+  await api.inactiveView.getChildren();
+  assert.strictEqual(reads, 1, 'a close re-reads the list once');
+  api.deactivate();
+});
+
+test('a session that ends a little after its tab closed still moves to Inactive', async () => {
+  const id = 'aaaaaaaa-0000-0000-0000-00000000000a';
+  writeSession(id, 'late exit');
+  const claude = startClaude(id);
+  const { fake, api } = await setup();
+  const t = fake.vscode.window.createTerminal({ name: 'late', pid: claude.pid });
+  t.show();
+  await api.activeView.ready;
+  await api.tracker.poll();
+  t.dispose();
+  await api.tracker.poll();
+  await new Promise((r) => setTimeout(r, 80));
+  const during = await api.inactiveView.getChildren();
+  assert.ok(!during.some((i) => i.data && i.data.tab && i.data.tab.sessionId === id), 'still running, not yet inactive');
+  stopClaude(claude);
+  await api.tracker.poll();
+  await new Promise((r) => setTimeout(r, 80));
+  const after = await api.inactiveView.getChildren();
+  assert.ok(after.some((i) => i.data && i.data.tab && i.data.tab.sessionId === id), 'listed once it ended');
+  api.deactivate();
+});
+
 test('an update is installed once, not again every hour until the reload', async () => {
   const updater = require('../updater');
   const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease };

@@ -318,10 +318,12 @@ class Tracker {
       this.meta.set(t, m);
     }
     const signature = JSON.stringify(this.groups.map((g) => g.map((t) => [(this.meta.get(t) || {}).name, (this.meta.get(t) || {}).sessionId, (this.meta.get(t) || {}).status])));
-    if (signature !== this.lastSignature) {
+    const live = JSON.stringify([...running.values()].map((r) => r.sessionId).sort());
+    if (signature !== this.lastSignature || live !== this.lastLive) {
       this.lastSignature = signature;
-      this.onChange.fire();
+      this.onChange.fire({ full: live !== this.lastLive });
     }
+    this.lastLive = live;
     this.save();
   }
 
@@ -1085,7 +1087,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.switchSession', (item) => terminalOf(item) && pickIntoExisting(terminalOf(item))),
     vscode.window.onDidChangeWindowState(() => view.refresh(true)),
     vscode.window.onDidChangeActiveTerminal((t) => {
-      if (tracker.scanning || !t) return;
+      if (tracker.scanning || tracker.placing || !t) return;
       const m = tracker.meta.get(t);
       if (m && m.sessionId && vscode.window.state.focused) notifications.dismiss(m.sessionId);
       const known = m && m.sessionId && (store.readState().names || {})[m.sessionId];
@@ -1097,7 +1099,7 @@ function activate(context) {
       view.refresh(true);
     }),
     { dispose: () => clearInterval(minuteTimer) },
-    tracker.onChange.event(() => view.refresh()),
+    tracker.onChange.event((change) => view.refresh(Boolean(change && change.full === false))),
     vscode.window.onDidOpenTerminal(placeOpened),
     vscode.window.onDidCloseTerminal((t) => {
       const m = tracker.meta.get(t);
@@ -1106,7 +1108,7 @@ function activate(context) {
         notifications.dismiss(m.sessionId);
       }
       tracker.meta.delete(t);
-      view.refresh();
+      tracker.poll();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeSessions') && startTimer()),
     { dispose: () => clearInterval(timer) },

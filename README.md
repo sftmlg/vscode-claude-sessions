@@ -56,6 +56,24 @@ The views render first, from a cache in VS Code's extension storage (`meta-cache
 
 The extension shares one extension host with every other installed extension. Extensions that search the whole workspace on start (`workspaceContains` activation) or start language tools can hold that host for several seconds; the extension host log (`Developer: Show Logs…` → Extension Host) shows which ones run. `npm run bench -- <repo>` measures the extension's own share on real data.
 
+## Timing rules
+
+One rule per kind of trigger; a new trigger joins the matching row instead of getting its own timer.
+
+| Trigger | Rule |
+|---|---|
+| Clicks, buttons, commands | Immediate, never delayed |
+| Redraw of a view | At most one per 50 ms (`SessionsProvider.refresh`) |
+| Session list from disk | Only when the set of running Claude sessions changes, a tab is saved or removed, or a command changes names, favorites or archive; a busy/idle change only redraws |
+| Terminal opened | Collected; acted on after 1.5 s without a new one (one check for one terminal, one capture for several) |
+| Terminal closed | Removed from its split at once, then one poll; focus never moves |
+| Start | Waits until restored terminals are quiet for 1.5 s, then draws **Active** once |
+| Poll of running sessions | Every `pollSeconds` (5 s); a poll requested while one runs is queued, not run in parallel |
+| Search fields | 150 ms (picker) and 200 ms (Inactive search) after the last keystroke |
+| Caches on disk | List cache 5 s, search text cache 60 s after the last change |
+| Relative times ("5 min ago") | Redraw every 60 s |
+| Updates | 30 s after start, then hourly; each version installed once |
+
 ## Naming convention
 
 Default for names given automatically (by an agent or a batch run). Anyone renaming by hand can use any name.
