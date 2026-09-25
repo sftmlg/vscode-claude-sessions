@@ -28,6 +28,7 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
   const inputAnswers = [];
   const warningAnswers = [];
   const panes = [];
+  const lastActive = new Map();
   const groupOf = (t) => panes.find((g) => g.includes(t));
   const focusPane = (step) => {
     const t = vscode.window.activeTerminal;
@@ -50,6 +51,8 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
     }
 
     show() {
+      const g = groupOf(this);
+      if (g) lastActive.set(g, this);
       if (vscode.window.activeTerminal !== this) {
         vscode.window.activeTerminal = this;
         active.fire(this);
@@ -184,7 +187,8 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
         if (id === 'workbench.action.terminal.focusAtIndex1') return panes[0] && panes[0][0].show();
         if (id === 'workbench.action.terminal.focusNext') {
           const i = panes.findIndex((g) => g.includes(vscode.window.activeTerminal));
-          return panes.length && panes[(i + 1) % panes.length][0].show();
+          const next = panes.length && panes[(i + 1) % panes.length];
+          return next && (lastActive.get(next) && next.includes(lastActive.get(next)) ? lastActive.get(next) : next[0]).show();
         }
         if (id === 'workbench.action.terminal.focusNextPane') return focusPane(1);
         if (id === 'workbench.action.terminal.focusPreviousPane') return focusPane(-1);

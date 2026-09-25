@@ -81,9 +81,11 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - **Session per tab:** terminal shell process → child `claude` process → `~/.claude*/sessions/<pid>.json`, which Claude Code writes for every running session.
 - **Session list:** `~/.claude*/projects/<encoded repo path>*/*.jsonl`, read from the head and tail of each file only.
 - **Splits and order:** VS Code does not expose terminal groups to extensions. The extension keeps its own copy and moves focus as little as possible (`claudeSessions.autoCaptureLayout`, on by default):
-  - **On start,** once the restored terminals stop arriving and before **Active** is drawn, it cycles focus through all terminals once and returns it; without that, the layout VS Code saved itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`) is applied in terminal order.
+  - **One quiet period for everything:** terminal events are collected and acted on only after 1.5 s without a new one, on start as later.
+  - **On start,** once the restored terminals have been quiet for 1.5 s and before **Active** is drawn, the layout VS Code saved itself (`terminal.integrated.layoutInfo` in the workspace `state.vscdb`, read with `sqlite3`) is applied in terminal order, then focus cycles through all terminals once to confirm it and returns.
   - **Terminals the extension opens** (split button, ＋, restore, resume) are placed directly, without any focus change.
-  - **A terminal you open yourself** gets one check 0.6 s later: focus moves to the previous pane of its split and back. A plain new terminal has no previous pane, so nothing visibly moves.
+  - **Terminals you open yourself:** after the quiet period, a single one gets one check (focus to the previous pane of its split and back; a plain new terminal has no previous pane, so nothing visibly moves); several at once get one full capture.
+  - **Order inside a split:** a capture learns which panes belong together and their order up to rotation. The first pane is the one already known as first (from a split the extension made, a check or the saved layout); only without that does the oldest terminal go first.
   - **Closing a terminal** only removes it from its split; focus never moves.
   - `Claude Sessions: Capture split layout` in the command palette captures by hand, e.g. after dragging terminals between splits. Captures are logged in the output channel **Claude Sessions**.
 - Terminals in the editor area are treated as separate tabs.
@@ -122,7 +124,7 @@ Every change goes through the same steps; a step that fails stops the release.
 
 ## Updates
 
-The extension checks the latest GitHub release of `sftmlg/vscode-claude-sessions` 30 seconds after start and then every hour (`claudeSessions.autoUpdate`). A newer release is downloaded and installed automatically; the **Inactive** header then shows `updated to <version> · reload to use it` with a reload button. The cloud button in the same header checks immediately.
+The extension checks the latest GitHub release of `sftmlg/vscode-claude-sessions` 30 seconds after start and then every hour (`claudeSessions.autoUpdate`). A newer release is downloaded and installed automatically, once per version; a notification with a **Reload** button appears and the **Inactive** header shows `updated to <version> · reload to use it`. The new version runs only after the window reloads; terminals and Claude sessions keep running through a reload. The cloud button in the same header checks immediately.
 
 ## Install
 

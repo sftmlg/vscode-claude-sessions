@@ -146,9 +146,9 @@ test('a split made with VS Code itself joins its group with one pane check and f
   const { fake, api } = await setup();
   const a = fake.vscode.window.createTerminal({ name: 'left' });
   a.show();
-  await new Promise((r) => setTimeout(r, 700));
+  await api.activeView.ready;
   const b = await fake.run('workbench.action.terminal.split');
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 2200));
   api.tracker.syncGroups();
   assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['left', 'zsh']]);
   assert.strictEqual(fake.vscode.window.activeTerminal, b, 'focus is back on the new split');
@@ -161,7 +161,7 @@ test('a plain new terminal and a closed one never move focus to another terminal
   const a = fake.vscode.window.createTerminal({ name: 'left' });
   a.show();
   const b = await fake.run('workbench.action.terminal.split');
-  await new Promise((r) => setTimeout(r, 1000));
+  await api.activeView.ready;
   const seen = [];
   fake.vscode.window.onDidChangeActiveTerminal((t) => seen.push(t && t.name));
   const plain = fake.vscode.window.createTerminal({ name: 'plain' });
@@ -174,6 +174,39 @@ test('a plain new terminal and a closed one never move focus to another terminal
   assert.strictEqual(focusMoves(fake), before, 'closing moves no focus');
   api.tracker.syncGroups();
   assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['left'], ['plain']]);
+  api.deactivate();
+});
+
+test('several terminals opened in a burst are placed by one capture after the quiet period', async () => {
+  const { fake, api } = await setup();
+  fake.vscode.window.createTerminal({ name: 'first' }).show();
+  await api.activeView.ready;
+  const start = fake.executed.length;
+  fake.vscode.window.createTerminal({ name: 'x' }).show();
+  await fake.run('workbench.action.terminal.split');
+  await new Promise((r) => setTimeout(r, 1000));
+  assert.ok(!fake.executed.slice(start).some(([id]) => /focus/.test(id)), 'nothing moves while events still arrive');
+  await new Promise((r) => setTimeout(r, 2500));
+  const scans = fake.executed.slice(start).filter(([id]) => id === 'workbench.action.terminal.focusAtIndex1').length;
+  assert.strictEqual(scans, 1, 'exactly one capture');
+  api.tracker.syncGroups();
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['first'], ['x', 'zsh']]);
+  api.deactivate();
+});
+
+test('a capture keeps the known order inside a split even when the right pane is older', async () => {
+  const { fake, api } = await setup();
+  await api.activeView.ready;
+  const c = fake.vscode.window.createTerminal({ name: 'c' });
+  const older = fake.vscode.window.createTerminal({ name: 'automation' });
+  const newer = fake.vscode.window.createTerminal({ name: 'diwa' });
+  fake.panes.length = 0;
+  fake.panes.push([c], [newer, older]);
+  api.tracker.groups = [[c], [newer, older]];
+  older.show();
+  c.show();
+  await fake.run('claudeSessions.captureLayout');
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['c'], ['diwa', 'automation']]);
   api.deactivate();
 });
 

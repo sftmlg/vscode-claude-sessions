@@ -407,6 +407,7 @@ class Tracker {
     this.stepMs = stepMs;
     const original = vscode.window.activeTerminal;
     const creationIndex = new Map(live.map((t, i) => [t, i]));
+    const knownLeaders = new Set(this.groups.filter((g) => g.length > 1).map((g) => g[0]));
     const groups = [];
     const seen = new Set();
     try {
@@ -422,7 +423,8 @@ class Tracker {
           members.push(a);
         }
         if (groups.length) {
-          const anchor = members.reduce((best, t, i) => (creationIndex.get(t) < creationIndex.get(members[best]) ? i : best), 0);
+          const leaders = members.filter((t) => knownLeaders.has(t));
+          const anchor = leaders.length === 1 ? members.indexOf(leaders[0]) : members.reduce((best, t, i) => (creationIndex.get(t) < creationIndex.get(members[best]) ? i : best), 0);
           members = members.slice(anchor).concat(members.slice(0, anchor));
         }
         members.forEach((t) => seen.add(t));
@@ -699,6 +701,9 @@ function activate(context) {
       inactiveTree.description = `updated to ${release.version} · reload to use it`;
       vscode.commands.executeCommand('setContext', 'claudeSessions.updated', true);
       tracker.log(`updated from ${currentVersion} to ${release.version}`);
+      vscode.window.showInformationMessage(`Claude Sessions ${release.version} is installed. Reload the window to use it; terminals and Claude sessions keep running.`, 'Reload').then((choice) => {
+        if (choice === 'Reload') vscode.commands.executeCommand('workbench.action.reloadWindow');
+      });
     } catch (err) {
       tracker.log(`update check failed: ${err.message}`);
       if (manual) vscode.window.showWarningMessage(`Update check failed: ${err.message}`);
@@ -964,14 +969,24 @@ function activate(context) {
     view.refresh(true);
   };
 
+  const QUIET_MS = 1500;
+  const opened = new Set();
   let placeTimer = null;
-  const placeOpened = (t) => {
-    if (!tracker.ready || tracker.restoring || tracker.known.has(t)) return;
+  const settleLayout = () => {
     clearTimeout(placeTimer);
-    placeTimer = setTimeout(() => {
-      if (settings().get('autoCaptureLayout') === false || pickerOpen || !vscode.window.state.focused) return;
-      tracker.placeNewTerminal(t);
-    }, 600);
+    placeTimer = setTimeout(async () => {
+      if (!tracker.ready) return;
+      if (tracker.restoring || tracker.scanning || tracker.placing || pickerOpen || !vscode.window.state.focused) return settleLayout();
+      const pending = [...opened].filter((t) => vscode.window.terminals.includes(t) && !tracker.known.has(t));
+      opened.clear();
+      if (!pending.length || settings().get('autoCaptureLayout') === false) return;
+      if (pending.length === 1) await tracker.placeNewTerminal(pending[0]);
+      else await scan(`${pending.length} terminals opened`);
+    }, QUIET_MS);
+  };
+  const placeOpened = (t) => {
+    opened.add(t);
+    settleLayout();
   };
 
   let timer = null;
@@ -1177,10 +1192,17 @@ function activate(context) {
   );
 
   const terminalsSettled = async () => {
+    const started = Date.now();
     let count = -1;
-    for (let i = 0; i < 12 && count !== tracker.liveTerminals().length; i++) {
-      count = tracker.liveTerminals().length;
-      await sleep(250);
+    let stableSince = Date.now();
+    while (Date.now() - started < 10000) {
+      const now = tracker.liveTerminals().length;
+      if (now !== count) {
+        count = now;
+        stableSince = Date.now();
+      }
+      if (Date.now() - stableSince >= (count ? QUIET_MS : 500)) return;
+      await sleep(100);
     }
   };
   activeView.ready = (async () => {
@@ -1195,6 +1217,7 @@ function activate(context) {
   })()
     .catch((err) => tracker.log(`startup failed: ${err.stack || err}`))
     .finally(() => {
+      opened.clear();
       tracker.ready = true;
     });
   context.subscriptions.push({
