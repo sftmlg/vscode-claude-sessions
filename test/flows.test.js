@@ -177,6 +177,22 @@ test('a plain new terminal and a closed one never move focus to another terminal
   api.deactivate();
 });
 
+test('an update is installed once, not again every hour until the reload', async () => {
+  const updater = require('../updater');
+  const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease };
+  updater.latestRelease = async () => ({ version: '99.0.0' });
+  updater.downloadRelease = async () => path.join(os.tmpdir(), 'fake.vsix');
+  try {
+    const { fake, api } = await setup();
+    await fake.run('claudeSessions.checkForUpdates');
+    await fake.run('claudeSessions.checkForUpdates');
+    assert.strictEqual(fake.executed.filter(([id]) => id === 'workbench.extensions.installExtension').length, 1);
+    api.deactivate();
+  } finally {
+    Object.assign(updater, original);
+  }
+});
+
 test('startup captures the splits before Active renders once', async () => {
   const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
   const api = fake.activate();

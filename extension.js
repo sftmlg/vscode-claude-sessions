@@ -679,6 +679,7 @@ function activate(context) {
   };
   const currentVersion = (context.extension && context.extension.packageJSON.version) || '0.0.0';
   let updating = false;
+  let installedVersion = null;
   const checkForUpdates = async (manual) => {
     if (updating) return;
     updating = true;
@@ -688,8 +689,13 @@ function activate(context) {
         if (manual) vscode.window.showInformationMessage(`Claude Sessions ${currentVersion} is up to date.`);
         return;
       }
+      if (release.version === installedVersion) {
+        if (manual) vscode.window.showInformationMessage(`Claude Sessions ${release.version} is installed; reload to use it.`);
+        return;
+      }
       const file = await updater.downloadRelease(release, context.globalStorageUri.fsPath);
       await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file));
+      installedVersion = release.version;
       inactiveTree.description = `updated to ${release.version} · reload to use it`;
       vscode.commands.executeCommand('setContext', 'claudeSessions.updated', true);
       tracker.log(`updated from ${currentVersion} to ${release.version}`);
