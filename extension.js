@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const updater = require('./updater');
+const { syncFavorites, startLogin, finishLogin, normalizeServer } = require('./sync');
 const {
   readRunningSessions,
   processChildren,
@@ -714,6 +715,62 @@ function activate(context) {
     }
   };
 
+  const SYNC_SECRET = 'claudeSessions.nextcloud';
+  let syncTimer = null;
+  let syncInterval = null;
+  let syncing = false;
+  const syncSettings = () => ({ auto: settings().get('sync.auto') !== false, folder: settings().get('sync.folder') || 'Claude Sessions' });
+  const runSync = async (manual) => {
+    if (syncing || !context.secrets) return;
+    const stored = await context.secrets.get(SYNC_SECRET);
+    if (!stored) {
+      if (manual) vscode.window.showInformationMessage('Connect Nextcloud first (Claude Sessions: Connect Nextcloud).');
+      return;
+    }
+    if (!manual && !syncSettings().auto) return;
+    syncing = true;
+    try {
+      const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
+      const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running });
+      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}`;
+      tracker.log(`sync: ${summary}`);
+      inactiveTree.description = `synced ${new Date().toTimeString().slice(0, 5)}`;
+      if (manual) vscode.window.showInformationMessage(`Nextcloud sync: ${summary}.`);
+      view.refresh();
+    } catch (err) {
+      tracker.log(`sync failed: ${err.message}`);
+      inactiveTree.description = 'sync failed';
+      if (manual || /401/.test(err.message)) vscode.window.showWarningMessage(`Nextcloud sync failed: ${err.message}${/401/.test(err.message) ? '. Connect again.' : ''}`);
+    } finally {
+      syncing = false;
+    }
+  };
+  const scheduleSync = () => {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => runSync(false), 5000);
+  };
+  const connectNextcloud = async () => {
+    const server = normalizeServer(
+      await vscode.window.showInputBox({ prompt: 'Nextcloud address', value: settings().get('sync.server') || 'https://', ignoreFocusOut: true })
+    );
+    if (!server || server === 'https:') return;
+    try {
+      const { login, poll } = await startLogin(server);
+      await vscode.env.openExternal(vscode.Uri.parse(login));
+      const creds = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Sign in to Nextcloud in the browser, then grant access…', cancellable: true },
+        (progress, token) => finishLogin(poll, { cancelled: () => token.isCancellationRequested })
+      );
+      await context.secrets.store(SYNC_SECRET, JSON.stringify(creds));
+      await settings().update('sync.server', creds.server, vscode.ConfigurationTarget.Global);
+      vscode.commands.executeCommand('setContext', 'claudeSessions.syncConnected', true);
+      tracker.log(`nextcloud connected as ${creds.loginName} on ${creds.server}`);
+      await runSync(true);
+    } catch (err) {
+      vscode.window.showWarningMessage(`Nextcloud connection failed: ${err.message}`);
+    }
+  };
+
   const updateBadge = () => {
     const count = notifications.list().length;
     activeTree.badge = count ? { value: count, tooltip: `${count} Claude sessions finished or are waiting for input` } : undefined;
@@ -1020,10 +1077,19 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.favorite', (item) => {
       const id = item.data.tab && item.data.tab.sessionId;
       if (id) notifications.setFavorite(id, true);
+      scheduleSync();
     }),
     vscode.commands.registerCommand('claudeSessions.unfavorite', (item) => {
       const id = item.data.tab && item.data.tab.sessionId;
       if (id) notifications.setFavorite(id, false);
+      scheduleSync();
+    }),
+    vscode.commands.registerCommand('claudeSessions.connectNextcloud', () => connectNextcloud()),
+    vscode.commands.registerCommand('claudeSessions.syncNow', () => runSync(true)),
+    vscode.commands.registerCommand('claudeSessions.disconnectNextcloud', async () => {
+      await context.secrets.delete(SYNC_SECRET);
+      vscode.commands.executeCommand('setContext', 'claudeSessions.syncConnected', false);
+      vscode.window.showInformationMessage('Nextcloud disconnected. Session files on this machine and in Nextcloud stay as they are.');
     }),
     vscode.commands.registerCommand('claudeSessions.closeTab', (item) => item.data.terminal && item.data.terminal.dispose()),
     vscode.commands.registerCommand('claudeSessions.deleteSession', async (item) => {
@@ -1228,8 +1294,17 @@ function activate(context) {
       clearTimeout(activeView.fireTimer);
       clearTimeout(inactiveView.fireTimer);
       clearTimeout(placeTimer);
+      clearTimeout(syncTimer);
+      clearInterval(syncInterval);
     },
   });
+  if (context.secrets) {
+    context.secrets.get(SYNC_SECRET).then((stored) => {
+      vscode.commands.executeCommand('setContext', 'claudeSessions.syncConnected', Boolean(stored));
+      if (stored) setTimeout(() => runSync(false), 10000);
+    });
+    syncInterval = setInterval(() => runSync(false), 10 * 60 * 1000);
+  }
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
     setTimeout(() => checkForUpdates(false), 30000);
     const updateTimer = setInterval(() => checkForUpdates(false), 60 * 60 * 1000);

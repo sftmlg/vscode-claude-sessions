@@ -181,6 +181,24 @@
         "icon": "$(cloud-download)"
       },
       {
+        "command": "claudeSessions.connectNextcloud",
+        "title": "Connect Nextcloud to sync favorite sessions across machines",
+        "category": "Claude Sessions",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "claudeSessions.syncNow",
+        "title": "Sync favorite sessions with Nextcloud now",
+        "category": "Claude Sessions",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "claudeSessions.disconnectNextcloud",
+        "title": "Disconnect Nextcloud",
+        "category": "Claude Sessions",
+        "icon": "$(debug-disconnect)"
+      },
+      {
         "command": "claudeSessions.reloadWindow",
         "title": "Reload to use the new version",
         "category": "Claude Sessions",
@@ -249,6 +267,21 @@
           "command": "claudeSessions.checkForUpdates",
           "when": "view == claudeSessions.inactive",
           "group": "navigation@8"
+        },
+        {
+          "command": "claudeSessions.syncNow",
+          "when": "view == claudeSessions.inactive && claudeSessions.syncConnected",
+          "group": "navigation@7"
+        },
+        {
+          "command": "claudeSessions.connectNextcloud",
+          "when": "view == claudeSessions.inactive && !claudeSessions.syncConnected",
+          "group": "sync@1"
+        },
+        {
+          "command": "claudeSessions.disconnectNextcloud",
+          "when": "view == claudeSessions.inactive && claudeSessions.syncConnected",
+          "group": "sync@2"
         }
       ],
       "view/item/context": [
@@ -467,6 +500,21 @@
           "type": "number",
           "default": 30,
           "description": "How far back the inactive and archive lists reach, by last message."
+        },
+        "claudeSessions.sync.server": {
+          "type": "string",
+          "default": "",
+          "description": "Nextcloud address used for syncing favorite sessions, set by Connect Nextcloud."
+        },
+        "claudeSessions.sync.folder": {
+          "type": "string",
+          "default": "Claude Sessions",
+          "description": "Folder in your Nextcloud files that holds the synced sessions, one subfolder per repository."
+        },
+        "claudeSessions.sync.auto": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sync favorite sessions 10 s after start, every 10 minutes and 5 s after a star changes. Off: only Sync now."
         },
         "claudeSessions.autoUpdate": {
           "type": "boolean",
