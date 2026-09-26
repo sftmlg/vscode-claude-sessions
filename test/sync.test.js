@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeNextcloud } = require('./fake-nextcloud');
-const { syncFavorites, startLogin, finishLogin, projectDir } = require('../sync');
+const { syncFavorites, startLogin, finishLogin, projectDir, readLock, LOCK_TTL_MS } = require('../sync');
 
 const originalHome = process.env.HOME;
 delete process.env.CLAUDE_CONFIG_DIR;
@@ -30,6 +30,14 @@ function writeSession(m, id, text, mtimeSec) {
   const file = path.join(dir, `${id}.jsonl`);
   fs.writeFileSync(file, `${JSON.stringify({ type: 'user', cwd: m.ws, message: { content: text } })}\n`);
   if (mtimeSec) fs.utimesSync(file, mtimeSec, mtimeSec);
+  return file;
+}
+
+function appendLine(m, id, text, mtimeSec = Math.floor(Date.now() / 1000)) {
+  use(m);
+  const file = path.join(projectDir(m.ws), `${id}.jsonl`);
+  fs.appendFileSync(file, `${JSON.stringify({ type: 'user', sessionId: id, message: { content: text } })}\n`);
+  fs.utimesSync(file, mtimeSec, mtimeSec);
   return file;
 }
 
@@ -112,7 +120,7 @@ test('a session running on this machine is never overwritten by a download', asy
     writeState(b, { favorites: { [F1]: true } });
     use(b);
     const r = await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, running: new Set([F1]) });
-    assert.deepStrictEqual(r.skippedRunning, [F1]);
+    assert.deepStrictEqual(r.diverged.map((d) => d.id), [F1], 'two different histories: reported, not resolved while running');
     assert.match(fs.readFileSync(onB, 'utf8'), /running on b/);
   } finally {
     await cloud.stop();
@@ -182,7 +190,7 @@ test('a star removed while a sync runs stays removed, here and on the server', a
       }
       return fetch(url, init);
     };
-    writeSession(a, F1, 'one changed', Math.floor(Date.now() / 1000));
+    appendLine(a, F1, 'one continued');
     await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, fetchImpl });
     assert.ok(toggled);
     assert.deepStrictEqual(readState(a).favorites, { [F1]: true });
@@ -230,6 +238,173 @@ test('wrong credentials fail loudly instead of syncing nothing', async () => {
     writeState(a, { favorites: {} });
     use(a);
     await assert.rejects(syncFavorites({ creds: { ...cloud.creds(), appPassword: 'wrong' }, wsPath: a.ws, stateFile: a.stateFile }), /HTTP 401/);
+  } finally {
+    await cloud.stop();
+  }
+});
+
+const lockOf = (cloud, id) => {
+  const f = cloud.files.get(`Claude Sessions/my-repo/locks/${id}.json`);
+  return f ? JSON.parse(f.body.toString()) : null;
+};
+
+test('the machine a session runs on locks it; the other machine reads it but never uploads over it', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    const b = machine('b');
+    writeState(b, {});
+    use(a);
+    appendLine(a, F1, 'working on a');
+    const onA = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'mac-a' });
+    assert.deepStrictEqual(onA.locked, [F1]);
+    assert.strictEqual(lockOf(cloud, F1).machine, 'mac-a');
+    assert.deepStrictEqual(onA.uploaded, [F1], 'the lock holder feeds its session upward');
+
+    use(b);
+    const pulled = await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'mac-b' });
+    assert.ok(pulled.downloaded.includes(F1), 'a locked session is still downloaded as a read copy');
+    assert.strictEqual(readState(b).sync.locks[F1].machine, 'mac-a', 'the lock is known locally for the view and the resume warning');
+
+    const onB = path.join(projectDir(b.ws), `${F1}.jsonl`);
+    fs.appendFileSync(onB, `${JSON.stringify({ type: 'user', message: { content: 'also on b' } })}\n`);
+    const conflict = await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, running: new Set([F1]), machine: 'mac-b' });
+    assert.deepStrictEqual(conflict.conflicts, [{ id: F1, machine: 'mac-a' }]);
+    assert.ok(!conflict.uploaded.includes(F1), 'the second machine never overwrites the locked session');
+    assert.doesNotMatch(cloud.files.get(`Claude Sessions/my-repo/${F1}.jsonl`).body.toString(), /also on b/);
+    assert.strictEqual(lockOf(cloud, F1).machine, 'mac-a', 'first lock keeps precedence');
+
+    use(a);
+    const released = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'mac-a' });
+    assert.deepStrictEqual(released.released, [F1]);
+    assert.strictEqual(lockOf(cloud, F1), null, 'the lock goes once the session stops');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('a lock whose heartbeat is stale is taken over', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    const old = Date.now() - LOCK_TTL_MS - 60000;
+    cloud.files.set(`Claude Sessions/my-repo/locks/${F1}.json`, { body: Buffer.from(JSON.stringify({ machine: 'crashed', since: old, heartbeat: old })), mtime: Math.floor(old / 1000) });
+    use(a);
+    appendLine(a, F1, 'after the crash');
+    const r = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'mac-a' });
+    assert.deepStrictEqual(r.locked, [F1]);
+    assert.deepStrictEqual(r.conflicts, []);
+    assert.strictEqual(lockOf(cloud, F1).machine, 'mac-a');
+    assert.ok(r.uploaded.includes(F1));
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('two machines claiming at the same moment: the first lock written wins', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    use(a);
+    writeSession(a, F1, 'racing', Math.floor(Date.now() / 1000));
+    const fetchImpl = async (url, init) => {
+      if (init.method === 'PUT' && url.includes('/locks/') && !lockOf(cloud, F1)) {
+        const now = Date.now();
+        cloud.files.set(`Claude Sessions/my-repo/locks/${F1}.json`, { body: Buffer.from(JSON.stringify({ machine: 'mac-b', since: now, heartbeat: now })), mtime: Math.floor(now / 1000) });
+      }
+      return fetch(url, init);
+    };
+    const r = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'mac-a', fetchImpl });
+    assert.deepStrictEqual(r.conflicts, [{ id: F1, machine: 'mac-b' }]);
+    assert.ok(!r.uploaded.includes(F1));
+    assert.strictEqual(lockOf(cloud, F1).machine, 'mac-b');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('readLock reports a live lock of another machine and ignores own or stale ones', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    use(a);
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'mac-a' });
+    const opts = { creds: cloud.creds(), wsPath: a.ws };
+    assert.strictEqual((await readLock({ ...opts, id: F1, machine: 'mac-b' })).machine, 'mac-a');
+    assert.strictEqual(await readLock({ ...opts, id: F1, machine: 'mac-a' }), null);
+    assert.strictEqual(await readLock({ ...opts, id: F2, machine: 'mac-b' }), null);
+    assert.strictEqual(await readLock({ ...opts, id: F1, machine: 'mac-b', now: Date.now() + LOCK_TTL_MS + 1000 }), null);
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('a machine that kept working offline catches up: the longer copy wins, whichever file is older', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    const b = machine('b');
+    writeState(b, {});
+    use(b);
+    await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'mac-b' });
+    const past = Math.floor(Date.now() / 1000) - 3000;
+    appendLine(b, F1, 'offline work on b', past);
+    use(b);
+    const up = await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'mac-b' });
+    assert.deepStrictEqual(up.uploaded, [F1], 'an extension of the known copy is uploaded even with an old file date');
+    use(a);
+    const down = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'mac-a' });
+    assert.deepStrictEqual(down.downloaded, [F1]);
+    assert.match(fs.readFileSync(path.join(projectDir(a.ws), `${F1}.jsonl`), 'utf8'), /offline work on b/);
+    assert.deepStrictEqual(down.forked, []);
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('two histories that grew apart are both kept: the shared copy stays, the local one becomes a starred fork', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    const b = machine('b');
+    writeState(b, { names: { [F1]: 'alpha' } });
+    use(b);
+    await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'mac-b' });
+    appendLine(a, F1, 'continued on a');
+    use(a);
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'user@mac-a.local' });
+    appendLine(b, F1, 'continued on b offline');
+    use(b);
+    const r = await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'user@mac-b.local' });
+    assert.strictEqual(r.forked.length, 1);
+    const { forkId, name } = r.forked[0];
+    assert.strictEqual(name, 'alpha-mac-b');
+    const original = fs.readFileSync(path.join(projectDir(b.ws), `${F1}.jsonl`), 'utf8');
+    const fork = fs.readFileSync(path.join(projectDir(b.ws), `${forkId}.jsonl`), 'utf8');
+    assert.match(original, /continued on a/, 'the shared copy is now the session under its id');
+    assert.doesNotMatch(original, /offline/);
+    assert.match(fork, /continued on b offline/, 'nothing written offline is lost');
+    assert.ok(fork.includes(`"sessionId":"${forkId}"`) && !fork.includes(`"sessionId":"${F1}"`), 'the fork is its own session');
+    const st = readState(b);
+    assert.strictEqual(st.favorites[forkId], true);
+    assert.strictEqual(st.names[forkId], 'alpha-mac-b');
+    assert.ok(cloud.files.has(`Claude Sessions/my-repo/${forkId}.jsonl`), 'the fork reaches the other machine as a favorite');
+
+    use(a);
+    const onA = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'user@mac-a.local' });
+    assert.deepStrictEqual(onA.downloaded, [forkId]);
+    assert.deepStrictEqual(onA.forked, [], 'the other machine gets the fork once, no second fork');
+    assert.strictEqual(readState(a).names[forkId], 'alpha-mac-b');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('an unstarred session releases the lock this machine held on it', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    use(a);
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'mac-a' });
+    assert.ok(lockOf(cloud, F1));
+    const st = readState(a);
+    delete st.favorites[F1];
+    writeState(a, st);
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'mac-a' });
+    assert.strictEqual(lockOf(cloud, F1), null);
   } finally {
     await cloud.stop();
   }

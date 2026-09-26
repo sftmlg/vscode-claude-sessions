@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const updater = require('./updater');
-const { syncFavorites, startLogin, finishLogin, normalizeServer } = require('./sync');
+const { syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS } = require('./sync');
 const {
   readRunningSessions,
   processChildren,
@@ -445,7 +445,10 @@ class Tracker {
 
   async restore() {
     const running = new Set([...(await readRunningSessions()).values()].map((s) => s.sessionId));
-    const tabs = this.store.read().filter((t) => !running.has(t.sessionId));
+    const tabs = [];
+    for (const t of this.store.read().filter((tab) => !running.has(tab.sessionId))) {
+      if (!this.mayResume || (await this.mayResume(t.sessionId))) tabs.push(t);
+    }
     if (!tabs.length) {
       vscode.window.showInformationMessage('All saved Claude tabs are already open.');
       return;
@@ -621,8 +624,10 @@ class SessionsProvider {
     item.id = `${archived ? 'archived' : 'session'}:${s.id}`;
     item.contextValue = `${archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session'}${this.favSuffix(s.id)}`;
     item.iconPath = new vscode.ThemeIcon(archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
-    item.description = sessionSummary(s.meta);
-    item.tooltip = sessionTooltip(s.title, s.meta, [['Folder', s.meta.cwd]]);
+    const lock = ((this.store.readState().sync || {}).locks || {})[s.id];
+    const locked = lock && Date.now() - (lock.heartbeat || 0) < LOCK_TTL_MS ? lock.machine : '';
+    item.description = `${locked ? `🔒 ${locked} · ` : ''}${sessionSummary(s.meta)}`;
+    item.tooltip = sessionTooltip(s.title, s.meta, [['Folder', s.meta.cwd], ['Locked by', locked]]);
     item.data = { tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } };
     item.command = { command: 'claudeSessions.openSessionFile', title: 'Open session file', arguments: [item] };
     return item;
@@ -733,6 +738,35 @@ function activate(context) {
       return undefined;
     }
   };
+  const conflictsShown = new Set();
+  const lockElsewhere = async (sessionId) => {
+    const stored = await storedCredentials();
+    if (stored) {
+      try {
+        const live = await withTimeout(readLock({ creds: JSON.parse(stored), wsPath: store.wsPath, id: sessionId, folder: syncSettings().folder }), 3000);
+        if (live !== undefined) return live;
+        tracker.log('lock check timed out');
+      } catch (err) {
+        tracker.log(`lock check failed: ${err.message}`);
+      }
+    }
+    const cached = ((store.readState().sync || {}).locks || {})[sessionId];
+    if (cached && Date.now() - (cached.heartbeat || 0) < LOCK_TTL_MS) return cached;
+    return stored ? { machine: 'unknown', unverified: true } : null;
+  };
+  tracker.mayResume = (sessionId) => mayResume(sessionId);
+  const mayResume = async (sessionId) => {
+    const lock = await lockElsewhere(sessionId);
+    if (!lock) return true;
+    const choice = await vscode.window.showWarningMessage(
+      lock.unverified
+        ? 'Nextcloud did not answer, so it is unknown whether another machine works on this session right now.'
+        : `This session is locked by ${lock.machine} (last seen ${timeAgo(new Date(lock.heartbeat).toISOString())}).`,
+      { modal: true, detail: 'The lock holder keeps precedence: while its lock is alive, what happens here is not uploaded to Nextcloud and the next download does not include it.' },
+      'Resume here anyway'
+    );
+    return choice === 'Resume here anyway';
+  };
   const runSync = async (manual) => {
     if (syncing) return;
     const stored = await storedCredentials();
@@ -745,7 +779,13 @@ function activate(context) {
     try {
       const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
       const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running });
-      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}`;
+      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}`;
+      const names = store.readState().names || {};
+      for (const c of result.conflicts) {
+        if (conflictsShown.has(c.id)) continue;
+        conflictsShown.add(c.id);
+        vscode.window.showWarningMessage(`"${names[c.id] || c.id}" runs here but is locked by ${c.machine}; this machine does not upload it until that lock ends.`);
+      }
       tracker.log(`sync: ${summary}`);
       inactiveTree.description = `synced ${new Date().toTimeString().slice(0, 5)}`;
       if (manual) vscode.window.showInformationMessage(`Nextcloud sync: ${summary}.`);
@@ -846,6 +886,15 @@ function activate(context) {
     tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
     tracker.save();
     view.refresh();
+  };
+
+  const tabOf = async (item) => {
+    if (item && item.data && item.data.tab) return item.data.tab;
+    const selected = inactiveTree.selection[0];
+    if (selected && selected.data && selected.data.tab) return selected.data.tab;
+    tracker.log('a session button arrived without its row; opening the picker');
+    const choice = await choose({ allowPlain: false });
+    return choice && choice.tab ? choice.tab : null;
   };
 
   let pickerOpen = false;
@@ -958,8 +1007,10 @@ function activate(context) {
       return;
     }
     const tab = choice.tab;
+    if (!(await mayResume(tab.sessionId))) return;
     const cwd = tab.cwd && fs.existsSync(tab.cwd) ? tab.cwd : store.wsPath;
     t.sendText(`cd ${shellQuote(cwd)} && ${claudeCommand()} --resume ${tab.sessionId}`);
+    scheduleSync();
     tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
     await renameTerminal(t, tab.name);
     tracker.save();
@@ -1003,7 +1054,9 @@ function activate(context) {
       }
       if (choice.tab.sessionId === current.sessionId) return;
       const tab = choice.tab;
+      if (!(await mayResume(tab.sessionId))) return;
       t.sendText(`/resume ${tab.sessionId}`);
+      scheduleSync();
       await renameTerminal(t, tab.name);
       tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd: tab.cwd || current.cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
       tracker.rememberName(tab.sessionId, tab.name);
@@ -1081,7 +1134,7 @@ function activate(context) {
     inactiveTree.onDidChangeSelection(() => tracker.setTerminalFocus(false)),
     vscode.window.onDidChangeTextEditorSelection(() => tracker.setTerminalFocus(false)),
     vscode.window.onDidChangeActiveTextEditor((e) => e && tracker.setTerminalFocus(false)),
-    tracker.onFocusChange.event(() => view.refresh(true)),
+    tracker.onFocusChange.event(() => activeView.refresh(true)),
     notifications.onChange.event(() => {
       view.refresh(true);
       updateBadge();
@@ -1167,7 +1220,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.openNew', () => openFreshThenPick(null)),
     vscode.commands.registerCommand('claudeSessions.openInTerminal', (item) => terminalOf(item) && pickIntoExisting(terminalOf(item))),
     vscode.commands.registerCommand('claudeSessions.switchSession', (item) => terminalOf(item) && pickIntoExisting(terminalOf(item))),
-    vscode.window.onDidChangeWindowState(() => view.refresh(true)),
+    vscode.window.onDidChangeWindowState(() => activeView.refresh(true)),
     vscode.window.onDidChangeActiveTerminal((t) => {
       if (tracker.scanning || tracker.placing || !t) return;
       const m = tracker.meta.get(t);
@@ -1214,8 +1267,18 @@ function activate(context) {
       setTimeout(() => tracker.setTerminalFocus(true), 50);
     }),
     vscode.commands.registerCommand('claudeSessions.openStateFile', () => vscode.window.showTextDocument(vscode.Uri.file(store.file()))),
-    vscode.commands.registerCommand('claudeSessions.resume', (item) => resume(item.data.tab)),
-    vscode.commands.registerCommand('claudeSessions.resumeNewTab', (item) => resumeInNewTab(item.data.tab)),
+    vscode.commands.registerCommand('claudeSessions.resume', async (item) => {
+      const tab = await tabOf(item);
+      if (!tab || !(await mayResume(tab.sessionId))) return;
+      await resume(tab);
+      scheduleSync();
+    }),
+    vscode.commands.registerCommand('claudeSessions.resumeNewTab', async (item) => {
+      const tab = await tabOf(item);
+      if (!tab || !(await mayResume(tab.sessionId))) return;
+      resumeInNewTab(tab);
+      scheduleSync();
+    }),
     vscode.commands.registerCommand('claudeSessions.copyResume', (item) => {
       const { tab } = item.data;
       vscode.env.clipboard.writeText(`cd ${shellQuote(tab.cwd || store.wsPath)} && ${claudeCommand()} --resume ${tab.sessionId}`);

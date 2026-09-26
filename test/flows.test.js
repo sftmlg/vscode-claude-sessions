@@ -535,3 +535,23 @@ test('nothing is ever typed as /rename', async () => {
   stopClaude(claude);
   api.deactivate();
 });
+
+test('a session locked by another machine shows its lock and resumes only after an explicit override', async () => {
+  const id = '77777777-0000-0000-0000-000000000007';
+  writeSession(id, 'locked elsewhere');
+  const { fake, api } = await setup();
+  const { writeStatePatch } = require('../sessions');
+  writeStatePatch(api.store.file(), { sync: { locks: { [id]: { machine: 'user@other-mac', since: Date.now(), heartbeat: Date.now() } } } });
+  const item = await inactiveItemFor(api, id);
+  assert.match(item.description, /🔒 user@other-mac/);
+
+  const sentFor = () => fake.vscode.window.terminals.filter((x) => x.sent.some((s) => s.includes(`--resume ${id}`)));
+  fake.warningAnswers.push(undefined);
+  await fake.run('claudeSessions.resumeNewTab', item);
+  assert.strictEqual(sentFor().length, 0, 'cancelling the warning resumes nothing');
+
+  fake.warningAnswers.push('Resume here anyway');
+  await fake.run('claudeSessions.resumeNewTab', item);
+  assert.strictEqual(sentFor().length, 1, 'the explicit override resumes');
+  api.deactivate();
+});

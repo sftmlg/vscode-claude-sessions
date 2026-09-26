@@ -38,6 +38,7 @@ function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' }
         if (!folders.has(parent)) return res.writeHead(409).end();
         const mtime = Number(req.headers['x-oc-mtime']) || Math.floor(Date.now() / 1000);
         const existed = files.has(key);
+        if (req.headers['if-none-match'] === '*' && existed) return res.writeHead(412).end();
         files.set(key, { body, mtime });
         return res.writeHead(existed ? 204 : 201).end();
       }
