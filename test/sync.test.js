@@ -134,6 +134,94 @@ test('the login flow hands out an app password only after the browser login', as
   }
 });
 
+async function seeded() {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const a = machine('a');
+  writeSession(a, F1, 'one', Math.floor(Date.now() / 1000) - 600);
+  writeSession(a, F2, 'two', Math.floor(Date.now() / 1000) - 600);
+  writeState(a, { favorites: { [F1]: true, [F2]: true } });
+  use(a);
+  await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile });
+  return { cloud, a };
+}
+
+test('a listing with another XML prefix is read, not taken as an empty folder', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    cloud.options.ns = 'ns1';
+    const r = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile });
+    assert.deepStrictEqual(readState(a).favorites, { [F1]: true, [F2]: true }, 'no star lost');
+    assert.deepStrictEqual(r.removed, []);
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('an unreadable listing stops the sync instead of dropping stars', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    cloud.options.garbage = true;
+    await assert.rejects(syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile }), /listing/);
+    assert.deepStrictEqual(readState(a).favorites, { [F1]: true, [F2]: true });
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('a star removed while a sync runs stays removed, here and on the server', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    let toggled = false;
+    const fetchImpl = async (url, init) => {
+      if (!toggled && init.method === 'PUT') {
+        toggled = true;
+        const st = readState(a);
+        delete st.favorites[F2];
+        writeState(a, st);
+      }
+      return fetch(url, init);
+    };
+    writeSession(a, F1, 'one changed', Math.floor(Date.now() / 1000));
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, fetchImpl });
+    assert.ok(toggled);
+    assert.deepStrictEqual(readState(a).favorites, { [F1]: true });
+    const remoteState = JSON.parse(cloud.files.get('Claude Sessions/my-repo/state.json').body.toString());
+    assert.deepStrictEqual(remoteState.favorites, { [F1]: true });
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('a second sync of the same repository at the same time is refused, not interleaved', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    const both = await Promise.allSettled([
+      syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile }),
+      syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile }),
+    ]);
+    assert.strictEqual(both.filter((r) => r.status === 'fulfilled').length, 1);
+    assert.match(both.find((r) => r.status === 'rejected').reason.message, /already running/);
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile });
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('only complete lines of a session that is still being written are uploaded', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    const file = writeSession(a, F1, 'complete', Math.floor(Date.now() / 1000));
+    fs.appendFileSync(file, '{"type":"assistant","message":{"content":"half');
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile });
+    const uploaded = cloud.files.get(`Claude Sessions/my-repo/${F1}.jsonl`).body.toString();
+    assert.ok(uploaded.endsWith('\n'));
+    assert.ok(!uploaded.includes('half'));
+  } finally {
+    await cloud.stop();
+  }
+});
+
 test('wrong credentials fail loudly instead of syncing nothing', async () => {
   const cloud = createFakeNextcloud();
   await cloud.start();

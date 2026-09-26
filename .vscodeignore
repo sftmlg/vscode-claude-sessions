@@ -4,3 +4,4 @@ dist/**
 release.sh
 .gitignore
 bench.js
+e2e/**

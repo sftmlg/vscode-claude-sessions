@@ -73,6 +73,22 @@ One rule per kind of trigger; a new trigger joins the matching row instead of ge
 | Caches on disk | List cache 5 s, search text cache 60 s after the last change |
 | Relative times ("5 min ago") | Redraw every 60 s |
 | Updates | 30 s after start, then hourly; each version installed once |
+| Nextcloud sync | 3 s after **Active** is drawn, every 10 minutes, and 5 s after the last star change; never two at once |
+
+## Sync across machines (Nextcloud)
+
+Favorite sessions — open or closed — follow you to your other machines through a folder in your own Nextcloud.
+
+- **Connect:** `Claude Sessions: Connect Nextcloud` (plug in the **Inactive** menu) asks for the Nextcloud address and opens its login page in the browser. You sign in the way your Nextcloud offers — single sign-on included — and grant access to *Claude Sessions (VS Code)*. Nextcloud hands the extension an app password, kept in VS Code's secret storage; no password is typed into VS Code.
+- **Without a login click:** `claudeSessions.sync.credentialsFile` points to a JSON file with `server`, `loginName` and `appPassword`, as written by `node cli.js sync login <url> --credentials <file>`. Used only while no connection is stored.
+- **Where:** `<your files>/Claude Sessions/<repository folder name>/` — one `<session-id>.jsonl` per favorite plus `state.json` with the stars and names. The folder is created in your own files and is not shared; nobody else sees it unless you share it in Nextcloud.
+- **What moves:** only sessions with a star. Other sessions stay on their machine.
+- **Direction:** the newer file wins, compared by modification time, which travels with the file. A session that runs on this machine is never overwritten by a download; the next sync after it ends catches up.
+- **Stars and names:** merged against the state of the last sync, so a star added on one machine appears on the other and a star removed on one machine disappears on the other (its file is removed from the Nextcloud folder, never from a machine). Names given on this machine win over incoming ones.
+- **Second machine:** open the same repository (any path, same folder name), connect, and the favorites appear in **Inactive** with their stars and names; ▶ resumes them with `claude --resume`.
+- **Buttons:** sync now (in the **Inactive** header once connected), connect and disconnect in the header menu.
+- **Security:** session files contain whatever was said and pasted in a session, including secrets. Sync only to a Nextcloud you control, keep the folder unshared, and disconnect a machine you give away (`Disconnect Nextcloud`, then revoke the app password under Nextcloud → Settings → Security).
+- **End-to-end check against a real Nextcloud:** `node e2e/nextcloud-e2e.mjs --credentials <file> --repo <path>` measures refusal without login, completeness, byte identity, ownership, the absence of any share, and a simulated second machine that receives everything and lists it. Exit 1 when any check fails.
 
 ## Naming convention
 
@@ -118,6 +134,10 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.autoCaptureLayout` | `true` | Capture splits on start and place terminals you open yourself (see Splits and order) |
 | `claudeSessions.pollSeconds` | `5` | How often names and sessions are re-read |
 | `claudeSessions.historyDays` | `30` | Reach of the inactive and archive lists |
+| `claudeSessions.sync.server` | empty | Nextcloud address, set by Connect Nextcloud |
+| `claudeSessions.sync.folder` | `Claude Sessions` | Folder in your Nextcloud files |
+| `claudeSessions.sync.auto` | `true` | Sync on start, every 10 minutes and after star changes; off = only Sync now |
+| `claudeSessions.sync.credentialsFile` | empty | App-password file used when no connection is stored |
 
 ## Command line and tests
 
@@ -127,6 +147,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
 - `node cli.js archive-duplicates [repo] [--days N]` archives every session whose name also belongs to a newer one; favorites and running sessions stay.
 - `node cli.js archive <repo> --name <name> [--days N] [--apply]` archives every session called `<name>` or `<name>-<n>` (e.g. all `misc`); preview unless `--apply`, running sessions are skipped, archiving only sets the flag in the state file.
+- `node cli.js sync login <nextcloud-url> --credentials <file>` runs the browser login and writes the app password to `<file>`; `node cli.js sync [repo] --credentials <file>` runs the same favorite sync as the plugin; `node cli.js sync check --credentials <file>` exits 0 while the app password is accepted.
 - `npm test` checks session parsing against generated session files and walks user flows (favorites, close, rename, splits, picker) in a fake VS Code (`test/fake-vscode.js`) with stand-in Claude processes.
 - `npm run bench -- [repo]` times cache load, session list, search index, search and the first render on real data.
 

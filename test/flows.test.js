@@ -262,6 +262,107 @@ test('a session that ends a little after its tab closed still moves to Inactive'
   api.deactivate();
 });
 
+test('on a second machine, Connect Nextcloud brings the favorites into Inactive with their stars and names', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const { syncFavorites, projectDir } = require('../sync');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const favorite = 'bbbbbbbb-0000-0000-0000-00000000000b';
+  const other = 'cccccccc-0000-0000-0000-00000000000c';
+  const machineA = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-a-'));
+  const wsA = path.join(machineA, 'code', path.basename(workspace));
+  fs.mkdirSync(path.join(wsA, '.vscode'), { recursive: true });
+  const homeB = process.env.HOME;
+  try {
+    process.env.HOME = machineA;
+    const dirA = projectDir(wsA);
+    fs.mkdirSync(dirA, { recursive: true });
+    const at = new Date(Date.now() - 60000).toISOString();
+    for (const [id, text] of [[favorite, 'kreil erp on machine a'], [other, 'not starred']]) {
+      fs.writeFileSync(path.join(dirA, `${id}.jsonl`), `${JSON.stringify({ type: 'user', cwd: wsA, timestamp: at, message: { content: text } })}\n`);
+    }
+    fs.writeFileSync(path.join(wsA, '.vscode', 'claude-sessions.json'), JSON.stringify({ favorites: { [favorite]: true }, names: { [favorite]: 'kreil-erp' } }));
+    await syncFavorites({ creds: cloud.creds(), wsPath: wsA, stateFile: path.join(wsA, '.vscode', 'claude-sessions.json') });
+  } finally {
+    process.env.HOME = homeB;
+  }
+  try {
+    const { fake, api } = await setup();
+    await api.activeView.ready;
+    fake.onOpenExternal(() => cloud.approve());
+    fake.inputAnswers.push(cloud.creds().server);
+    await fake.run('claudeSessions.connectNextcloud');
+    assert.match(fake.opened[0], /login\/v2\/flow/, 'the browser opens the Nextcloud login');
+    assert.ok(fake.secretStore.get('claudeSessions.nextcloud'), 'the app password is kept in secret storage');
+    assert.strictEqual(fake.config['sync.server'], cloud.creds().server);
+    const row = await inactiveItemFor(api, favorite);
+    assert.ok(row, 'the favorite from machine A is listed');
+    assert.match(row.label, /^★ kreil-erp/);
+    assert.ok(!(await inactiveItemFor(api, other)), 'sessions without a star stay on machine A');
+    assert.ok(fake.messages.some((m) => /\d+ favorites · 1 down/.test(m)), fake.messages.join(' | '));
+    api.deactivate();
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('with a credentials file the plugin syncs on its own after start, without a login click', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const id = 'dddddddd-0000-0000-0000-00000000000d';
+  writeSession(id, 'starred here');
+  const stateFile = path.join(workspace, '.vscode', 'claude-sessions.json');
+  const before = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {};
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(stateFile, JSON.stringify({ ...before, favorites: { ...(before.favorites || {}), [id]: true } }));
+  const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
+  fs.writeFileSync(credFile, JSON.stringify(cloud.creds()));
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['sync.credentialsFile'] = credFile;
+  const api = fake.activate();
+  try {
+    await api.activeView.ready;
+    await new Promise((r) => setTimeout(r, 4000));
+    assert.ok(cloud.files.has(`Claude Sessions/${path.basename(workspace)}/${id}.jsonl`), 'the favorite was uploaded without any click');
+    assert.strictEqual(fake.context.get('claudeSessions.syncConnected'), true);
+  } finally {
+    api.deactivate();
+    await cloud.stop();
+  }
+});
+
+test('a repository cannot redirect the sync: server and credentials file are machine settings', () => {
+  const props = require('../package.json').contributes.configuration.properties;
+  assert.strictEqual(props['claudeSessions.sync.credentialsFile'].scope, 'machine');
+  assert.strictEqual(props['claudeSessions.sync.server'].scope, 'machine');
+});
+
+test('Disconnect stops the sync even when a credentials file was configured', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
+  fs.writeFileSync(credFile, JSON.stringify(cloud.creds()));
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['sync.credentialsFile'] = credFile;
+  fake.config['sync.auto'] = false;
+  const api = fake.activate();
+  try {
+    await api.activeView.ready;
+    await fake.run('claudeSessions.disconnectNextcloud');
+    assert.strictEqual(fake.config['sync.credentialsFile'], undefined);
+    assert.strictEqual(fake.context.get('claudeSessions.syncConnected'), false);
+    const before = cloud.files.size;
+    await fake.run('claudeSessions.syncNow');
+    assert.strictEqual(cloud.files.size, before, 'nothing uploaded after disconnect');
+    assert.ok(fake.messages.some((m) => /Connect Nextcloud first/.test(m)));
+  } finally {
+    api.deactivate();
+    await cloud.stop();
+  }
+});
+
 test('an update is installed once, not again every hour until the reload', async () => {
   const updater = require('../updater');
   const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease };

@@ -47,9 +47,11 @@ class WebDav {
     if (res.status === 404) return new Map();
     const xml = await res.text();
     const entries = new Map();
-    for (const block of xml.split(/<d:response>/i).slice(1)) {
-      const href = (block.match(/<d:href>([^<]+)<\/d:href>/i) || [])[1];
-      const modified = (block.match(/<d:getlastmodified>([^<]+)<\/d:getlastmodified>/i) || [])[1];
+    const blocks = xml.split(/<(?:[\w-]+:)?response[\s>]/i).slice(1);
+    if (!blocks.length) throw new Error(`Unreadable folder listing for ${parts.join('/')}`);
+    for (const block of blocks) {
+      const href = (block.match(/<(?:[\w-]+:)?href>([^<]+)</i) || [])[1];
+      const modified = (block.match(/<(?:[\w-]+:)?getlastmodified>([^<]+)</i) || [])[1];
       if (!href || !modified) continue;
       const name = decodeURIComponent(href.replace(/\/$/, '').split('/').pop());
       entries.set(name, { mtimeSec: Math.floor(Date.parse(modified) / 1000) });
@@ -102,7 +104,39 @@ async function newestFile(sessionId) {
   return files.length ? files.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a)) : null;
 }
 
-async function syncFavorites({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), fetchImpl }) {
+const LOCK_STALE_MS = 10 * 60 * 1000;
+
+function takeLock(stateFile) {
+  const key = require('crypto').createHash('sha1').update(path.resolve(stateFile)).digest('hex').slice(0, 16);
+  const lock = path.join(os.tmpdir(), `claude-sessions-sync-${key}.lock`);
+  try {
+    fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+  } catch {
+    let age = 0;
+    try {
+      age = Date.now() - fs.statSync(lock).mtimeMs;
+    } catch {}
+    if (age < LOCK_STALE_MS) throw new Error('A sync of this repository is already running');
+    fs.writeFileSync(lock, String(process.pid));
+  }
+  return () => fs.rmSync(lock, { force: true });
+}
+
+function completeLines(buffer) {
+  const end = buffer.lastIndexOf(0x0a);
+  return end === buffer.length - 1 ? buffer : buffer.subarray(0, end + 1);
+}
+
+async function syncFavorites(options) {
+  const release = takeLock(options.stateFile);
+  try {
+    return await syncLocked(options);
+  } finally {
+    release();
+  }
+}
+
+async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), fetchImpl }) {
   const dav = new WebDav(creds, fetchImpl);
   const folderParts = [folder, repoKey(wsPath)];
   await dav.ensureFolder(folderParts);
@@ -151,24 +185,31 @@ async function syncFavorites({ creds, wsPath, stateFile, folder = 'Claude Sessio
     const localSec = Math.floor(local.mtimeMs / 1000);
     const entry = remote.get(`${id}.jsonl`);
     if (entry && entry.mtimeSec >= localSec) continue;
-    await dav.put([...folderParts, `${id}.jsonl`], await fsp.readFile(local.file), localSec);
+    const body = completeLines(await fsp.readFile(local.file));
+    if (!body.length) continue;
+    await dav.put([...folderParts, `${id}.jsonl`], body, localSec);
     result.uploaded.push(id);
   }
   for (const id of removed) {
     if (remote.has(`${id}.jsonl`)) await dav.request('DELETE', [...folderParts, `${id}.jsonl`], { ok: [204, 404] });
   }
 
-  const favorites = Object.fromEntries(merged.map((id) => [id, true]));
-  const favoriteNames = Object.fromEntries(merged.filter((id) => names[id]).map((id) => [id, names[id]]));
   const current = localState(stateFile);
+  const currentFav = new Set(Object.keys(current.favorites || {}));
+  const toggledOff = [...localFav].filter((id) => !currentFav.has(id));
+  const toggledOn = [...currentFav].filter((id) => !localFav.has(id));
+  const final = [...new Set([...merged.filter((id) => !toggledOff.includes(id)), ...toggledOn])].sort();
+  for (const id of toggledOff) await dav.request('DELETE', [...folderParts, `${id}.jsonl`], { ok: [204, 404] });
+  const favorites = Object.fromEntries(final.map((id) => [id, true]));
+  const favoriteNames = Object.fromEntries(final.filter((id) => names[id]).map((id) => [id, names[id]]));
   const localNow = { ...(current.favorites || {}) };
   for (const id of localFav) if (!merged.includes(id)) delete localNow[id];
-  for (const id of merged) if (!localFav.has(id)) localNow[id] = true;
-  writeStatePatch(stateFile, { favorites: localNow, names: { ...favoriteNames, ...(current.names || {}) }, sync: { favorites: merged, at: new Date().toISOString() } });
+  for (const id of merged) if (!localFav.has(id) && !toggledOff.includes(id)) localNow[id] = true;
+  writeStatePatch(stateFile, { favorites: localNow, names: { ...favoriteNames, ...(current.names || {}) }, sync: { favorites: final, at: new Date().toISOString() } });
   const nextState = JSON.stringify({ favorites, names: favoriteNames }, null, 2);
   const previous = JSON.stringify({ favorites: remoteState.favorites || {}, names: remoteState.names || {} }, null, 2);
   if (nextState !== previous) await dav.put([...folderParts, 'state.json'], Buffer.from(`${nextState}\n`), Math.floor(Date.now() / 1000));
-  result.favorites = merged.length;
+  result.favorites = final.length;
   result.removed = removed;
   return result;
 }

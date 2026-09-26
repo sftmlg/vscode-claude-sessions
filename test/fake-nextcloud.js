@@ -2,6 +2,7 @@
 const http = require('http');
 
 function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' } = {}) {
+  const options = { ns: 'd', garbage: false };
   const files = new Map();
   const folders = new Set(['']);
   let approved = false;
@@ -51,11 +52,13 @@ function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' }
       }
       if (req.method === 'PROPFIND') {
         if (!folders.has(key)) return res.writeHead(404).end();
+        const p = options.ns;
         const entry = (name, mtime) =>
-          `<d:response><d:href>${prefix}/${encodeURI(name)}</d:href><d:propstat><d:prop><d:getlastmodified>${new Date(mtime * 1000).toUTCString()}</d:getlastmodified></d:prop></d:propstat></d:response>`;
+          `<${p}:response><${p}:href>${prefix}/${encodeURI(name)}</${p}:href><${p}:propstat><${p}:prop><${p}:getlastmodified>${new Date(mtime * 1000).toUTCString()}</${p}:getlastmodified></${p}:prop></${p}:propstat></${p}:response>`;
         const children = [...files.entries()].filter(([k]) => k.split('/').slice(0, -1).join('/') === key).map(([k, v]) => entry(k, v.mtime));
         res.writeHead(207, { 'Content-Type': 'application/xml' });
-        return res.end(`<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">${children.join('')}</d:multistatus>`);
+        if (options.garbage) return res.end('<html>maintenance</html>');
+        return res.end(`<?xml version="1.0"?><${p}:multistatus xmlns:${p}="DAV:">${entry(`${key}/`, Math.floor(Date.now() / 1000))}${children.join('')}</${p}:multistatus>`);
       }
       res.writeHead(405).end();
     });
@@ -63,6 +66,7 @@ function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' }
 
   return {
     files,
+    options,
     approve: () => {
       approved = true;
     },

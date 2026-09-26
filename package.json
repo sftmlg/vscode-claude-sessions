@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.20.1",
+  "version": "0.21.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -504,7 +504,14 @@
         "claudeSessions.sync.server": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "description": "Nextcloud address used for syncing favorite sessions, set by Connect Nextcloud."
+        },
+        "claudeSessions.sync.credentialsFile": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Optional JSON file with server, loginName and appPassword (as written by `node cli.js sync login`), used when this machine has not run Connect Nextcloud. Relative paths start at the workspace folder; ~ is your home folder."
         },
         "claudeSessions.sync.folder": {
           "type": "string",
@@ -514,7 +521,7 @@
         "claudeSessions.sync.auto": {
           "type": "boolean",
           "default": true,
-          "description": "Sync favorite sessions 10 s after start, every 10 minutes and 5 s after a star changes. Off: only Sync now."
+          "description": "Sync favorite sessions 3 s after start, every 10 minutes and 5 s after a star changes. Off: only Sync now."
         },
         "claudeSessions.autoUpdate": {
           "type": "boolean",

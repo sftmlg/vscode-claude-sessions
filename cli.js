@@ -13,10 +13,50 @@ const USAGE = [
   '  node cli.js rename-batch <mapping.json> [--keep-existing]   (JSON object: session id -> name)',
   '  node cli.js archive <repo-path> --name <name> [--days N] [--apply]   (preview unless --apply; running sessions are skipped)',
   '  node cli.js state [repo-path]   (favorites, names, saved tabs and whether their session files and processes exist)',
+  '  node cli.js sync login <nextcloud-url> --credentials <file>   (browser login, writes an app password to <file>)',
+  '  node cli.js sync [repo-path] --credentials <file> [--folder <name>]   (same favorite sync as the plugin)',
+  '  node cli.js sync check --credentials <file>   (exit 0 when the app password is accepted, 1 when rejected)',
 ].join('\n');
 
 async function main(argv) {
   const [command, ...rest] = argv;
+  if (command === 'sync') {
+    const { syncFavorites, startLogin, finishLogin } = require('./sync');
+    const credIndex = rest.indexOf('--credentials');
+    const credFile = credIndex >= 0 ? rest[credIndex + 1] : process.env.CLAUDE_SESSIONS_CREDENTIALS;
+    if (!credFile) {
+      console.error('Pass --credentials <file> or set CLAUDE_SESSIONS_CREDENTIALS.');
+      return 1;
+    }
+    if (rest[0] === 'login') {
+      const { login, poll } = await startLogin(rest[1]);
+      console.log(`Open this address, sign in and grant access:\n${login}`);
+      const creds = await finishLogin(poll);
+      fs.writeFileSync(credFile, `${JSON.stringify(creds, null, 2)}\n`, { mode: 0o600 });
+      fs.chmodSync(credFile, 0o600);
+      console.log(`connected as ${creds.loginName}; credentials written to ${credFile}`);
+      return 0;
+    }
+    if (rest[0] === 'check') {
+      const { WebDav } = require('./sync');
+      const creds = JSON.parse(fs.readFileSync(credFile, 'utf8'));
+      const res = await fetch(new WebDav(creds).url([]), { method: 'PROPFIND', headers: { Authorization: new WebDav(creds).auth, Depth: '0' } });
+      console.log(`${creds.loginName} on ${creds.server}: ${res.status === 207 ? 'connected' : `rejected (HTTP ${res.status})`}`);
+      return res.status === 207 ? 0 : 1;
+    }
+    const folderIndex = rest.indexOf('--folder');
+    const repo = path.resolve(rest.find((a, i) => !a.startsWith('--') && rest[i - 1] !== '--credentials' && rest[i - 1] !== '--folder') || process.cwd());
+    const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
+    const result = await syncFavorites({
+      creds: JSON.parse(fs.readFileSync(credFile, 'utf8')),
+      wsPath: repo,
+      stateFile: path.join(repo, '.vscode', 'claude-sessions.json'),
+      folder: folderIndex >= 0 ? rest[folderIndex + 1] : undefined,
+      running,
+    });
+    console.log(`${result.favorites} favorites · ${result.downloaded.length} downloaded · ${result.uploaded.length} uploaded · ${result.removed.length} removed · ${result.skippedRunning.length} kept because running here`);
+    return 0;
+  }
   if (command === 'state') {
     const repo = path.resolve(rest[0] || process.cwd());
     const state = readState(repo);
