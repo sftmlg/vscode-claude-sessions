@@ -779,8 +779,11 @@ function activate(context) {
     try {
       const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
       const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running });
-      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}`;
+      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}`;
       const names = store.readState().names || {};
+      for (const f of result.forked) {
+        vscode.window.showInformationMessage(`"${f.name}" holds what this machine wrote while "${names[f.id] || f.id}" grew apart on ${f.machine}; both sessions are kept and starred.`);
+      }
       for (const c of result.conflicts) {
         if (conflictsShown.has(c.id)) continue;
         conflictsShown.add(c.id);

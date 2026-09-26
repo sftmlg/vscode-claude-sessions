@@ -54,7 +54,9 @@ async function main(argv) {
       folder: folderIndex >= 0 ? rest[folderIndex + 1] : undefined,
       running,
     });
-    console.log(`${result.favorites} favorites · ${result.downloaded.length} downloaded · ${result.uploaded.length} uploaded · ${result.removed.length} removed · ${result.skippedRunning.length} kept because running here`);
+    console.log(`${result.favorites} favorites · ${result.downloaded.length} downloaded · ${result.uploaded.length} uploaded · ${result.removed.length} removed · ${result.skippedRunning.length} kept because running here · ${result.locked.length} locked here · ${result.conflicts.length} locked elsewhere`);
+    for (const f of result.forked) console.log(`forked: ${f.id} grew apart on ${f.machine}; this machine's copy is now ${f.forkId} "${f.name}"`);
+    for (const d of result.diverged) console.log(`diverged: ${d.id} (${d.kept})`);
     return 0;
   }
   if (command === 'state') {
