@@ -29,6 +29,11 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
   const warningAnswers = [];
   const panes = [];
   const lastActive = new Map();
+  const opened = [];
+  const config = {};
+  const secretStore = new Map();
+  const messages = [];
+  let onOpenExternal = null;
   const groupOf = (t) => panes.find((g) => g.includes(t));
   const focusPane = (step) => {
     const t = vscode.window.activeTerminal;
@@ -98,11 +103,13 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
       }
     },
     QuickPickItemKind: { Separator: -1 },
-    Uri: { file: (p) => ({ fsPath: p, path: p }) },
-    env: { clipboard: { writeText: async () => undefined } },
+    ProgressLocation: { Notification: 15 },
+    ConfigurationTarget: { Global: 1 },
+    Uri: { file: (p) => ({ fsPath: p, path: p }), parse: (s) => ({ toString: () => s }) },
+    env: { clipboard: { writeText: async () => undefined }, openExternal: async (uri) => opened.push(uri.toString()) && (onOpenExternal ? onOpenExternal(uri.toString()) : true) },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
-      getConfiguration: () => ({ get: (key) => ({ autoUpdate: false }[key]) }),
+      getConfiguration: () => ({ get: (key) => ({ autoUpdate: false, ...config }[key]), update: async (key, value) => (config[key] = value) }),
       onDidChangeConfiguration: new Emitter().event,
       fs: { delete: async () => undefined },
     },
@@ -155,7 +162,11 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
       },
       showInputBox: async () => inputAnswers.shift(),
       showWarningMessage: async () => warningAnswers.shift(),
-      showInformationMessage: async () => undefined,
+      showInformationMessage: async (text) => {
+        messages.push(text);
+        return undefined;
+      },
+      withProgress: (options, task) => task({ report() {} }, { isCancellationRequested: false }),
       showTextDocument: async () => undefined,
       onDidOpenTerminal: open.event,
       onDidCloseTerminal: close.event,
@@ -212,10 +223,16 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
     const sessionsPath = require.resolve('../sessions');
     delete require.cache[extPath];
     delete require.cache[sessionsPath];
+    delete require.cache[require.resolve('../sync')];
     const extension = require('../extension');
     restore();
     const subscriptions = [];
-    const api = extension.activate({ subscriptions, storageUri: undefined, globalStorageUri: { fsPath: globalStoragePath } });
+    const secrets = {
+      get: async (k) => secretStore.get(k),
+      store: async (k, v) => secretStore.set(k, v),
+      delete: async (k) => secretStore.delete(k),
+    };
+    const api = extension.activate({ subscriptions, storageUri: undefined, globalStorageUri: { fsPath: globalStoragePath }, secrets });
     return {
       ...api,
       deactivate: () => {
@@ -235,6 +252,13 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
     inputAnswers,
     warningAnswers,
     panes,
+    opened,
+    config,
+    secretStore,
+    messages,
+    onOpenExternal: (fn) => {
+      onOpenExternal = fn;
+    },
     run: (id, ...args) => vscode.commands.executeCommand(id, ...args),
     fire: { windowState: (s) => windowState.fire(s) },
   };
