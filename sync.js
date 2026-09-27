@@ -123,20 +123,50 @@ async function newestFile(sessionId) {
 }
 
 const sha256 = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
-const shortMachine = (machine) => String(machine).split('@').pop().split('.')[0].toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+const shortMachine = (machine) => String(machine).split('#')[0].split('@').pop().split('.')[0].toLowerCase().replace(/[^a-z0-9-]+/g, '-');
 
 const LOCK_STALE_MS = 10 * 60 * 1000;
 const LOCK_TTL_MS = 30 * 60 * 1000;
 
+function legacyMachineId() {
+  return `${os.userInfo().username}@${os.hostname().replace(/\.local$/, '')}`;
+}
+
+function machineName() {
+  if (process.platform === 'darwin') {
+    try {
+      const name = require('child_process').execFileSync('scutil', ['--get', 'LocalHostName'], { encoding: 'utf8', timeout: 2000 }).trim();
+      if (name) return name;
+    } catch {}
+  }
+  const host = os.hostname().split('.')[0];
+  return host && !/^unknown/i.test(host) ? host : os.userInfo().username;
+}
+
+let cachedMachine = null;
 function machineId() {
-  return process.env.CLAUDE_SESSIONS_MACHINE || `${os.userInfo().username}@${os.hostname().replace(/\.local$/, '')}`;
+  if (process.env.CLAUDE_SESSIONS_MACHINE) return process.env.CLAUDE_SESSIONS_MACHINE;
+  if (cachedMachine) return cachedMachine;
+  const file = path.join(os.homedir(), '.claude-sessions-machine.json');
+  try {
+    cachedMachine = JSON.parse(fs.readFileSync(file, 'utf8')).id;
+    if (cachedMachine) return cachedMachine;
+  } catch {}
+  const id = `${machineName()}#${crypto.randomUUID().slice(0, 8)}`;
+  try {
+    fs.writeFileSync(file, `${JSON.stringify({ id })}\n`, { flag: 'wx' });
+    cachedMachine = id;
+  } catch {
+    cachedMachine = JSON.parse(fs.readFileSync(file, 'utf8')).id;
+  }
+  return cachedMachine;
 }
 
 const liveLock = (lock, now) => Boolean(lock && lock.machine && now - (lock.heartbeat || 0) < LOCK_TTL_MS);
 
-async function readLock({ creds, wsPath, id, folder = 'Claude Sessions', machine = machineId(), now = Date.now(), fetchImpl }) {
+async function readLock({ creds, wsPath, id, folder = 'Claude Sessions', machine = machineId(), legacy = legacyMachineId(), now = Date.now(), fetchImpl }) {
   const lock = await new WebDav(creds, fetchImpl).getJson([folder, repoKey(wsPath), 'locks', `${id}.json`]);
-  return liveLock(lock, now) && lock.machine !== machine ? lock : null;
+  return liveLock(lock, now) && lock.machine !== machine && lock.machine !== legacy ? lock : null;
 }
 
 function takeLock(stateFile) {
@@ -169,7 +199,8 @@ async function syncFavorites(options) {
   }
 }
 
-async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), machine = machineId(), now = Date.now(), fetchImpl }) {
+async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), machine = machineId(), legacy = legacyMachineId(), now = Date.now(), fetchImpl }) {
+  const isMine = (lock) => Boolean(lock) && (lock.machine === machine || lock.machine === legacy);
   const dav = new WebDav(creds, fetchImpl);
   const folderParts = [folder, repoKey(wsPath)];
   const lockParts = [...folderParts, 'locks'];
@@ -198,9 +229,9 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
     const id = name.replace(/\.json$/, '');
     if (name.endsWith('.json') && merged.includes(id)) locks[id] = await dav.getJson([...lockParts, name]);
   }
-  const heldElsewhere = (id) => liveLock(locks[id], now) && locks[id].machine !== machine;
+  const heldElsewhere = (id) => liveLock(locks[id], now) && !isMine(locks[id]);
   for (const id of merged.filter((i) => running.has(i))) {
-    const mine = locks[id] && locks[id].machine === machine;
+    const mine = isMine(locks[id]);
     if (heldElsewhere(id)) {
       result.conflicts.push({ id, machine: locks[id].machine });
       continue;
@@ -308,7 +339,7 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   }
   for (const id of Object.keys(lockHolders)) {
     const lock = lockHolders[id];
-    if (!lock || lock.machine !== machine || (running.has(id) && merged.includes(id))) continue;
+    if (!isMine(lock) || (running.has(id) && merged.includes(id))) continue;
     await dav.request('DELETE', [...lockParts, `${id}.json`], { ok: [204, 404] });
     result.released.push(id);
   }
@@ -352,4 +383,25 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   return result;
 }
 
-module.exports = { WebDav, startLogin, finishLogin, syncFavorites, readLock, machineId, LOCK_TTL_MS, repoKey, projectDir, normalizeServer };
+async function readRemoteStatus(dav, folder = 'Claude Sessions', now = Date.now()) {
+  const repos = [...(await dav.list([folder])).keys()].filter((name) => name !== folder);
+  const out = [];
+  for (const name of repos) {
+    const listing = await dav.list([folder, name]);
+    const state = (await dav.getJson([folder, name, 'state.json'])) || {};
+    const lockNames = [...(await dav.list([folder, name, 'locks'])).keys()].filter((n) => n.endsWith('.json'));
+    const locks = {};
+    for (const n of lockNames) {
+      const lock = await dav.getJson([folder, name, 'locks', n]);
+      if (liveLock(lock, now)) locks[n.replace(/\.json$/, '')] = lock.machine;
+    }
+    const favorites = [];
+    for (const id of Object.keys(state.favorites || {})) {
+      favorites.push({ id, name: (state.names || {})[id], file: listing.has(`${id}.jsonl`), here: Boolean(await newestFile(id)), lock: locks[id] });
+    }
+    out.push({ name, favorites, files: [...listing.keys()].filter((n) => SESSION_FILE.test(n)).length, locks: Object.keys(locks) });
+  }
+  return out;
+}
+
+module.exports = { readRemoteStatus, WebDav, startLogin, finishLogin, syncFavorites, readLock, machineId, LOCK_TTL_MS, repoKey, projectDir, normalizeServer };

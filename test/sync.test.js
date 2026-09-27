@@ -409,3 +409,38 @@ test('an unstarred session releases the lock this machine held on it', async () 
     await cloud.stop();
   }
 });
+
+test('the machine id is stable, readable and stored once per machine', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-machine-'));
+  const before = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    delete require.cache[require.resolve('../sync')];
+    const first = require('../sync').machineId();
+    assert.match(first, /^[^#\s]+#[0-9a-f]{8}$/);
+    assert.doesNotMatch(first, /invalid|unknown/i);
+    delete require.cache[require.resolve('../sync')];
+    assert.strictEqual(require('../sync').machineId(), first, 'the same after a restart');
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(home, '.claude-sessions-machine.json'), 'utf8')).id, first);
+  } finally {
+    process.env.HOME = before;
+    delete require.cache[require.resolve('../sync')];
+  }
+});
+
+test('a lock written under the old host-based name is recognised as this machine and renewed under the new id', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    const now = Date.now();
+    cloud.files.set(`Claude Sessions/my-repo/locks/${F1}.json`, { body: Buffer.from(JSON.stringify({ machine: 'user@old-host', since: now - 60000, heartbeat: now - 60000 })), mtime: Math.floor(now / 1000) });
+    use(a);
+    appendLine(a, F1, 'still here');
+    const r = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'Mac#abcd1234', legacy: 'user@old-host' });
+    assert.deepStrictEqual(r.conflicts, []);
+    assert.deepStrictEqual(r.locked, [F1]);
+    assert.strictEqual(lockOf(cloud, F1).machine, 'Mac#abcd1234');
+    assert.ok(r.uploaded.includes(F1));
+  } finally {
+    await cloud.stop();
+  }
+});

@@ -16,6 +16,7 @@ const USAGE = [
   '  node cli.js sync login <nextcloud-url> --credentials <file>   (browser login, writes an app password to <file>)',
   '  node cli.js sync [repo-path] --credentials <file> [--folder <name>]   (same favorite sync as the plugin)',
   '  node cli.js sync check --credentials <file>   (exit 0 when the app password is accepted, 1 when rejected)',
+  '  node cli.js sync status --credentials <file> [--folder <name>]   (every repository folder in Nextcloud: favorites, files, locks, and which are missing here)',
 ].join('\n');
 
 async function main(argv) {
@@ -35,6 +36,16 @@ async function main(argv) {
       fs.writeFileSync(credFile, `${JSON.stringify(creds, null, 2)}\n`, { mode: 0o600 });
       fs.chmodSync(credFile, 0o600);
       console.log(`connected as ${creds.loginName}; credentials written to ${credFile}`);
+      return 0;
+    }
+    if (rest[0] === 'status') {
+      const { WebDav, readRemoteStatus } = require('./sync');
+      const folderAt = rest.indexOf('--folder');
+      const status = await readRemoteStatus(new WebDav(JSON.parse(fs.readFileSync(credFile, 'utf8'))), folderAt >= 0 ? rest[folderAt + 1] : 'Claude Sessions');
+      for (const repo of status) {
+        console.log(`${repo.name}: ${repo.favorites.length} favorites · ${repo.files} files · ${repo.locks.length} locks`);
+        for (const f of repo.favorites) console.log(`  ${f.here ? 'here   ' : 'missing'} ${f.id} ${f.name || ''}${f.file ? '' : ' (no file in Nextcloud)'}${f.lock ? ` 🔒 ${f.lock}` : ''}`);
+      }
       return 0;
     }
     if (rest[0] === 'check') {

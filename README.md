@@ -150,7 +150,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
 - `node cli.js archive-duplicates [repo] [--days N]` archives every session whose name also belongs to a newer one; favorites and running sessions stay.
 - `node cli.js archive <repo> --name <name> [--days N] [--apply]` archives every session called `<name>` or `<name>-<n>` (e.g. all `misc`); preview unless `--apply`, running sessions are skipped, archiving only sets the flag in the state file.
-- `node cli.js sync login <nextcloud-url> --credentials <file>` runs the browser login and writes the app password to `<file>`; `node cli.js sync [repo] --credentials <file>` runs the same favorite sync as the plugin; `node cli.js sync check --credentials <file>` exits 0 while the app password is accepted.
+- `node cli.js sync login <nextcloud-url> --credentials <file>` runs the browser login and writes the app password to `<file>`; `node cli.js sync [repo] --credentials <file>` runs the same favorite sync as the plugin; `node cli.js sync check --credentials <file>` exits 0 while the app password is accepted. `node cli.js sync status --credentials <file>` lists every repository folder in Nextcloud with its favorites, whether each one is on this machine, and its live lock.
 - `npm test` checks session parsing against generated session files and walks user flows (favorites, close, rename, splits, picker) in a fake VS Code (`test/fake-vscode.js`) with stand-in Claude processes.
 - `npm run bench -- [repo]` times cache load, session list, search index, search and the first render on real data.
 
