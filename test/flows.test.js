@@ -555,3 +555,238 @@ test('a session locked by another machine shows its lock and resumes only after 
   assert.strictEqual(sentFor().length, 1, 'the explicit override resumes');
   api.deactivate();
 });
+
+test('Remote lists every machine, loads an uploaded session and requests one that is not uploaded yet', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const { heartbeat } = require('../sync');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const base = `Claude Sessions/${path.basename(workspace)}`;
+  const uploadedId = 'eeeeeeee-0000-0000-0000-00000000000e';
+  const pendingId = 'ffffffff-0000-0000-0000-00000000000f';
+  const at = new Date(Date.now() - 60000).toISOString();
+  const body = `${JSON.stringify({ type: 'user', cwd: workspace, timestamp: at, message: { content: 'from the studio' } })}\n`;
+  cloud.files.set(`${base}/${uploadedId}.jsonl`, { body: Buffer.from(body), mtime: Math.floor(Date.now() / 1000) - 60 });
+  const studioWs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-studio-')), path.basename(workspace));
+  fs.mkdirSync(path.join(studioWs, '.vscode'), { recursive: true });
+  await heartbeat({
+    creds: cloud.creds(),
+    wsPath: studioWs,
+    stateFile: path.join(studioWs, '.vscode', 'claude-sessions.json'),
+    machine: 'studio#1',
+    name: 'Mac Studio',
+    sessions: [
+      { id: uploadedId, name: 'uploaded-one', lastActivity: at, running: false, favorite: true },
+      { id: pendingId, name: 'pending-one', lastActivity: at, running: true, favorite: false },
+    ],
+  });
+  const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
+  fs.writeFileSync(credFile, JSON.stringify(cloud.creds()));
+  process.env.CLAUDE_SESSIONS_MACHINE = 'book#2';
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['sync.credentialsFile'] = credFile;
+  fake.config['sync.auto'] = false;
+  fake.config.machineName = 'MacBook';
+  const api = fake.activate();
+  try {
+    await api.activeView.ready;
+    await fake.run('claudeSessions.refreshRemote');
+    const machines = await api.remoteView.getChildren();
+    assert.deepStrictEqual(machines.map((m) => m.label), ['MacBook', 'Mac Studio'], 'this machine first, then the others');
+    assert.match(machines[0].description, /^this machine/);
+    assert.strictEqual(machines[1].collapsibleState, fake.vscode.TreeItemCollapsibleState.Expanded);
+    assert.ok(cloud.files.has(`${base}/machines/book_2.json`), 'this machine registered itself');
+    const rows = await api.remoteView.getChildren(machines[1]);
+    const uploaded = rows.find((r) => r.data.remote.id === uploadedId);
+    const pending = rows.find((r) => r.data.remote.id === pendingId);
+    assert.match(uploaded.description, /^uploaded /);
+    assert.match(uploaded.tooltip, /Uploaded: .*/);
+    assert.match(pending.description, /^● running · not uploaded/);
+    assert.strictEqual(pending.contextValue, 'remoteSession');
+
+    await fake.run('claudeSessions.loadRemote', uploaded);
+    assert.ok(fs.existsSync(path.join(projectDir, `${uploadedId}.jsonl`)), 'the uploaded session is downloaded');
+    assert.strictEqual(fs.readFileSync(path.join(projectDir, `${uploadedId}.jsonl`), 'utf8'), body, 'byte-identical');
+    assert.ok(api.notifications.isFavorite(uploadedId), 'a loaded session is starred, so it keeps syncing');
+    assert.ok(fake.messages.some((m) => /"uploaded-one" from Mac Studio is on this machine now/.test(m)), fake.messages.join(' | '));
+    const syncingFlags = fake.executed.filter(([id, key]) => id === 'setContext' && key === 'claudeSessions.syncing').map(([, , v]) => v);
+    assert.deepStrictEqual(syncingFlags.slice(0, 2), [true, false], 'the sync button spins while the sync runs');
+    const after = await api.remoteView.getChildren((await api.remoteView.getChildren())[1]);
+    assert.strictEqual(after.find((r) => r.data.remote.id === uploadedId).contextValue, 'remoteSession.here');
+
+    await fake.run('claudeSessions.loadRemote', pending);
+    const request = JSON.parse(cloud.files.get(`${base}/requests/${pendingId}.json`).body);
+    assert.deepStrictEqual([request.from, request.by, request.name], ['studio#1', 'book#2', 'pending-one']);
+    assert.ok(api.notifications.isFavorite(pendingId));
+    assert.ok(fake.messages.some((m) => /Requested "pending-one" from Mac Studio/.test(m)));
+    const requested = (await api.remoteView.getChildren((await api.remoteView.getChildren())[1])).find((r) => r.data.remote.id === pendingId);
+    assert.match(requested.description, /requested/);
+  } finally {
+    api.deactivate();
+    delete process.env.CLAUDE_SESSIONS_MACHINE;
+    await cloud.stop();
+  }
+});
+
+test('the machine name is asked once after start and lands in the register', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
+  fs.writeFileSync(credFile, JSON.stringify(cloud.creds()));
+  process.env.CLAUDE_SESSIONS_MACHINE = 'fresh#3';
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['sync.credentialsFile'] = credFile;
+  fake.inputAnswers.push('Mac Studio Office');
+  const api = fake.activate();
+  try {
+    await api.activeView.ready;
+    await new Promise((r) => setTimeout(r, 4500));
+    assert.strictEqual(fake.config.machineName, 'Mac Studio Office');
+    const entry = JSON.parse(cloud.files.get(`Claude Sessions/${path.basename(workspace)}/machines/fresh_3.json`).body);
+    assert.strictEqual(entry.name, 'Mac Studio Office');
+    assert.ok(Array.isArray(entry.sessions) && entry.sessions.length > 0, 'the register lists this machine\'s sessions');
+  } finally {
+    api.deactivate();
+    delete process.env.CLAUDE_SESSIONS_MACHINE;
+    await cloud.stop();
+  }
+});
+
+test('a session another machine requests is uploaded by this machine\'s next check and the request is closed', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const { requestSession, syncFavorites } = require('../sync');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const base = `Claude Sessions/${path.basename(workspace)}`;
+  const wanted = '99999999-0000-0000-0000-000000000009';
+  writeSession(wanted, 'wanted on the other machine');
+  const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
+  fs.writeFileSync(credFile, JSON.stringify(cloud.creds()));
+  process.env.CLAUDE_SESSIONS_MACHINE = 'owner#4';
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['sync.credentialsFile'] = credFile;
+  fake.config['sync.auto'] = false;
+  fake.config.machineName = 'Owner';
+  const api = fake.activate();
+  try {
+    await api.activeView.ready;
+    await fake.run('claudeSessions.refreshRemote');
+    const otherWs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-req-')), path.basename(workspace));
+    fs.mkdirSync(path.join(otherWs, '.vscode'), { recursive: true });
+    const other = { creds: cloud.creds(), wsPath: otherWs, stateFile: path.join(otherWs, '.vscode', 'claude-sessions.json'), machine: 'asker#5' };
+    const askerHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-asker-'));
+    const asAsker = async (fn) => {
+      process.env.HOME = askerHome;
+      try {
+        return await fn();
+      } finally {
+        process.env.HOME = home;
+      }
+    };
+    await asAsker(() => requestSession({ ...other, id: wanted, from: 'owner#4', name: 'wanted' }));
+    await asAsker(() => syncFavorites(other));
+    assert.ok(!cloud.files.has(`${base}/${wanted}.jsonl`), 'not uploaded before the owner checks');
+    await fake.run('claudeSessions.refreshRemote');
+    assert.ok(cloud.files.has(`${base}/${wanted}.jsonl`), 'the owner uploaded it');
+    assert.ok(!cloud.files.has(`${base}/requests/${wanted}.json`), 'the request is closed');
+    assert.ok(api.notifications.isFavorite(wanted), 'the star from the asking machine arrived here');
+    const got = await asAsker(() => syncFavorites(other));
+    assert.deepStrictEqual(got.downloaded, [wanted], 'the asking machine receives it on its next sync');
+  } finally {
+    api.deactivate();
+    delete process.env.CLAUDE_SESSIONS_MACHINE;
+    await cloud.stop();
+  }
+});
+
+test('a request is closed only once its session is in Nextcloud; one this machine does not have is dropped', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const { requestSession, syncFavorites } = require('../sync');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const base = `Claude Sessions/${path.basename(workspace)}`;
+  const kept = '88888888-0000-0000-0000-000000000008';
+  const unknown = '77777777-0000-0000-0000-000000000007';
+  writeSession(kept, 'upload fails at first');
+  const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
+  fs.writeFileSync(credFile, JSON.stringify(cloud.creds()));
+  process.env.CLAUDE_SESSIONS_MACHINE = 'owner#6';
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['sync.credentialsFile'] = credFile;
+  fake.config['sync.auto'] = false;
+  fake.config.machineName = 'Owner';
+  const api = fake.activate();
+  const askerHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-asker-'));
+  const otherWs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-req-')), path.basename(workspace));
+  fs.mkdirSync(path.join(otherWs, '.vscode'), { recursive: true });
+  const other = { creds: cloud.creds(), wsPath: otherWs, stateFile: path.join(otherWs, '.vscode', 'claude-sessions.json'), machine: 'asker#7' };
+  const asAsker = async (fn) => {
+    process.env.HOME = askerHome;
+    try {
+      return await fn();
+    } finally {
+      process.env.HOME = home;
+    }
+  };
+  try {
+    await api.activeView.ready;
+    await asAsker(() => requestSession({ ...other, id: kept, from: 'owner#6', name: 'kept' }));
+    await asAsker(() => requestSession({ ...other, id: unknown, from: 'owner#6', name: 'unknown' }));
+    await asAsker(() => syncFavorites(other));
+    cloud.options.failKey = `${base}/${kept}.jsonl`;
+    await fake.run('claudeSessions.refreshRemote');
+    assert.ok(cloud.files.has(`${base}/requests/${kept}.json`), 'a request whose upload failed stays open');
+    assert.ok(!cloud.files.has(`${base}/requests/${unknown}.json`), 'a request for a session this machine does not have is dropped');
+    cloud.options.failKey = null;
+    await fake.run('claudeSessions.refreshRemote');
+    assert.ok(cloud.files.has(`${base}/${kept}.jsonl`), 'the next check uploads it');
+    assert.ok(!cloud.files.has(`${base}/requests/${kept}.json`), 'and closes the request');
+  } finally {
+    api.deactivate();
+    delete process.env.CLAUDE_SESSIONS_MACHINE;
+    await cloud.stop();
+  }
+});
+
+test('loading a remote session while a sync runs waits for it instead of doing nothing', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const { heartbeat } = require('../sync');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const base = `Claude Sessions/${path.basename(workspace)}`;
+  const id = '66666666-0000-0000-0000-000000000006';
+  const body = `${JSON.stringify({ type: 'user', cwd: workspace, timestamp: new Date().toISOString(), message: { content: 'late' } })}\n`;
+  const studioWs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-studio-')), path.basename(workspace));
+  fs.mkdirSync(path.join(studioWs, '.vscode'), { recursive: true });
+  await heartbeat({ creds: cloud.creds(), wsPath: studioWs, stateFile: path.join(studioWs, '.vscode', 'claude-sessions.json'), machine: 'studio#8', name: 'Studio', sessions: [{ id, name: 'late-one', lastActivity: new Date().toISOString() }] });
+  cloud.files.set(`${base}/${id}.jsonl`, { body: Buffer.from(body), mtime: Math.floor(Date.now() / 1000) });
+  const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
+  fs.writeFileSync(credFile, JSON.stringify(cloud.creds()));
+  process.env.CLAUDE_SESSIONS_MACHINE = 'book#9';
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['sync.credentialsFile'] = credFile;
+  fake.config['sync.auto'] = false;
+  fake.config.machineName = 'Book';
+  const api = fake.activate();
+  try {
+    await api.activeView.ready;
+    await fake.run('claudeSessions.refreshRemote');
+    const studio = (await api.remoteView.getChildren()).find((m) => m.label === 'Studio');
+    const row = (await api.remoteView.getChildren(studio)).find((r) => r.data.remote.id === id);
+    const slow = '55555555-0000-0000-0000-000000000005';
+    writeSession(slow, 'slow upload keeps the first sync busy');
+    api.notifications.setFavorite(slow, true);
+    cloud.options.slowPut = { suffix: `${slow}.jsonl`, ms: 1500 };
+    const running = fake.run('claudeSessions.syncNow');
+    await new Promise((r) => setTimeout(r, 500));
+    await fake.run('claudeSessions.loadRemote', row);
+    await running;
+    cloud.options.slowPut = null;
+    assert.ok(fs.existsSync(path.join(projectDir, `${id}.jsonl`)), 'downloaded after the running sync finished');
+  } finally {
+    api.deactivate();
+    delete process.env.CLAUDE_SESSIONS_MACHINE;
+    await cloud.stop();
+  }
+});

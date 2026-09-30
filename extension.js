@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const updater = require('./updater');
-const { syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS } = require('./sync');
+const { syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests } = require('./sync');
 const {
   readRunningSessions,
   processChildren,
@@ -664,6 +664,86 @@ class SessionsProvider {
   }
 }
 
+const ONLINE_MS = 5 * 60 * 1000;
+const clock = (at) => new Date(at).toTimeString().slice(0, 5);
+
+function remoteSessionState(s, snapshot) {
+  const uploaded = snapshot.uploaded[s.id];
+  const local = snapshot.local.get(s.id);
+  const requested = snapshot.outgoing.some((r) => r.sessionId === s.id);
+  const here = local !== undefined && (!uploaded || local >= uploaded.mtimeSec);
+  return { uploaded, here, requested, stale: local !== undefined && !here };
+}
+
+class RemoteProvider {
+  constructor(notifications) {
+    this.notifications = notifications;
+    this.snapshot = null;
+    this.emitter = new vscode.EventEmitter();
+    this.onDidChangeTreeData = this.emitter.event;
+  }
+
+  refresh() {
+    if (this.fireTimer) return;
+    this.fireTimer = setTimeout(() => {
+      this.fireTimer = null;
+      this.emitter.fire();
+    }, 50);
+  }
+
+  getTreeItem(e) {
+    return e;
+  }
+
+  machineItem(m, now) {
+    const online = now - Date.parse(m.lastSeen) < ONLINE_MS;
+    const item = new vscode.TreeItem(m.name, m.self ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded);
+    item.id = `machine:${m.id}`;
+    item.contextValue = m.self ? 'remoteMachine.self' : 'remoteMachine';
+    item.iconPath = new vscode.ThemeIcon(m.self ? 'device-desktop' : online ? 'vm-active' : 'vm-outline');
+    const synced = m.lastSync ? `synced ${clock(m.lastSync)}` : 'never synced';
+    item.description = `${m.self ? 'this machine' : online ? 'online' : `seen ${timeAgo(m.lastSeen)}`} · ${synced}`;
+    item.tooltip = `${m.name}${m.self ? ' (this machine)' : ''}\nLast seen: ${new Date(m.lastSeen).toLocaleString()}\nLast full sync: ${m.lastSync ? new Date(m.lastSync).toLocaleString() : 'never'}\nId: ${m.id}`;
+    item.data = { kind: 'machine', machine: m };
+    return item;
+  }
+
+  sessionItem(s, m) {
+    const snap = this.snapshot;
+    const st = remoteSessionState(s, snap);
+    const byName = (id) => (snap.machines.find((x) => x.id === id) || {}).name || id;
+    const item = new vscode.TreeItem(`${this.notifications.isFavorite(s.id) ? '★' : '☆'} ${s.name}`);
+    item.id = `remote:${m.id}:${s.id}`;
+    const where = st.here ? 'here' : st.requested ? 'requested' : st.stale ? `newer upload ${timeAgo(new Date(st.uploaded.mtimeSec * 1000).toISOString())}` : st.uploaded ? `uploaded ${timeAgo(new Date(st.uploaded.mtimeSec * 1000).toISOString())}` : 'not uploaded';
+    item.description = `${s.running ? '● running · ' : ''}${where}${s.lastActivity ? ` · ${timeAgo(s.lastActivity)}` : ''}`;
+    item.iconPath = new vscode.ThemeIcon(st.here ? 'check' : st.requested ? 'loading~spin' : st.uploaded ? 'cloud' : 'cloud-upload');
+    item.contextValue = m.self ? 'remoteOwn' : st.here ? 'remoteSession.here' : 'remoteSession';
+    item.tooltip = [
+      s.name,
+      `Machine: ${m.name}${s.running ? ' (running there)' : ''}`,
+      s.lastActivity ? `Last activity: ${new Date(s.lastActivity).toLocaleString()}` : '',
+      st.uploaded ? `Uploaded: ${new Date(st.uploaded.mtimeSec * 1000).toLocaleString()}${st.uploaded.by ? ` by ${byName(st.uploaded.by)}` : ''}` : 'Not in Nextcloud yet',
+      `On this machine: ${st.here ? 'yes, up to date' : st.stale ? 'older copy' : 'no'}`,
+      st.requested ? 'Requested; arrives once that machine uploads it' : '',
+    ].filter(Boolean).join('\n');
+    item.data = { kind: 'remoteSession', remote: { id: s.id, name: s.name, machine: m.id, machineName: m.name, ...st } };
+    return item;
+  }
+
+  getChildren(e) {
+    const snap = this.snapshot;
+    if (!snap) return [];
+    if (!e) return snap.machines.map((m) => this.machineItem(m, Date.now()));
+    if (e.data.kind !== 'machine') return [];
+    const m = e.data.machine;
+    const listed = new Map((m.sessions || []).map((s) => [s.id, s]));
+    for (const [id, u] of Object.entries(snap.uploaded)) {
+      if (u.by === m.id && !listed.has(id)) listed.set(id, { id, name: snap.names[id] || id, lastActivity: new Date(u.mtimeSec * 1000).toISOString() });
+    }
+    return [...listed.values()].sort((a, b) => (Date.parse(b.lastActivity) || 0) - (Date.parse(a.lastActivity) || 0)).map((s) => this.sessionItem(s, m));
+  }
+}
+
 function activate(context) {
   const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
   if (!folder) return;
@@ -675,8 +755,10 @@ function activate(context) {
   if (store.readState().priorities) store.writeState({ priorities: undefined });
   const activeView = new SessionsProvider('active', store, tracker, notifications);
   const inactiveView = new SessionsProvider('inactive', store, tracker, notifications);
+  const remoteView = new RemoteProvider(notifications);
   const activeTree = vscode.window.createTreeView('claudeSessions.active', { treeDataProvider: activeView });
   const inactiveTree = vscode.window.createTreeView('claudeSessions.inactive', { treeDataProvider: inactiveView });
+  const remoteTree = vscode.window.createTreeView('claudeSessions.remote', { treeDataProvider: remoteView });
   inactiveView.onSearched = (count) => {
     inactiveTree.message = `Search "${inactiveView.filter}" · ${count} matching sessions`;
   };
@@ -684,6 +766,7 @@ function activate(context) {
     refresh: (fast = false) => {
       activeView.refresh(fast);
       inactiveView.refresh(fast);
+      remoteView.refresh();
     },
     inactiveSessions: () => inactiveView.inactiveSessions(),
   };
@@ -723,8 +806,19 @@ function activate(context) {
   const SYNC_SECRET = 'claudeSessions.nextcloud';
   let syncTimer = null;
   let syncInterval = null;
-  let syncing = false;
-  const syncSettings = () => ({ auto: settings().get('sync.auto') !== false, folder: settings().get('sync.folder') || 'Claude Sessions' });
+  let heartbeatInterval = null;
+  let beating = false;
+  const awaiting = new Map();
+  const triggered = new Map();
+  const syncSettings = () => ({
+    auto: settings().get('sync.auto') !== false,
+    folder: settings().get('sync.folder') || 'Claude Sessions',
+    intervalMinutes: Math.max(5, Number(settings().get('sync.intervalMinutes')) || 60),
+    checkSeconds: Math.max(30, Number(settings().get('sync.checkSeconds')) || 120),
+  });
+  const setSyncing = (value) => {
+    vscode.commands.executeCommand('setContext', 'claudeSessions.syncing', value);
+  };
   const storedCredentials = async () => {
     const secret = context.secrets ? await context.secrets.get(SYNC_SECRET) : undefined;
     if (secret) return secret;
@@ -767,15 +861,23 @@ function activate(context) {
     );
     return choice === 'Resume here anyway';
   };
-  const runSync = async (manual) => {
-    if (syncing) return;
+  let currentSync = null;
+  const runSync = async (manual, options = {}) => {
+    if (currentSync && !manual) return null;
+    while (currentSync) await currentSync;
+    currentSync = syncOnce(manual, options).finally(() => {
+      currentSync = null;
+    });
+    return currentSync;
+  };
+  const syncOnce = async (manual, { quiet = false } = {}) => {
     const stored = await storedCredentials();
     if (!stored) {
       if (manual) vscode.window.showInformationMessage('Connect Nextcloud first (Claude Sessions: Connect Nextcloud).');
-      return;
+      return null;
     }
-    if (!manual && !syncSettings().auto) return;
-    syncing = true;
+    if (!manual && !syncSettings().auto) return null;
+    setSyncing(true);
     try {
       const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
       const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running });
@@ -793,16 +895,161 @@ function activate(context) {
       }
       tracker.log(`sync: ${summary}`);
       inactiveTree.description = `synced ${new Date().toTimeString().slice(0, 5)}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
-      if (manual) vscode.window.showInformationMessage(`Nextcloud sync: ${summary}.`);
+      if (manual && !quiet) vscode.window.showInformationMessage(`Nextcloud sync: ${summary}.`);
+      for (const id of result.downloaded) {
+        if (!awaiting.has(id)) continue;
+        const from = awaiting.get(id);
+        awaiting.delete(id);
+        const name = names[id] || id;
+        vscode.window.showInformationMessage(`"${name}" from ${from} is on this machine now.`, 'Resume').then((choice) => {
+          if (choice === 'Resume') vscode.commands.executeCommand('claudeSessions.resume', { data: { tab: { name, sessionId: id, cwd: store.wsPath } } });
+        });
+      }
       view.refresh();
+      return result;
     } catch (err) {
       tracker.log(`sync failed: ${err.message}`);
       inactiveTree.description = 'sync failed';
       if (/already running/.test(err.message) && !manual) return;
       if (manual || /401/.test(err.message)) vscode.window.showWarningMessage(`Nextcloud sync failed: ${err.message}${/401/.test(err.message) ? '. Connect again.' : ''}`);
+      return null;
     } finally {
-      syncing = false;
+      setSyncing(false);
     }
+  };
+  const publishedSessions = async () => {
+    const [metas, runningMap] = await Promise.all([listRepoSessions(store.wsPath, settings().get('historyDays') || 30), readRunningSessions()]);
+    const running = new Set([...runningMap.values()].map((r) => r.sessionId));
+    const names = store.readState().names || {};
+    const sessions = metas
+      .slice()
+      .sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity))
+      .slice(0, 100)
+      .map((m) => ({
+        id: m.id,
+        name: names[m.id] || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
+        lastActivity: m.lastActivity,
+        running: running.has(m.id),
+        favorite: notifications.isFavorite(m.id),
+      }));
+    return { sessions, running };
+  };
+  const runHeartbeat = async (manual, { act = true } = {}) => {
+    if (beating) return null;
+    const stored = await storedCredentials();
+    if (!stored) {
+      remoteView.snapshot = null;
+      remoteTree.message = 'Connect Nextcloud to see your other machines and their sessions.';
+      remoteView.refresh();
+      return null;
+    }
+    if (!manual && !syncSettings().auto) return null;
+    beating = true;
+    let beat;
+    let arriving = [];
+    try {
+      const creds = JSON.parse(stored);
+      const { sessions, running } = await publishedSessions();
+      beat = await heartbeat({ creds, wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, name: settings().get('machineName') || undefined, sessions, running });
+      if (!(await storedCredentials())) return null;
+      const ids = new Set([...beat.machines.flatMap((m) => (m.sessions || []).map((s) => s.id)), ...Object.keys(beat.uploaded)]);
+      const local = new Map();
+      for (const id of ids) {
+        const files = await filesForSession(id).catch(() => []);
+        if (files.length) local.set(id, Math.floor(Math.max(...files.map((f) => f.mtimeMs)) / 1000));
+      }
+      remoteView.snapshot = { ...beat, local, names: store.readState().names || {} };
+      remoteTree.message = beat.machines.length > 1 ? undefined : 'No other machine has registered yet. Install the plugin there and connect the same Nextcloud.';
+      remoteTree.description = `${beat.name} · checked ${clock(Date.now())}`;
+      remoteView.refresh();
+      if (beat.renewed.length) tracker.log(`heartbeat: renewed ${beat.renewed.length} locks`);
+      if (!act) return beat;
+      const favorites = store.readState().favorites || {};
+      arriving = Object.keys(favorites).filter((id) => {
+        const u = beat.uploaded[id];
+        return u && !running.has(id) && (local.get(id) || 0) < u.mtimeSec && triggered.get(id) !== u.mtimeSec;
+      });
+      if (!beat.incoming.length && !arriving.length) return beat;
+      tracker.log(`heartbeat: ${beat.incoming.length} requested by other machines, ${arriving.length} newer in Nextcloud; syncing`);
+    } catch (err) {
+      tracker.log(`heartbeat failed: ${err.message}`);
+      remoteTree.description = 'check failed';
+      if (manual) vscode.window.showWarningMessage(`Nextcloud check failed: ${err.message}`);
+      return null;
+    } finally {
+      beating = false;
+    }
+    const result = await runSync(manual, { quiet: true });
+    if (!result) return beat;
+    const failed = new Set(result.failed.map((f) => f.id));
+    for (const id of arriving) if (!failed.has(id)) triggered.set(id, beat.uploaded[id].mtimeSec);
+    const after = await runHeartbeat(manual, { act: false });
+    if (!after) return beat;
+    const asked = beat.incoming.map((r) => r.sessionId);
+    const delivered = asked.filter((id) => after.uploaded[id]);
+    const missing = asked.filter((id) => !after.uploaded[id] && !remoteView.snapshot.local.has(id));
+    for (const id of missing) tracker.log(`heartbeat: request for ${id} dropped, the session is not on this machine`);
+    const done = delivered.concat(missing);
+    if (done.length) {
+      await closeRequests({ creds: JSON.parse(stored), wsPath: store.wsPath, ids: done, folder: syncSettings().folder }).catch((err) => tracker.log(`closing requests failed: ${err.message}`));
+      tracker.log(`heartbeat: ${delivered.length} requested sessions delivered`);
+    }
+    return after;
+  };
+  const loadRemote = async (item) => {
+    const s = item && item.data && item.data.remote;
+    if (!s) return;
+    const tab = { name: s.name, sessionId: s.id, cwd: store.wsPath };
+    if (s.here) return vscode.commands.executeCommand('claudeSessions.resume', { data: { tab } });
+    const stored = await storedCredentials();
+    if (!stored) return vscode.window.showInformationMessage('Connect Nextcloud first (Claude Sessions: Connect Nextcloud).');
+    const state = store.readState();
+    if (!(state.names || {})[s.id]) store.writeState({ names: { ...(state.names || {}), [s.id]: s.name } });
+    awaiting.set(s.id, s.machineName);
+    if (s.uploaded) {
+      notifications.setFavorite(s.id, true);
+      const result = await runSync(true, { quiet: true });
+      if (!result || !result.downloaded.includes(s.id)) {
+        awaiting.delete(s.id);
+        vscode.window.showWarningMessage(`"${s.name}" was not downloaded${result ? '' : ' because the sync failed'}; details in the output channel Claude Sessions.`);
+      }
+    } else {
+      try {
+        await requestSession({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), id: s.id, from: s.machine, name: s.name, folder: syncSettings().folder });
+      } catch (err) {
+        awaiting.delete(s.id);
+        tracker.log(`request for ${s.id} failed: ${err.message}`);
+        return vscode.window.showWarningMessage(`Requesting "${s.name}" failed: ${err.message}`);
+      }
+      notifications.onChange.fire();
+      await runSync(true, { quiet: true });
+      vscode.window.showInformationMessage(`Requested "${s.name}" from ${s.machineName}. It arrives here once ${s.machineName} uploads it; that machine checks every ${Math.round(syncSettings().checkSeconds / 60)} minutes while VS Code runs there.`);
+    }
+    await runHeartbeat(true, { act: false });
+  };
+  const renameMachine = async (current) => {
+    const name = await vscode.window.showInputBox({
+      prompt: 'Name of this machine, as your other machines see it in Remote',
+      value: settings().get('machineName') || current || '',
+      ignoreFocusOut: true,
+    });
+    if (name === undefined) return false;
+    const trimmed = name.trim() || current;
+    if (trimmed) await settings().update('machineName', trimmed, vscode.ConfigurationTarget.Global);
+    await runHeartbeat(true, { act: false });
+    return true;
+  };
+  const askMachineName = async (current) => {
+    if (settings().get('machineName')) return;
+    const flag = path.join(context.globalStorageUri ? context.globalStorageUri.fsPath : require('os').tmpdir(), 'machine-name-asked');
+    try {
+      fs.mkdirSync(path.dirname(flag), { recursive: true });
+      if (fs.existsSync(flag) && Date.now() - fs.statSync(flag).mtimeMs < 10 * 60 * 1000) return;
+      fs.writeFileSync(flag, String(process.pid));
+    } catch (err) {
+      tracker.log(`machine name prompt flag: ${err.message}`);
+    }
+    if (!(await renameMachine(current))) await settings().update('machineName', current, vscode.ConfigurationTarget.Global);
   };
   const scheduleSync = () => {
     clearTimeout(syncTimer);
@@ -825,6 +1072,8 @@ function activate(context) {
       vscode.commands.executeCommand('setContext', 'claudeSessions.syncConnected', true);
       tracker.log(`nextcloud connected as ${creds.loginName} on ${creds.server}`);
       await runSync(true);
+      const beat = await runHeartbeat(true);
+      if (beat) await askMachineName(beat.name);
     } catch (err) {
       vscode.window.showWarningMessage(`Nextcloud connection failed: ${err.message}`);
     }
@@ -1158,11 +1407,19 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('claudeSessions.connectNextcloud', () => connectNextcloud()),
     vscode.commands.registerCommand('claudeSessions.syncNow', () => runSync(true)),
+    vscode.commands.registerCommand('claudeSessions.syncRunning', () => vscode.window.showInformationMessage('Sync running.')),
+    vscode.commands.registerCommand('claudeSessions.refreshRemote', () => runHeartbeat(true)),
+    vscode.commands.registerCommand('claudeSessions.loadRemote', (item) => loadRemote(item)),
+    vscode.commands.registerCommand('claudeSessions.renameMachine', () => renameMachine(remoteView.snapshot && remoteView.snapshot.name)),
     vscode.commands.registerCommand('claudeSessions.disconnectNextcloud', async () => {
       await context.secrets.delete(SYNC_SECRET);
       if (settings().get('sync.credentialsFile')) await settings().update('sync.credentialsFile', undefined, vscode.ConfigurationTarget.Global);
       clearTimeout(syncTimer);
       vscode.commands.executeCommand('setContext', 'claudeSessions.syncConnected', false);
+      remoteView.snapshot = null;
+      remoteTree.description = undefined;
+      remoteTree.message = 'Connect Nextcloud to see your other machines and their sessions.';
+      remoteView.refresh();
       vscode.window.showInformationMessage('Nextcloud disconnected. Session files on this machine and in Nextcloud stay as they are.');
     }),
     vscode.commands.registerCommand('claudeSessions.closeTab', (item) => item.data.terminal && item.data.terminal.dispose()),
@@ -1377,6 +1634,8 @@ function activate(context) {
       tracker.disposed = true;
       clearTimeout(activeView.fireTimer);
       clearTimeout(inactiveView.fireTimer);
+      clearTimeout(remoteView.fireTimer);
+      clearInterval(heartbeatInterval);
       clearTimeout(placeTimer);
       clearTimeout(syncTimer);
       clearInterval(syncInterval);
@@ -1384,9 +1643,21 @@ function activate(context) {
   });
   storedCredentials().then((stored) => {
     vscode.commands.executeCommand('setContext', 'claudeSessions.syncConnected', Boolean(stored));
-    if (stored) activeView.ready.then(() => (syncTimer = setTimeout(() => runSync(false), 3000)));
+    if (!stored) return runHeartbeat(false);
+    activeView.ready.then(() => {
+      syncTimer = setTimeout(async () => {
+        try {
+          await runSync(false);
+          const beat = await runHeartbeat(false);
+          if (beat) await askMachineName(beat.name);
+        } catch (err) {
+          tracker.log(`start sync failed: ${err.message}`);
+        }
+      }, 3000);
+    });
   });
-  syncInterval = setInterval(() => runSync(false), 10 * 60 * 1000);
+  syncInterval = setInterval(() => runSync(false), syncSettings().intervalMinutes * 60 * 1000);
+  heartbeatInterval = setInterval(() => runHeartbeat(false).catch((err) => tracker.log(`heartbeat failed: ${err.message}`)), syncSettings().checkSeconds * 1000);
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
     setTimeout(() => checkForUpdates(false), 30000);
     const updateTimer = setInterval(() => checkForUpdates(false), 60 * 60 * 1000);
@@ -1402,7 +1673,7 @@ function activate(context) {
     }
     tracker.log(`search cache ready for ${sessions.length} sessions in ${Date.now() - started} ms`);
   }, 5000);
-  return { tracker, store, notifications, activeView, inactiveView };
+  return { tracker, store, notifications, activeView, inactiveView, remoteView, runHeartbeat };
 }
 
 function vscodeGroupSizes(stateDb) {

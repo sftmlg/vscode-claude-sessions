@@ -8,10 +8,11 @@ vscode, vs code, extension, claude code, terminal tabs, restore tabs, restore se
 
 ## The view
 
-Activity bar → **Claude Sessions** has two sections:
+Activity bar → **Claude Sessions** has three sections:
 
 - **Inactive** (top) — every Claude session of this repository that is not running (default: last 30 days). Favorites first in alphabetical order, then the rest newest message first. At the bottom, the folder **archive** (collapsed) holds archived sessions; archiving only hides a session in this list, its files stay untouched.
 - **Active** (bottom) — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside. The icon on the left is the tab's state (⟳ working, ✓ idle, ⊘ exited); the tab you are working in carries a `●` after its name.
+- **Remote** — every machine connected to the same Nextcloud folder, this machine first, each one a collapsible entry with when it was last seen and last synced. Under each machine its sessions of this repository: `● running` there, `here` (up to date on this machine), `uploaded 5 minutes ago`, `newer upload`, `requested` or `not uploaded`; the hover names the machine that uploaded it and when. See [Remote sessions](#remote-sessions).
 
 Clicking an inactive or archived session opens its session file (JSONL) in the editor; clicking an active tab focuses that tab, its context menu opens the file.
 
@@ -30,6 +31,9 @@ When a session in another tab finishes (`busy` → `idle`) or starts waiting for
 | active tab | 🔍 search a session and open it in this tab (`/resume`; „New Claude session“ runs `/clear`; refused while the session is working) · ⫼ split: picker first, then a terminal opens directly to the right · ☆/★ favorite and ✎ rename (only for Claude sessions) · ✕ close · 🗑 delete |
 | plain terminal (no Claude session) | ＋ picker, runs the choice in this terminal · ⫼ split · ✕ close |
 | inactive / archived session | ☆/★ favorite · ▶ resume in the active terminal · ＋ resume in a new tab · ✎ rename · archive / move back · 🗑 delete |
+| every section title bar (once connected) | ⟳ sync with Nextcloud now; spins while a sync runs, hover shows *Sync running* |
+| **Remote** title bar | ✎ rename this machine · ⟳ check the other machines now |
+| remote session | ⤓ load here: downloads it, or requests it from its machine; once here, resumes it |
 
 The picker always opens before anything else, so cancelling it (Escape) changes nothing. It offers a new Claude session and a new plain terminal first, then closed favorites newest first, then all other closed sessions newest first, archived last; type to search. Every button explains itself on hover.
 
@@ -73,7 +77,8 @@ One rule per kind of trigger; a new trigger joins the matching row instead of ge
 | Caches on disk | List cache 5 s, search text cache 60 s after the last change |
 | Relative times ("5 min ago") | Redraw every 60 s |
 | Updates | 30 s after start, then hourly; each version installed once |
-| Nextcloud sync | 3 s after **Active** is drawn, every 10 minutes, and 5 s after the last star change; never two at once |
+| Nextcloud sync | 3 s after **Active** is drawn, every `sync.intervalMinutes` (60), 5 s after the last star change, and at once when a check finds a request or a newer upload; never two at once |
+| Check of the other machines | Right after the first sync, then every `sync.checkSeconds` (120 s): register entry, lock heartbeat, requests, newer uploads; never two at once |
 
 ## Sync across machines (Nextcloud)
 
@@ -85,13 +90,22 @@ Favorite sessions — open or closed — follow you to your other machines throu
 - **What moves:** only sessions with a star. Other sessions stay on their machine.
 - **Direction:** decided by content, not by file date. Session files only grow at the end, and `state.json` records length and hash of every uploaded copy, so each sync knows whether one copy extends the other: the longer one wins and moves to the other side. Only the lock holder uploads. A session that runs on this machine is never overwritten by a download; the next sync after it ends catches up.
 - **Merging after offline work:** when both copies grew apart (a machine kept working without syncing), nothing is thrown away. The copy already in Nextcloud stays the session under its id; the copy of this machine becomes a new, starred session named `<name>-<machine>` with its own id, and reaches every other machine as a favorite. Both conversations stay complete and can be resumed or read side by side. A diverged session that is running here is left alone and reported; it is resolved by the first sync after it stops.
-- **Locks:** a favorite that runs on a machine is locked to it: `locks/<session-id>.json` in the same folder names the machine (`user@host`, or `CLAUDE_SESSIONS_MACHINE`), when it started and its last heartbeat. The lock is created atomically, so of two machines claiming at once the first lock wins; it is renewed on every sync and released once the session no longer runs there. A lock without a heartbeat for 30 minutes (crash, machine off) counts as free. Only the lock holder uploads the session; other machines still download it as a read copy.
+- **Locks:** a favorite that runs on a machine is locked to it: `locks/<session-id>.json` in the same folder names the machine (`<name>#<id>` from `~/.claude-sessions-machine.json`, or `CLAUDE_SESSIONS_MACHINE`), when it started and its last heartbeat. The lock is created atomically, so of two machines claiming at once the first lock wins; it is renewed on every sync and every check and released once the session no longer runs there. A lock without a heartbeat for 30 minutes (crash, machine off) counts as free. Only the lock holder uploads the session; other machines still download it as a read copy.
 - **Locked elsewhere:** **Inactive** shows `🔒 <machine>` on such a session. ▶, ＋ and the picker ask before resuming it; resuming anyway is possible, but while the other lock is alive nothing from this machine is uploaded for that session, and the sync reports it once as locked elsewhere. Working on one session on two machines at the same time is meant to stay the exception.
 - **Stars and names:** merged against the state of the last sync, so a star added on one machine appears on the other and a star removed on one machine disappears on the other (its file is removed from the Nextcloud folder, never from a machine). Names given on this machine win over incoming ones.
 - **Second machine:** open the same repository (any path, same folder name), connect, and the favorites appear in **Inactive** with their stars and names; ▶ resumes them with `claude --resume`.
-- **Buttons:** sync now (in the **Inactive** header once connected), connect and disconnect in the header menu.
+- **Buttons:** sync now in every section header once connected (spinning while it runs), connect and disconnect in the **Inactive** and **Remote** header menus.
 - **Security:** session files contain whatever was said and pasted in a session, including secrets. Sync only to a Nextcloud you control, keep the folder unshared, and disconnect a machine you give away (`Disconnect Nextcloud`, then revoke the app password under Nextcloud → Settings → Security).
+- **Push instead of polling:** Nextcloud can notify clients through its `notify_push` app over a WebSocket; the server this was built for does not run it, so machines check every `sync.checkSeconds`. A request therefore arrives within about two minutes while VS Code runs on the other machine.
 - **End-to-end check against a real Nextcloud:** `node e2e/nextcloud-e2e.mjs --credentials <file> --repo <path>` measures refusal without login, completeness, byte identity, ownership, the absence of any share, and a simulated second machine that receives everything and lists it. Exit 1 when any check fails.
+
+### Remote sessions
+
+- **Register:** every machine writes `machines/<machine id>.json` into the repository folder on each check: its name, when it was last seen, its last full sync, and its sessions of this repository (newest 100 within `historyDays`, with name, last activity, running, star). This is the shared configuration of all machines; a machine that is reinstalled with the same id (`~/.claude-sessions-machine.json`) takes its name back from there.
+- **Machine name:** asked once after Nextcloud is connected (default: the name already in the register, else the computer's name), stored in `claudeSessions.machineName`; ✎ in the **Remote** header renames it, and the other machines show the new name on their next check.
+- **Load here:** an uploaded session is starred here and downloaded by an immediate sync, byte for byte; a message offers to resume it. A session that is not uploaded yet (not a favorite on its machine) is requested: it is starred here and `requests/<session id>.json` names the machine that has it. That machine's next check sees the request, syncs (the star makes it a favorite there too, so it is uploaded) and deletes the request; this machine's next check sees the newer upload and downloads it. Both machines keep it as a favorite afterwards.
+- **Only favorites move.** Requesting is the way to move a session that is not a favorite on its machine.
+- **Locks still apply:** a session running on its machine is uploaded as it is and stays locked there; resuming it here asks first, as in **Inactive**.
 
 ## Naming convention
 
@@ -139,7 +153,10 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.historyDays` | `30` | Reach of the inactive and archive lists |
 | `claudeSessions.sync.server` | empty | Nextcloud address, set by Connect Nextcloud |
 | `claudeSessions.sync.folder` | `Claude Sessions` | Folder in your Nextcloud files |
-| `claudeSessions.sync.auto` | `true` | Sync on start, every 10 minutes and after star changes; off = only Sync now |
+| `claudeSessions.sync.auto` | `true` | Sync and check the other machines on their own; off = only the sync and check buttons |
+| `claudeSessions.sync.intervalMinutes` | `60` | Minutes between full syncs (read at start) |
+| `claudeSessions.sync.checkSeconds` | `120` | Seconds between checks of the other machines (read at start) |
+| `claudeSessions.machineName` | empty | Name of this machine in **Remote**; asked once after connecting |
 | `claudeSessions.sync.credentialsFile` | empty | App-password file used when no connection is stored |
 
 ## Command line and tests
@@ -150,7 +167,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - `node cli.js rename-batch <mapping.json> [--keep-existing]` applies a JSON object `{ "<session-id>": "<name>" }`.
 - `node cli.js archive-duplicates [repo] [--days N]` archives every session whose name also belongs to a newer one; favorites and running sessions stay.
 - `node cli.js archive <repo> --name <name> [--days N] [--apply]` archives every session called `<name>` or `<name>-<n>` (e.g. all `misc`); preview unless `--apply`, running sessions are skipped, archiving only sets the flag in the state file.
-- `node cli.js sync login <nextcloud-url> --credentials <file>` runs the browser login and writes the app password to `<file>`; `node cli.js sync [repo] --credentials <file>` runs the same favorite sync as the plugin; `node cli.js sync check --credentials <file>` exits 0 while the app password is accepted. `node cli.js sync status --credentials <file>` lists every repository folder in Nextcloud with its favorites, whether each one is on this machine, and its live lock.
+- `node cli.js sync login <nextcloud-url> --credentials <file>` runs the browser login and writes the app password to `<file>`; `node cli.js sync [repo] --credentials <file>` runs the same favorite sync as the plugin; `node cli.js sync check --credentials <file>` exits 0 while the app password is accepted. `node cli.js sync status --credentials <file>` lists every repository folder in Nextcloud with its favorites, whether each one is on this machine, and its live lock. `node cli.js sync machines [repo] --credentials <file>` prints the machine register of a repository (name, last seen, last sync, newest sessions) and open requests.
 - `npm test` checks session parsing against generated session files and walks user flows (favorites, close, rename, splits, picker) in a fake VS Code (`test/fake-vscode.js`) with stand-in Claude processes.
 - `npm run bench -- [repo]` times cache load, session list, search index, search and the first render on real data.
 

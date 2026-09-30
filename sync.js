@@ -437,7 +437,7 @@ async function readRemoteStatus(dav, folder = 'Claude Sessions', now = Date.now(
 
 const machineKey = (id) => String(id).replace(/[^A-Za-z0-9._-]+/g, '_');
 
-async function heartbeat({ creds, wsPath, stateFile, folder = 'Claude Sessions', machine = machineId(), legacy = legacyMachineId(), name = machineName(), sessions = [], running = new Set(), now = Date.now(), fetchImpl }) {
+async function heartbeat({ creds, wsPath, stateFile, folder = 'Claude Sessions', machine = machineId(), legacy = legacyMachineId(), name, sessions = [], running = new Set(), now = Date.now(), fetchImpl }) {
   const dav = new WebDav(creds, fetchImpl);
   const folderParts = [folder, repoKey(wsPath)];
   const machinesParts = [...folderParts, 'machines'];
@@ -447,7 +447,8 @@ async function heartbeat({ creds, wsPath, stateFile, folder = 'Claude Sessions',
   await dav.ensureFolder(requestsParts);
   await dav.ensureFolder(lockParts);
   const state = localState(stateFile);
-  const entry = { id: machine, name, lastSeen: new Date(now).toISOString(), lastSync: (state.sync && state.sync.at) || null, sessions };
+  const registered = name ? null : await dav.getJson([...machinesParts, `${machineKey(machine)}.json`]);
+  const entry = { id: machine, name: name || (registered && registered.name) || machineName(), lastSeen: new Date(now).toISOString(), lastSync: (state.sync && state.sync.at) || null, sessions };
   await dav.put([...machinesParts, `${machineKey(machine)}.json`], Buffer.from(JSON.stringify(entry)), Math.floor(now / 1000));
 
   const renewed = [];
@@ -481,7 +482,7 @@ async function heartbeat({ creds, wsPath, stateFile, folder = 'Claude Sessions',
   const remoteState = (await dav.getJson([...folderParts, 'state.json'])) || {};
   const listing = await dav.list(folderParts);
   const uploaded = Object.fromEntries([...listing.entries()].filter(([n]) => SESSION_FILE.test(n)).map(([n, e]) => [n.replace(/\.jsonl$/, ''), { mtimeSec: e.mtimeSec, by: ((remoteState.files || {})[n.replace(/\.jsonl$/, '')] || {}).machine || null }]));
-  return { machines, incoming, outgoing, renewed, uploaded };
+  return { name: entry.name, machines, incoming, outgoing, renewed, uploaded };
 }
 
 async function requestSession({ creds, wsPath, stateFile, id, from, name, folder = 'Claude Sessions', machine = machineId(), now = Date.now(), fetchImpl }) {

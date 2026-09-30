@@ -17,6 +17,7 @@ const USAGE = [
   '  node cli.js sync [repo-path] --credentials <file> [--folder <name>]   (same favorite sync as the plugin)',
   '  node cli.js sync check --credentials <file>   (exit 0 when the app password is accepted, 1 when rejected)',
   '  node cli.js sync status --credentials <file> [--folder <name>]   (every repository folder in Nextcloud: favorites, files, locks, and which are missing here)',
+  '  node cli.js sync machines [repo-path] --credentials <file> [--folder <name>]   (the machine register of a repository: names, last seen, last sync, sessions, open requests)',
 ].join('\n');
 
 async function main(argv) {
@@ -46,6 +47,27 @@ async function main(argv) {
         console.log(`${repo.name}: ${repo.favorites.length} favorites · ${repo.files} files · ${repo.locks.length} locks`);
         for (const f of repo.favorites) console.log(`  ${f.here ? 'here   ' : 'missing'} ${f.id} ${f.name || ''}${f.file ? '' : ' (no file in Nextcloud)'}${f.lock ? ` 🔒 ${f.lock}` : ''}`);
       }
+      return 0;
+    }
+    if (rest[0] === 'machines') {
+      const { WebDav, repoKey } = require('./sync');
+      const folderAt = rest.indexOf('--folder');
+      const folder = folderAt >= 0 ? rest[folderAt + 1] : 'Claude Sessions';
+      const repo = path.resolve(rest.find((a, i) => i > 0 && !a.startsWith('--') && rest[i - 1] !== '--credentials' && rest[i - 1] !== '--folder') || process.cwd());
+      const dav = new WebDav(JSON.parse(fs.readFileSync(credFile, 'utf8')));
+      const base = [folder, repoKey(repo)];
+      const read = async (sub) => {
+        const out = [];
+        for (const name of (await dav.list([...base, sub])).keys()) if (name.endsWith('.json')) out.push(await dav.getJson([...base, sub, name]));
+        return out.filter(Boolean);
+      };
+      const [machines, requests] = await Promise.all([read('machines'), read('requests')]);
+      const nameOf = (id) => (machines.find((m) => m.id === id) || {}).name || id;
+      for (const m of machines) {
+        console.log(`${m.name} (${m.id}) · seen ${m.lastSeen} · synced ${m.lastSync || 'never'} · ${(m.sessions || []).length} sessions`);
+        for (const x of (m.sessions || []).slice(0, 10)) console.log(`  ${x.favorite ? '★' : '☆'} ${x.running ? '●' : ' '} ${x.id} ${x.name}`);
+      }
+      for (const r of requests) console.log(`request: ${r.sessionId} ${r.name || ''} from ${nameOf(r.from)} by ${nameOf(r.by)} at ${r.at}`);
       return 0;
     }
     if (rest[0] === 'check') {

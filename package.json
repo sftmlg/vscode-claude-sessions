@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.22.3",
+  "version": "0.23.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -203,6 +203,30 @@
         "title": "Reload to use the new version",
         "category": "Claude Sessions",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "claudeSessions.syncRunning",
+        "title": "Sync running",
+        "category": "Claude Sessions",
+        "icon": "$(sync~spin)"
+      },
+      {
+        "command": "claudeSessions.refreshRemote",
+        "title": "Check other machines now",
+        "category": "Claude Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeSessions.loadRemote",
+        "title": "Load this session here",
+        "category": "Claude Sessions",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "claudeSessions.renameMachine",
+        "title": "Rename this machine",
+        "category": "Claude Sessions",
+        "icon": "$(edit)"
       }
     ],
     "viewsContainers": {
@@ -223,6 +247,10 @@
         {
           "id": "claudeSessions.active",
           "name": "Active"
+        },
+        {
+          "id": "claudeSessions.remote",
+          "name": "Remote"
         }
       ]
     },
@@ -270,18 +298,33 @@
         },
         {
           "command": "claudeSessions.syncNow",
-          "when": "view == claudeSessions.inactive && claudeSessions.syncConnected",
+          "when": "(view == claudeSessions.inactive || view == claudeSessions.active || view == claudeSessions.remote) && claudeSessions.syncConnected && !claudeSessions.syncing",
           "group": "navigation@7"
         },
         {
           "command": "claudeSessions.connectNextcloud",
-          "when": "view == claudeSessions.inactive && !claudeSessions.syncConnected",
+          "when": "(view == claudeSessions.inactive || view == claudeSessions.remote) && !claudeSessions.syncConnected",
           "group": "sync@1"
         },
         {
           "command": "claudeSessions.disconnectNextcloud",
-          "when": "view == claudeSessions.inactive && claudeSessions.syncConnected",
+          "when": "(view == claudeSessions.inactive || view == claudeSessions.remote) && claudeSessions.syncConnected",
           "group": "sync@2"
+        },
+        {
+          "command": "claudeSessions.syncRunning",
+          "when": "(view == claudeSessions.inactive || view == claudeSessions.active || view == claudeSessions.remote) && claudeSessions.syncing",
+          "group": "navigation@7"
+        },
+        {
+          "command": "claudeSessions.refreshRemote",
+          "when": "view == claudeSessions.remote && claudeSessions.syncConnected",
+          "group": "navigation@9"
+        },
+        {
+          "command": "claudeSessions.renameMachine",
+          "when": "view == claudeSessions.remote && claudeSessions.syncConnected",
+          "group": "navigation@8"
         }
       ],
       "view/item/context": [
@@ -374,6 +417,16 @@
           "command": "claudeSessions.openSessionFile",
           "when": "viewItem =~ /^(activeTab|activeTabInSplit)(\\.fav)?$/",
           "group": "1_copy"
+        },
+        {
+          "command": "claudeSessions.loadRemote",
+          "when": "viewItem =~ /^remoteSession/",
+          "group": "inline@0"
+        },
+        {
+          "command": "claudeSessions.renameMachine",
+          "when": "viewItem == remoteMachine.self",
+          "group": "inline@0"
         }
       ],
       "terminal/title/context": [
@@ -456,6 +509,14 @@
         {
           "command": "claudeSessions.openSessionFile",
           "when": "false"
+        },
+        {
+          "command": "claudeSessions.loadRemote",
+          "when": "false"
+        },
+        {
+          "command": "claudeSessions.syncRunning",
+          "when": "false"
         }
       ]
     },
@@ -521,12 +582,30 @@
         "claudeSessions.sync.auto": {
           "type": "boolean",
           "default": true,
-          "description": "Sync favorite sessions 3 s after start, every 10 minutes and 5 s after a star changes. Off: only Sync now."
+          "description": "Sync favorite sessions 3 s after start, every sync.intervalMinutes and 5 s after a star changes, and check the other machines every sync.checkSeconds. Off: only Sync now and the Remote refresh."
         },
         "claudeSessions.autoUpdate": {
           "type": "boolean",
           "default": true,
           "description": "Check the GitHub releases of this extension every hour and install a newer version automatically."
+        },
+        "claudeSessions.sync.intervalMinutes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 5,
+          "description": "Minutes between full syncs of the favorite sessions (read at start)."
+        },
+        "claudeSessions.sync.checkSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 30,
+          "description": "Seconds between light checks of the other machines: this machine's register entry, its locks, requests for sessions and newer uploads (read at start)."
+        },
+        "claudeSessions.machineName": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Name of this machine as the other machines see it in Remote. Asked once after Nextcloud is connected; Rename this machine changes it."
         }
       }
     }

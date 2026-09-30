@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeNextcloud } = require('./fake-nextcloud');
-const { syncFavorites, startLogin, finishLogin, projectDir, readLock, LOCK_TTL_MS } = require('../sync');
+const { syncFavorites, startLogin, finishLogin, projectDir, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests } = require('../sync');
 
 const originalHome = process.env.HOME;
 delete process.env.CLAUDE_CONFIG_DIR;
@@ -271,6 +271,93 @@ test('one session that cannot be uploaded does not stop the others', async () =>
     cloud.options.failKey = null;
     const again = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile });
     assert.deepStrictEqual(again.uploaded, [F1], 'the failed one goes up on the next run');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('every machine registers itself; the others see its name, its sessions and when it was last seen', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const b = machine('b');
+    writeState(a, {});
+    writeState(b, {});
+    use(a);
+    await heartbeat({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1', name: 'Mac Studio', sessions: [{ id: N1, name: 'vibe-coding', lastActivity: '2026-09-30T08:00:00Z', favorite: false }] });
+    use(b);
+    const seen = await heartbeat({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'book#2', name: 'MacBook', sessions: [] });
+    assert.deepStrictEqual(seen.machines.map((m) => [m.name, m.self]), [['MacBook', true], ['Mac Studio', false]]);
+    const studio = seen.machines.find((m) => m.name === 'Mac Studio');
+    assert.deepStrictEqual(studio.sessions.map((s) => s.name), ['vibe-coding']);
+    assert.ok(Date.parse(studio.lastSeen) > 0);
+    assert.ok(cloud.files.has('Claude Sessions/my-repo/machines/studio_1.json'), 'the register lives in Nextcloud');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('a session requested from another machine is uploaded there and arrives here, starred on both', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const b = machine('b');
+    const t0 = Math.floor(Date.now() / 1000) - 600;
+    const original = writeSession(a, N1, 'only on the studio', t0);
+    writeState(a, { names: { [N1]: 'vibe-coding' } });
+    writeState(b, {});
+    const onA = { creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1' };
+    const onB = { creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'book#2' };
+    use(a);
+    await heartbeat({ ...onA, name: 'Mac Studio', sessions: [{ id: N1, name: 'vibe-coding' }] });
+
+    use(b);
+    await requestSession({ ...onB, id: N1, from: 'studio#1', name: 'vibe-coding' });
+    assert.deepStrictEqual(readState(b).favorites, { [N1]: true }, 'starred here right away');
+    assert.strictEqual(readState(b).names[N1], 'vibe-coding');
+    await syncFavorites(onB);
+    const outgoing = await heartbeat({ ...onB, name: 'MacBook' });
+    assert.deepStrictEqual(outgoing.outgoing.map((r) => r.sessionId), [N1]);
+
+    use(a);
+    const beat = await heartbeat({ ...onA, name: 'Mac Studio' });
+    assert.deepStrictEqual(beat.incoming.map((r) => r.sessionId), [N1], 'the owner sees the request');
+    const up = await syncFavorites(onA);
+    assert.deepStrictEqual(up.uploaded, [N1]);
+    assert.deepStrictEqual(readState(a).favorites, { [N1]: true }, 'starred on the owner as well');
+    await closeRequests({ ...onA, ids: [N1] });
+
+    use(b);
+    const ready = await heartbeat({ ...onB, name: 'MacBook' });
+    assert.ok(ready.uploaded[N1], 'the requester sees the file in Nextcloud');
+    assert.deepStrictEqual(ready.outgoing, [], 'the request is closed');
+    const down = await syncFavorites(onB);
+    assert.deepStrictEqual(down.downloaded, [N1]);
+    assert.deepStrictEqual(fs.readFileSync(path.join(projectDir(b.ws), `${N1}.jsonl`)), fs.readFileSync(original));
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('the heartbeat keeps this machine\'s locks alive without a full sync', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    writeSession(a, F1, 'running here', Math.floor(Date.now() / 1000));
+    writeState(a, { favorites: { [F1]: true } });
+    use(a);
+    const t0 = Date.now() - 20 * 60 * 1000;
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1', running: new Set([F1]), now: t0 });
+    const before = JSON.parse(cloud.files.get(`Claude Sessions/my-repo/locks/${F1}.json`).body.toString());
+    assert.strictEqual(before.heartbeat, t0);
+    const beat = await heartbeat({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1', name: 'Mac Studio', running: new Set([F1]) });
+    assert.deepStrictEqual(beat.renewed, [F1]);
+    const after = JSON.parse(cloud.files.get(`Claude Sessions/my-repo/locks/${F1}.json`).body.toString());
+    assert.ok(after.heartbeat > t0 + 15 * 60 * 1000);
+    assert.strictEqual(after.since, before.since, 'the start time of the lock stays');
   } finally {
     await cloud.stop();
   }

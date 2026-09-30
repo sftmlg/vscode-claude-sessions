@@ -2,7 +2,7 @@
 const http = require('http');
 
 function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' } = {}) {
-  const options = { ns: 'd', garbage: false, maxBody: Infinity, failKey: null };
+  const options = { ns: 'd', garbage: false, maxBody: Infinity, failKey: null, slowPut: null };
   const files = new Map();
   const folders = new Set(['']);
   const uploads = new Map();
@@ -13,8 +13,9 @@ function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' }
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
+    req.on('end', async () => {
       const body = Buffer.concat(chunks);
+      if (options.slowPut && req.method === 'PUT' && req.url.endsWith(options.slowPut.suffix)) await new Promise((r) => setTimeout(r, options.slowPut.ms));
       const url = new URL(req.url, 'http://x');
       const base = `http://127.0.0.1:${server.address().port}`;
       if (url.pathname === '/index.php/login/v2' && req.method === 'POST') {

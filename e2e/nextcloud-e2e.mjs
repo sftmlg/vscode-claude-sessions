@@ -18,7 +18,7 @@ if (!credFile) {
 }
 
 const creds = JSON.parse(fs.readFileSync(credFile, 'utf8'));
-const { WebDav, syncFavorites, repoKey } = require('../sync');
+const { WebDav, syncFavorites, repoKey, heartbeat, requestSession, closeRequests } = require('../sync');
 const sessions = require('../sessions');
 const dav = new WebDav(creds);
 const parts = [folder, repoKey(repo)];
@@ -102,6 +102,66 @@ try {
   process.env.HOME = realHome;
   if (realConfigDir) process.env.CLAUDE_CONFIG_DIR = realConfigDir;
   fs.rmSync(root, { recursive: true, force: true });
+}
+
+console.log('== 6 two machines: register, request, upload by the owner, download by the requester ==');
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sessions-remote-'));
+const repoName = `e2e-remote-${path.basename(scratch).slice(-6).toLowerCase()}`;
+const box = (label) => {
+  const ws = path.join(scratch, label, 'code', repoName);
+  fs.mkdirSync(path.join(ws, '.vscode'), { recursive: true });
+  const home = path.join(scratch, label, 'home');
+  fs.mkdirSync(home, { recursive: true });
+  return { home, ws, stateFile: path.join(ws, '.vscode', 'claude-sessions.json') };
+};
+const studio = box('studio');
+const book = box('book');
+const on = async (m, fn) => {
+  process.env.HOME = m.home;
+  try {
+    return await fn();
+  } finally {
+    process.env.HOME = realHome;
+  }
+};
+delete process.env.CLAUDE_CONFIG_DIR;
+const wanted = '0e2e0e2e-0000-4000-8000-00000000e2e0';
+const lines = [
+  { type: 'user', cwd: studio.ws, timestamp: new Date().toISOString(), message: { content: 'remote e2e on the studio' } },
+  { type: 'assistant', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text: 'reply' }] } },
+];
+const studioDir = path.join(studio.home, '.claude', 'projects', studio.ws.replace(/[^a-zA-Z0-9]/g, '-'));
+fs.mkdirSync(studioDir, { recursive: true });
+fs.writeFileSync(path.join(studioDir, `${wanted}.jsonl`), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+const A = { creds, folder, machine: 'e2e-studio#0001', ...studio, wsPath: studio.ws };
+const B = { creds, folder, machine: 'e2e-book#0002', ...book, wsPath: book.ws };
+const remoteRepo = [folder, repoName];
+try {
+  await on(studio, () => heartbeat({ ...A, name: 'E2E Studio', sessions: [{ id: wanted, name: 'remote-e2e', lastActivity: new Date().toISOString(), running: false, favorite: false }] }));
+  const seen = await on(book, () => heartbeat({ ...B, name: 'E2E Book', sessions: [] }));
+  check('the second machine sees both register entries', seen.machines.map((m) => m.name).join(',') === 'E2E Book,E2E Studio', seen.machines.map((m) => m.name).join(','));
+  check('the other machine lists its session', (seen.machines.find((m) => m.name === 'E2E Studio') || { sessions: [] }).sessions.some((x) => x.id === wanted));
+  check('the session is not uploaded before the request', !seen.uploaded[wanted]);
+  await on(book, () => requestSession({ ...B, id: wanted, from: A.machine, name: 'remote-e2e' }));
+  await on(book, () => syncFavorites(B));
+  const asked = await on(studio, () => heartbeat({ ...A, name: 'E2E Studio' }));
+  check('the owner sees the request', asked.incoming.some((r) => r.sessionId === wanted && r.by === B.machine));
+  const up = await on(studio, () => syncFavorites(A));
+  check('the owner uploads the requested session', up.uploaded.includes(wanted), JSON.stringify(up.uploaded));
+  await closeRequests({ ...A, ids: [wanted] });
+  const ready = await on(book, () => heartbeat({ ...B, name: 'E2E Book' }));
+  check('the requester sees the upload and who made it', ready.uploaded[wanted] && ready.uploaded[wanted].by === A.machine, JSON.stringify(ready.uploaded[wanted] || null));
+  check('the request is closed', !ready.outgoing.some((r) => r.sessionId === wanted));
+  const down = await on(book, () => syncFavorites(B));
+  check('the requester downloads it', down.downloaded.includes(wanted), JSON.stringify(down.downloaded));
+  const got = await on(book, async () => (await sessions.filesForSession(wanted))[0]);
+  check('byte-identical on the requesting machine', got && sha(fs.readFileSync(got.file)) === sha(fs.readFileSync(path.join(studioDir, `${wanted}.jsonl`))));
+  check('starred on both machines', JSON.parse(fs.readFileSync(A.stateFile, 'utf8')).favorites[wanted] && JSON.parse(fs.readFileSync(B.stateFile, 'utf8')).favorites[wanted]);
+} finally {
+  const del = await fetch(dav.url(remoteRepo), { method: 'DELETE', headers: { Authorization: dav.auth } });
+  check('the test folder is removed from Nextcloud', [204, 404].includes(del.status), String(del.status));
+  if (realConfigDir) process.env.CLAUDE_CONFIG_DIR = realConfigDir;
+  fs.rmSync(scratch, { recursive: true, force: true });
 }
 
 console.log(failed ? `\nnextcloud e2e: ${failed} check(s) failed` : '\nnextcloud e2e: all checks passed');
