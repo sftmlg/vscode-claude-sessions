@@ -714,7 +714,8 @@ class RemoteProvider {
     const byName = (id) => (snap.machines.find((x) => x.id === id) || {}).name || id;
     const item = new vscode.TreeItem(`${this.isFavorite(s) ? '★' : '☆'} ${s.name}`);
     item.id = `remote:${m.id}:${s.id}`;
-    item.description = st.uploaded ? `synced ${timeAgo(new Date(st.uploaded.mtimeSec * 1000).toISOString())}` : st.requested ? 'not synced · requested' : 'not synced';
+    const synced = st.uploaded ? `synced ${timeAgo(new Date(st.uploaded.mtimeSec * 1000).toISOString())}` : st.requested ? 'not synced · requested' : 'not synced';
+    item.description = s.lastActivity ? `${synced} · active ${timeAgo(s.lastActivity)}` : synced;
     item.iconPath = new vscode.ThemeIcon(st.here ? 'check' : st.requested ? 'loading~spin' : st.uploaded ? 'cloud' : 'cloud-upload');
     item.contextValue = m.self ? 'remoteOwn' : st.here ? 'remoteSession.here' : 'remoteSession';
     item.tooltip = [
@@ -822,8 +823,19 @@ function activate(context) {
     intervalMinutes: Math.max(5, Number(settings().get('sync.intervalMinutes')) || 60),
     checkSeconds: Math.max(30, Number(settings().get('sync.checkSeconds')) || 120),
   });
+  let busy = 0;
   const setSyncing = (value) => {
-    vscode.commands.executeCommand('setContext', 'claudeSessions.syncing', value);
+    busy = Math.max(0, busy + (value ? 1 : -1));
+    if (value ? busy === 1 : busy === 0) vscode.commands.executeCommand('setContext', 'claudeSessions.syncing', value);
+  };
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      await runSync(true);
+      await runHeartbeat(true);
+    } finally {
+      setSyncing(false);
+    }
   };
   const storedCredentials = async () => {
     const secret = context.secrets ? await context.secrets.get(SYNC_SECRET) : undefined;
@@ -1412,9 +1424,8 @@ function activate(context) {
       scheduleSync();
     }),
     vscode.commands.registerCommand('claudeSessions.connectNextcloud', () => connectNextcloud()),
-    vscode.commands.registerCommand('claudeSessions.syncNow', () => runSync(true)),
+    vscode.commands.registerCommand('claudeSessions.syncNow', () => syncNow()),
     vscode.commands.registerCommand('claudeSessions.syncRunning', () => vscode.window.showInformationMessage('Sync running.')),
-    vscode.commands.registerCommand('claudeSessions.refreshRemote', () => runHeartbeat(true)),
     vscode.commands.registerCommand('claudeSessions.loadRemote', (item) => loadRemote(item)),
     vscode.commands.registerCommand('claudeSessions.renameMachine', () => renameMachine(remoteView.snapshot && remoteView.snapshot.name)),
     vscode.commands.registerCommand('claudeSessions.disconnectNextcloud', async () => {

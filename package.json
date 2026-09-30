@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.23.1",
+  "version": "0.23.2",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -188,7 +188,7 @@
       },
       {
         "command": "claudeSessions.syncNow",
-        "title": "Sync favorite sessions with Nextcloud now",
+        "title": "Sync with Nextcloud now (favorites and other machines)",
         "category": "Claude Sessions",
         "icon": "$(sync)"
       },
@@ -209,12 +209,6 @@
         "title": "Sync running",
         "category": "Claude Sessions",
         "icon": "$(sync~spin)"
-      },
-      {
-        "command": "claudeSessions.refreshRemote",
-        "title": "Check other machines now",
-        "category": "Claude Sessions",
-        "icon": "$(refresh)"
       },
       {
         "command": "claudeSessions.loadRemote",
@@ -298,7 +292,7 @@
         },
         {
           "command": "claudeSessions.syncNow",
-          "when": "(view == claudeSessions.inactive || view == claudeSessions.active || view == claudeSessions.remote) && claudeSessions.syncConnected && !claudeSessions.syncing",
+          "when": "view == claudeSessions.remote && claudeSessions.syncConnected && !claudeSessions.syncing",
           "group": "navigation@7"
         },
         {
@@ -313,13 +307,8 @@
         },
         {
           "command": "claudeSessions.syncRunning",
-          "when": "(view == claudeSessions.inactive || view == claudeSessions.active || view == claudeSessions.remote) && claudeSessions.syncing",
+          "when": "view == claudeSessions.remote && claudeSessions.syncing",
           "group": "navigation@7"
-        },
-        {
-          "command": "claudeSessions.refreshRemote",
-          "when": "view == claudeSessions.remote && claudeSessions.syncConnected",
-          "group": "navigation@9"
         },
         {
           "command": "claudeSessions.renameMachine",

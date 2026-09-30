@@ -590,7 +590,7 @@ test('Remote lists every machine, loads an uploaded session and requests one tha
   const api = fake.activate();
   try {
     await api.activeView.ready;
-    await fake.run('claudeSessions.refreshRemote');
+    await fake.run('claudeSessions.syncNow');
     const machines = await api.remoteView.getChildren();
     assert.deepStrictEqual(machines.map((m) => m.label), ['MacBook', 'Mac Studio'], 'this machine first, then the others');
     assert.match(machines[0].description, /^(synced .*|never synced) · this machine$/);
@@ -599,10 +599,10 @@ test('Remote lists every machine, loads an uploaded session and requests one tha
     const rows = await api.remoteView.getChildren(machines[1]);
     const uploaded = rows.find((r) => r.data.remote.id === uploadedId);
     const pending = rows.find((r) => r.data.remote.id === pendingId);
-    assert.match(uploaded.description, /^synced /, 'the row says when it was last synced');
+    assert.match(uploaded.description, /^synced .* · active /, 'the row says when it was last synced, then its last activity');
     assert.match(uploaded.tooltip, /Last synced: /);
     assert.deepStrictEqual(rows.map((r) => r.data.remote.id), [uploadedId, pendingId], 'favorites first');
-    assert.strictEqual(pending.description, 'not synced');
+    assert.strictEqual(pending.description, 'not synced · active just now');
     assert.strictEqual(pending.contextValue, 'remoteSession');
 
     await fake.run('claudeSessions.loadRemote', uploaded);
@@ -621,7 +621,7 @@ test('Remote lists every machine, loads an uploaded session and requests one tha
     assert.ok(api.notifications.isFavorite(pendingId));
     assert.ok(fake.messages.some((m) => /Requested "pending-one" from Mac Studio/.test(m)));
     const requested = (await api.remoteView.getChildren((await api.remoteView.getChildren())[1])).find((r) => r.data.remote.id === pendingId);
-    assert.strictEqual(requested.description, 'not synced · requested');
+    assert.match(requested.description, /^not synced · requested · active /);
   } finally {
     api.deactivate();
     delete process.env.CLAUDE_SESSIONS_MACHINE;
@@ -672,7 +672,7 @@ test('a session another machine requests is uploaded by this machine\'s next che
   const api = fake.activate();
   try {
     await api.activeView.ready;
-    await fake.run('claudeSessions.refreshRemote');
+    await fake.run('claudeSessions.syncNow');
     const otherWs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-req-')), path.basename(workspace));
     fs.mkdirSync(path.join(otherWs, '.vscode'), { recursive: true });
     const other = { creds: cloud.creds(), wsPath: otherWs, stateFile: path.join(otherWs, '.vscode', 'claude-sessions.json'), machine: 'asker#5' };
@@ -688,7 +688,7 @@ test('a session another machine requests is uploaded by this machine\'s next che
     await asAsker(() => requestSession({ ...other, id: wanted, from: 'owner#4', name: 'wanted' }));
     await asAsker(() => syncFavorites(other));
     assert.ok(!cloud.files.has(`${base}/${wanted}.jsonl`), 'not uploaded before the owner checks');
-    await fake.run('claudeSessions.refreshRemote');
+    await fake.run('claudeSessions.syncNow');
     assert.ok(cloud.files.has(`${base}/${wanted}.jsonl`), 'the owner uploaded it');
     assert.ok(!cloud.files.has(`${base}/requests/${wanted}.json`), 'the request is closed');
     assert.ok(api.notifications.isFavorite(wanted), 'the star from the asking machine arrived here');
@@ -736,11 +736,11 @@ test('a request is closed only once its session is in Nextcloud; one this machin
     await asAsker(() => requestSession({ ...other, id: unknown, from: 'owner#6', name: 'unknown' }));
     await asAsker(() => syncFavorites(other));
     cloud.options.failKey = `${base}/${kept}.jsonl`;
-    await fake.run('claudeSessions.refreshRemote');
+    await fake.run('claudeSessions.syncNow');
     assert.ok(cloud.files.has(`${base}/requests/${kept}.json`), 'a request whose upload failed stays open');
     assert.ok(!cloud.files.has(`${base}/requests/${unknown}.json`), 'a request for a session this machine does not have is dropped');
     cloud.options.failKey = null;
-    await fake.run('claudeSessions.refreshRemote');
+    await fake.run('claudeSessions.syncNow');
     assert.ok(cloud.files.has(`${base}/${kept}.jsonl`), 'the next check uploads it');
     assert.ok(!cloud.files.has(`${base}/requests/${kept}.json`), 'and closes the request');
   } finally {
@@ -772,7 +772,7 @@ test('loading a remote session while a sync runs waits for it instead of doing n
   const api = fake.activate();
   try {
     await api.activeView.ready;
-    await fake.run('claudeSessions.refreshRemote');
+    await fake.run('claudeSessions.syncNow');
     const studio = (await api.remoteView.getChildren()).find((m) => m.label === 'Studio');
     const row = (await api.remoteView.getChildren(studio)).find((r) => r.data.remote.id === id);
     const slow = '55555555-0000-0000-0000-000000000005';
