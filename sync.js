@@ -435,4 +435,70 @@ async function readRemoteStatus(dav, folder = 'Claude Sessions', now = Date.now(
   return out;
 }
 
-module.exports = { readRemoteStatus, WebDav, startLogin, finishLogin, syncFavorites, readLock, machineId, LOCK_TTL_MS, repoKey, projectDir, normalizeServer };
+const machineKey = (id) => String(id).replace(/[^A-Za-z0-9._-]+/g, '_');
+
+async function heartbeat({ creds, wsPath, stateFile, folder = 'Claude Sessions', machine = machineId(), legacy = legacyMachineId(), name = machineName(), sessions = [], running = new Set(), now = Date.now(), fetchImpl }) {
+  const dav = new WebDav(creds, fetchImpl);
+  const folderParts = [folder, repoKey(wsPath)];
+  const machinesParts = [...folderParts, 'machines'];
+  const requestsParts = [...folderParts, 'requests'];
+  const lockParts = [...folderParts, 'locks'];
+  await dav.ensureFolder(machinesParts);
+  await dav.ensureFolder(requestsParts);
+  await dav.ensureFolder(lockParts);
+  const state = localState(stateFile);
+  const entry = { id: machine, name, lastSeen: new Date(now).toISOString(), lastSync: (state.sync && state.sync.at) || null, sessions };
+  await dav.put([...machinesParts, `${machineKey(machine)}.json`], Buffer.from(JSON.stringify(entry)), Math.floor(now / 1000));
+
+  const renewed = [];
+  for (const lockName of (await dav.list(lockParts)).keys()) {
+    if (!lockName.endsWith('.json')) continue;
+    const id = lockName.replace(/\.json$/, '');
+    if (!running.has(id)) continue;
+    const lock = await dav.getJson([...lockParts, lockName]);
+    if (!lock || (lock.machine !== machine && lock.machine !== legacy)) continue;
+    await dav.put([...lockParts, lockName], Buffer.from(JSON.stringify({ ...lock, machine, heartbeat: now })), Math.floor(now / 1000));
+    renewed.push(id);
+  }
+
+  const machines = [];
+  for (const file of (await dav.list(machinesParts)).keys()) {
+    if (!file.endsWith('.json')) continue;
+    const m = await dav.getJson([...machinesParts, file]);
+    if (m && m.id) machines.push({ ...m, self: m.id === machine || m.id === legacy });
+  }
+  machines.sort((a, b) => Number(b.self) - Number(a.self) || String(a.name).localeCompare(String(b.name)));
+
+  const incoming = [];
+  const outgoing = [];
+  for (const file of (await dav.list(requestsParts)).keys()) {
+    if (!file.endsWith('.json')) continue;
+    const req = await dav.getJson([...requestsParts, file]);
+    if (!req || !req.sessionId) continue;
+    if (req.from === machine || req.from === legacy) incoming.push(req);
+    else if (req.by === machine || req.by === legacy) outgoing.push(req);
+  }
+  const remoteState = (await dav.getJson([...folderParts, 'state.json'])) || {};
+  const listing = await dav.list(folderParts);
+  const uploaded = Object.fromEntries([...listing.entries()].filter(([n]) => SESSION_FILE.test(n)).map(([n, e]) => [n.replace(/\.jsonl$/, ''), { mtimeSec: e.mtimeSec, by: ((remoteState.files || {})[n.replace(/\.jsonl$/, '')] || {}).machine || null }]));
+  return { machines, incoming, outgoing, renewed, uploaded };
+}
+
+async function requestSession({ creds, wsPath, stateFile, id, from, name, folder = 'Claude Sessions', machine = machineId(), now = Date.now(), fetchImpl }) {
+  const dav = new WebDav(creds, fetchImpl);
+  const requestsParts = [folder, repoKey(wsPath), 'requests'];
+  await dav.ensureFolder(requestsParts);
+  const state = localState(stateFile);
+  writeStatePatch(stateFile, {
+    favorites: { ...(state.favorites || {}), [id]: true },
+    names: name && !(state.names || {})[id] ? { ...(state.names || {}), [id]: name } : state.names || {},
+  });
+  await dav.put([...requestsParts, `${id}.json`], Buffer.from(JSON.stringify({ sessionId: id, from, by: machine, name: name || null, at: new Date(now).toISOString() })), Math.floor(now / 1000));
+}
+
+async function closeRequests({ creds, wsPath, ids, folder = 'Claude Sessions', fetchImpl }) {
+  const dav = new WebDav(creds, fetchImpl);
+  for (const id of ids) await dav.request('DELETE', [folder, repoKey(wsPath), 'requests', `${id}.json`], { ok: [204, 404] });
+}
+
+module.exports = { heartbeat, requestSession, closeRequests, machineKey, readRemoteStatus, WebDav, startLogin, finishLogin, syncFavorites, readLock, machineId, LOCK_TTL_MS, repoKey, projectDir, normalizeServer };
