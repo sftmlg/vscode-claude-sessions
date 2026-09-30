@@ -701,8 +701,8 @@ class RemoteProvider {
     item.id = `machine:${m.id}`;
     item.contextValue = m.self ? 'remoteMachine.self' : 'remoteMachine';
     item.iconPath = new vscode.ThemeIcon(m.self ? 'device-desktop' : online ? 'vm-active' : 'vm-outline');
-    const synced = m.lastSync ? `synced ${clock(m.lastSync)}` : 'never synced';
-    item.description = `${m.self ? 'this machine' : online ? 'online' : `seen ${timeAgo(m.lastSeen)}`} · ${synced}`;
+    const synced = m.lastSync ? `synced ${timeAgo(m.lastSync)}` : 'never synced';
+    item.description = `${synced} · ${m.self ? 'this machine' : online ? 'online' : `seen ${timeAgo(m.lastSeen)}`}`;
     item.tooltip = `${m.name}${m.self ? ' (this machine)' : ''}\nLast seen: ${new Date(m.lastSeen).toLocaleString()}\nLast full sync: ${m.lastSync ? new Date(m.lastSync).toLocaleString() : 'never'}\nId: ${m.id}`;
     item.data = { kind: 'machine', machine: m };
     return item;
@@ -712,22 +712,25 @@ class RemoteProvider {
     const snap = this.snapshot;
     const st = remoteSessionState(s, snap);
     const byName = (id) => (snap.machines.find((x) => x.id === id) || {}).name || id;
-    const item = new vscode.TreeItem(`${this.notifications.isFavorite(s.id) ? '★' : '☆'} ${s.name}`);
+    const item = new vscode.TreeItem(`${this.isFavorite(s) ? '★' : '☆'} ${s.name}`);
     item.id = `remote:${m.id}:${s.id}`;
-    const where = st.here ? 'here' : st.requested ? 'requested' : st.stale ? `newer upload ${timeAgo(new Date(st.uploaded.mtimeSec * 1000).toISOString())}` : st.uploaded ? `uploaded ${timeAgo(new Date(st.uploaded.mtimeSec * 1000).toISOString())}` : 'not uploaded';
-    item.description = `${s.running ? '● running · ' : ''}${where}${s.lastActivity ? ` · ${timeAgo(s.lastActivity)}` : ''}`;
+    item.description = st.uploaded ? `synced ${timeAgo(new Date(st.uploaded.mtimeSec * 1000).toISOString())}` : st.requested ? 'not synced · requested' : 'not synced';
     item.iconPath = new vscode.ThemeIcon(st.here ? 'check' : st.requested ? 'loading~spin' : st.uploaded ? 'cloud' : 'cloud-upload');
     item.contextValue = m.self ? 'remoteOwn' : st.here ? 'remoteSession.here' : 'remoteSession';
     item.tooltip = [
       s.name,
       `Machine: ${m.name}${s.running ? ' (running there)' : ''}`,
       s.lastActivity ? `Last activity: ${new Date(s.lastActivity).toLocaleString()}` : '',
-      st.uploaded ? `Uploaded: ${new Date(st.uploaded.mtimeSec * 1000).toLocaleString()}${st.uploaded.by ? ` by ${byName(st.uploaded.by)}` : ''}` : 'Not in Nextcloud yet',
+      st.uploaded ? `Last synced: ${new Date(st.uploaded.mtimeSec * 1000).toLocaleString()}${st.uploaded.by ? ` by ${byName(st.uploaded.by)}` : ''}` : 'Not synced to Nextcloud yet',
       `On this machine: ${st.here ? 'yes, up to date' : st.stale ? 'older copy' : 'no'}`,
       st.requested ? 'Requested; arrives once that machine uploads it' : '',
     ].filter(Boolean).join('\n');
     item.data = { kind: 'remoteSession', remote: { id: s.id, name: s.name, machine: m.id, machineName: m.name, ...st } };
     return item;
+  }
+
+  isFavorite(s) {
+    return this.notifications.isFavorite(s.id) || Boolean(s.favorite);
   }
 
   getChildren(e) {
@@ -740,7 +743,10 @@ class RemoteProvider {
     for (const [id, u] of Object.entries(snap.uploaded)) {
       if (u.by === m.id && !listed.has(id)) listed.set(id, { id, name: snap.names[id] || id, lastActivity: new Date(u.mtimeSec * 1000).toISOString() });
     }
-    return [...listed.values()].sort((a, b) => (Date.parse(b.lastActivity) || 0) - (Date.parse(a.lastActivity) || 0)).map((s) => this.sessionItem(s, m));
+    const newest = (a, b) => (Date.parse(b.lastActivity) || 0) - (Date.parse(a.lastActivity) || 0);
+    return [...listed.values()]
+      .sort((a, b) => Number(this.isFavorite(b)) - Number(this.isFavorite(a)) || newest(a, b))
+      .map((s) => this.sessionItem(s, m));
   }
 }
 

@@ -577,7 +577,7 @@ test('Remote lists every machine, loads an uploaded session and requests one tha
     name: 'Mac Studio',
     sessions: [
       { id: uploadedId, name: 'uploaded-one', lastActivity: at, running: false, favorite: true },
-      { id: pendingId, name: 'pending-one', lastActivity: at, running: true, favorite: false },
+      { id: pendingId, name: 'pending-one', lastActivity: new Date().toISOString(), running: true, favorite: false },
     ],
   });
   const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
@@ -593,15 +593,16 @@ test('Remote lists every machine, loads an uploaded session and requests one tha
     await fake.run('claudeSessions.refreshRemote');
     const machines = await api.remoteView.getChildren();
     assert.deepStrictEqual(machines.map((m) => m.label), ['MacBook', 'Mac Studio'], 'this machine first, then the others');
-    assert.match(machines[0].description, /^this machine/);
+    assert.match(machines[0].description, /^(synced .*|never synced) · this machine$/);
     assert.strictEqual(machines[1].collapsibleState, fake.vscode.TreeItemCollapsibleState.Expanded);
     assert.ok(cloud.files.has(`${base}/machines/book_2.json`), 'this machine registered itself');
     const rows = await api.remoteView.getChildren(machines[1]);
     const uploaded = rows.find((r) => r.data.remote.id === uploadedId);
     const pending = rows.find((r) => r.data.remote.id === pendingId);
-    assert.match(uploaded.description, /^uploaded /);
-    assert.match(uploaded.tooltip, /Uploaded: .*/);
-    assert.match(pending.description, /^● running · not uploaded/);
+    assert.match(uploaded.description, /^synced /, 'the row says when it was last synced');
+    assert.match(uploaded.tooltip, /Last synced: /);
+    assert.deepStrictEqual(rows.map((r) => r.data.remote.id), [uploadedId, pendingId], 'favorites first');
+    assert.strictEqual(pending.description, 'not synced');
     assert.strictEqual(pending.contextValue, 'remoteSession');
 
     await fake.run('claudeSessions.loadRemote', uploaded);
@@ -620,7 +621,7 @@ test('Remote lists every machine, loads an uploaded session and requests one tha
     assert.ok(api.notifications.isFavorite(pendingId));
     assert.ok(fake.messages.some((m) => /Requested "pending-one" from Mac Studio/.test(m)));
     const requested = (await api.remoteView.getChildren((await api.remoteView.getChildren())[1])).find((r) => r.data.remote.id === pendingId);
-    assert.match(requested.description, /requested/);
+    assert.strictEqual(requested.description, 'not synced · requested');
   } finally {
     api.deactivate();
     delete process.env.CLAUDE_SESSIONS_MACHINE;
