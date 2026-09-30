@@ -82,11 +82,14 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sessions-e2e-'));
 const secondWs = path.join(root, 'elsewhere', path.basename(repo));
 fs.mkdirSync(path.join(secondWs, '.vscode'), { recursive: true });
 const realHome = process.env.HOME;
+const realConfigDir = process.env.CLAUDE_CONFIG_DIR;
 process.env.HOME = path.join(root, 'home');
+delete process.env.CLAUDE_CONFIG_DIR;
 fs.mkdirSync(process.env.HOME);
 try {
   const stateFile = path.join(secondWs, '.vscode', 'claude-sessions.json');
   const result = await syncFavorites({ creds, wsPath: secondWs, stateFile, folder });
+  check('no session failed on the fresh machine', result.failed.length === 0, result.failed.map((f) => `${f.id.slice(0, 8)}: ${f.error}`).join('; ') || '0');
   check('all favorites downloaded to the fresh machine', result.downloaded.length === favorites.length, `${result.downloaded.length}/${favorites.length}`);
   check('nothing uploaded from the fresh machine', result.uploaded.length === 0, String(result.uploaded.length));
   const secondState = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -97,6 +100,7 @@ try {
   check('the plugin lists them on the fresh machine', favorites.every((id) => listed.some((m) => m.id === id)), `${listed.length} sessions listed`);
 } finally {
   process.env.HOME = realHome;
+  if (realConfigDir) process.env.CLAUDE_CONFIG_DIR = realConfigDir;
   fs.rmSync(root, { recursive: true, force: true });
 }
 

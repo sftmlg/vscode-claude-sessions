@@ -2,11 +2,13 @@
 const http = require('http');
 
 function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' } = {}) {
-  const options = { ns: 'd', garbage: false };
+  const options = { ns: 'd', garbage: false, maxBody: Infinity, failKey: null };
   const files = new Map();
   const folders = new Set(['']);
+  const uploads = new Map();
   let approved = false;
   const prefix = `/remote.php/dav/files/${loginName}`;
+  const uploadPrefix = `/remote.php/dav/uploads/${loginName}/`;
 
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -24,10 +26,40 @@ function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ server: base, loginName, appPassword }));
       }
-      if (!url.pathname.startsWith(prefix)) return res.writeHead(404).end();
+      if (body.length > options.maxBody) return res.writeHead(413).end();
       if (req.headers.authorization !== `Basic ${Buffer.from(`${loginName}:${appPassword}`).toString('base64')}`) return res.writeHead(401).end();
+      const keyOf = (href) => decodeURIComponent(new URL(href, base).pathname.slice(prefix.length)).replace(/^\/|\/$/g, '');
+      if (url.pathname.startsWith(uploadPrefix)) {
+        const [id, chunk] = url.pathname.slice(uploadPrefix.length).split('/');
+        if (req.method === 'MKCOL' && !chunk) {
+          uploads.set(id, new Map());
+          return res.writeHead(201).end();
+        }
+        if (!uploads.has(id)) return res.writeHead(404).end();
+        if (req.method === 'PUT' && chunk) {
+          uploads.get(id).set(Number(chunk), body);
+          return res.writeHead(201).end();
+        }
+        if (req.method === 'MOVE' && chunk === '.file') {
+          const parts = [...uploads.get(id).entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b);
+          const whole = Buffer.concat(parts);
+          if (Number(req.headers['oc-total-length']) !== whole.length) return res.writeHead(400).end();
+          const target = keyOf(req.headers.destination);
+          const existed = files.has(target);
+          files.set(target, { body: whole, mtime: Number(req.headers['x-oc-mtime']) || Math.floor(Date.now() / 1000) });
+          uploads.delete(id);
+          return res.writeHead(existed ? 204 : 201).end();
+        }
+        if (req.method === 'DELETE' && !chunk) {
+          uploads.delete(id);
+          return res.writeHead(204).end();
+        }
+        return res.writeHead(405).end();
+      }
+      if (!url.pathname.startsWith(prefix)) return res.writeHead(404).end();
       const key = decodeURIComponent(url.pathname.slice(prefix.length)).replace(/^\/|\/$/g, '');
       const parent = key.split('/').slice(0, -1).join('/');
+      if (options.failKey && key === options.failKey && req.method === 'PUT') return res.writeHead(507).end();
       if (req.method === 'MKCOL') {
         if (folders.has(key)) return res.writeHead(405).end();
         if (!folders.has(parent)) return res.writeHead(409).end();
@@ -68,6 +100,7 @@ function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' }
   return {
     files,
     options,
+    uploads,
     approve: () => {
       approved = true;
     },

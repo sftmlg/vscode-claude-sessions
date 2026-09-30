@@ -230,6 +230,52 @@ test('only complete lines of a session that is still being written are uploaded'
   }
 });
 
+test('a session larger than one request may carry arrives complete, uploaded in chunks', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    cloud.options.maxBody = 1500;
+    const a = machine('a');
+    const t0 = Math.floor(Date.now() / 1000) - 600;
+    const file = writeSession(a, F1, 'x'.repeat(4800), t0);
+    writeState(a, { favorites: { [F1]: true } });
+    use(a);
+    const r = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, chunkBytes: 1000 });
+    assert.deepStrictEqual(r.uploaded, [F1]);
+    assert.deepStrictEqual(r.failed, []);
+    const stored = cloud.files.get(`Claude Sessions/my-repo/${F1}.jsonl`);
+    assert.deepStrictEqual(stored.body, fs.readFileSync(file), 'byte-identical after reassembly');
+    assert.strictEqual(stored.mtime, t0, 'modification time kept');
+    assert.strictEqual(cloud.uploads.size, 0, 'no half-finished upload left behind');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('one session that cannot be uploaded does not stop the others', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const t0 = Math.floor(Date.now() / 1000) - 600;
+    writeSession(a, F1, 'blocked', t0);
+    writeSession(a, F2, 'fine', t0);
+    writeState(a, { favorites: { [F1]: true, [F2]: true } });
+    cloud.options.failKey = `Claude Sessions/my-repo/${F1}.jsonl`;
+    use(a);
+    const r = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile });
+    assert.deepStrictEqual(r.uploaded, [F2]);
+    assert.deepStrictEqual(r.failed.map((f) => f.id), [F1]);
+    assert.match(r.failed[0].error, /507/);
+    assert.ok(cloud.files.has(`Claude Sessions/my-repo/${F2}.jsonl`));
+    cloud.options.failKey = null;
+    const again = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile });
+    assert.deepStrictEqual(again.uploaded, [F1], 'the failed one goes up on the next run');
+  } finally {
+    await cloud.stop();
+  }
+});
+
 test('wrong credentials fail loudly instead of syncing nothing', async () => {
   const cloud = createFakeNextcloud();
   await cloud.start();

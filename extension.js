@@ -779,8 +779,10 @@ function activate(context) {
     try {
       const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
       const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running });
-      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}`;
+      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
       const names = store.readState().names || {};
+      for (const f of result.failed) tracker.log(`sync: "${names[f.id] || f.id}" not synced: ${f.error}`);
+      if (result.failed.length && manual) vscode.window.showWarningMessage(`Nextcloud sync: ${result.failed.map((f) => `"${names[f.id] || f.id}"`).join(', ')} could not be synced; the others were. Details in the output channel Claude Sessions.`);
       for (const f of result.forked) {
         vscode.window.showInformationMessage(`"${f.name}" holds what this machine wrote while "${names[f.id] || f.id}" grew apart on ${f.machine}; both sessions are kept and starred.`);
       }
@@ -790,7 +792,7 @@ function activate(context) {
         vscode.window.showWarningMessage(`"${names[c.id] || c.id}" runs here but is locked by ${c.machine}; this machine does not upload it until that lock ends.`);
       }
       tracker.log(`sync: ${summary}`);
-      inactiveTree.description = `synced ${new Date().toTimeString().slice(0, 5)}`;
+      inactiveTree.description = `synced ${new Date().toTimeString().slice(0, 5)}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
       if (manual) vscode.window.showInformationMessage(`Nextcloud sync: ${summary}.`);
       view.refresh();
     } catch (err) {

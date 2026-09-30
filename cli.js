@@ -68,7 +68,8 @@ async function main(argv) {
     console.log(`${result.favorites} favorites · ${result.downloaded.length} downloaded · ${result.uploaded.length} uploaded · ${result.removed.length} removed · ${result.skippedRunning.length} kept because running here · ${result.locked.length} locked here · ${result.conflicts.length} locked elsewhere`);
     for (const f of result.forked) console.log(`forked: ${f.id} grew apart on ${f.machine}; this machine's copy is now ${f.forkId} "${f.name}"`);
     for (const d of result.diverged) console.log(`diverged: ${d.id} (${d.kept})`);
-    return 0;
+    for (const f of result.failed) console.log(`failed: ${f.id}: ${f.error}`);
+    return result.failed.length ? 1 : 0;
   }
   if (command === 'state') {
     const repo = path.resolve(rest[0] || process.cwd());

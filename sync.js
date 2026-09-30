@@ -7,6 +7,8 @@ const crypto = require('crypto');
 const { filesForSession, readStateFile, writeStatePatch } = require('./sessions');
 
 const SESSION_FILE = /^[0-9a-zA-Z-]+\.jsonl$/;
+// Proxies in front of Nextcloud cap request bodies (Cloudflare: 100 MB); larger files go up in chunks of this size.
+const CHUNK_BYTES = 32 * 1024 * 1024;
 
 function repoKey(wsPath) {
   return path.basename(path.resolve(wsPath));
@@ -22,9 +24,11 @@ function normalizeServer(server) {
 }
 
 class WebDav {
-  constructor({ server, loginName, appPassword }, fetchImpl = fetch) {
+  constructor({ server, loginName, appPassword }, fetchImpl = fetch, { chunkBytes = CHUNK_BYTES } = {}) {
     if (!server || !loginName || !appPassword) throw new Error('Nextcloud is not connected');
     this.root = `${normalizeServer(server)}/remote.php/dav/files/${encodeURIComponent(loginName)}`;
+    this.uploadsRoot = `${normalizeServer(server)}/remote.php/dav/uploads/${encodeURIComponent(loginName)}`;
+    this.chunkBytes = chunkBytes;
     this.auth = `Basic ${Buffer.from(`${loginName}:${appPassword}`).toString('base64')}`;
     this.fetch = fetchImpl;
   }
@@ -61,7 +65,27 @@ class WebDav {
   }
 
   async put(parts, body, mtimeSec) {
+    if (body.length > this.chunkBytes) return this.putChunked(parts, body, mtimeSec);
     await this.request('PUT', parts, { body, headers: { 'X-OC-MTime': String(mtimeSec) }, ok: [200, 201, 204] });
+  }
+
+  async putChunked(parts, body, mtimeSec) {
+    const folder = `${this.uploadsRoot}/claude-sessions-${crypto.randomUUID()}`;
+    const destination = this.url(parts);
+    const call = async (method, url, headers, chunk, ok) => {
+      const res = await this.fetch(url, { method, body: chunk, headers: { Authorization: this.auth, Destination: destination, ...headers } });
+      if (!ok.includes(res.status)) throw new Error(`${method} ${parts.join('/')} (chunked upload): HTTP ${res.status}`);
+    };
+    await call('MKCOL', folder, {}, undefined, [201]);
+    try {
+      for (let offset = 0, n = 1; offset < body.length; offset += this.chunkBytes, n++) {
+        await call('PUT', `${folder}/${n}`, { 'OC-Total-Length': String(body.length) }, body.subarray(offset, offset + this.chunkBytes), [201, 204]);
+      }
+      await call('MOVE', `${folder}/.file`, { 'OC-Total-Length': String(body.length), 'X-OC-MTime': String(mtimeSec) }, undefined, [201, 204]);
+    } catch (err) {
+      await this.fetch(folder, { method: 'DELETE', headers: { Authorization: this.auth } }).catch(() => {});
+      throw err;
+    }
   }
 
   async create(parts, body) {
@@ -199,15 +223,15 @@ async function syncFavorites(options) {
   }
 }
 
-async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), machine = machineId(), legacy = legacyMachineId(), now = Date.now(), fetchImpl }) {
+async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), machine = machineId(), legacy = legacyMachineId(), now = Date.now(), fetchImpl, chunkBytes }) {
   const isMine = (lock) => Boolean(lock) && (lock.machine === machine || lock.machine === legacy);
-  const dav = new WebDav(creds, fetchImpl);
+  const dav = new WebDav(creds, fetchImpl, { chunkBytes });
   const folderParts = [folder, repoKey(wsPath)];
   const lockParts = [...folderParts, 'locks'];
   await dav.ensureFolder(lockParts);
   const remote = await dav.list(folderParts);
   const remoteLocks = await dav.list(lockParts);
-  const result = { downloaded: [], uploaded: [], skippedRunning: [], locked: [], released: [], conflicts: [], diverged: [], forked: [], favorites: 0 };
+  const result = { downloaded: [], uploaded: [], failed: [], skippedRunning: [], locked: [], released: [], conflicts: [], diverged: [], forked: [], favorites: 0 };
 
   let remoteState = {};
   if (remote.has('state.json')) {
@@ -274,51 +298,51 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
     result.downloaded.push(id);
   };
 
-  for (const id of merged) {
+  const syncOne = async (id) => {
     const entry = remote.get(`${id}.jsonl`);
     const local = await newestFile(id);
-    if (!entry && !local) continue;
+    if (!entry && !local) return;
     if (!entry) {
-      if (heldElsewhere(id)) continue;
+      if (heldElsewhere(id)) return;
       const body = completeLines(await fsp.readFile(local.file));
       if (body.length) await upload(id, body, Math.floor(local.mtimeMs / 1000));
-      continue;
+      return;
     }
     const rec = manifest[id] && manifest[id].mtimeSec === entry.mtimeSec ? manifest[id] : null;
     const by = (rec && rec.machine) || (manifest[id] && manifest[id].machine) || 'another machine';
     if (!local) {
-      if (running.has(id)) continue;
+      if (running.has(id)) return;
       await download(id, path.join(target, `${id}.jsonl`), await dav.get([...folderParts, `${id}.jsonl`]), entry, by);
-      continue;
+      return;
     }
     const localSec = Math.floor(local.mtimeMs / 1000);
     const cached = localCache[id];
     const unchanged = cached && cached.size === local.size && cached.mtimeMs === local.mtimeMs;
-    if (unchanged && rec && cached.hash === rec.hash) continue;
+    if (unchanged && rec && cached.hash === rec.hash) return;
     const localBody = completeLines(await fsp.readFile(local.file));
     const localHash = sha256(localBody);
-    if (rec && localHash === rec.hash) continue;
+    if (rec && localHash === rec.hash) return;
     if (rec && localBody.length > rec.bytes && sha256(localBody.subarray(0, rec.bytes)) === rec.hash) {
       if (!heldElsewhere(id)) await upload(id, localBody, localSec);
-      continue;
+      return;
     }
     const remoteBody = await dav.get([...folderParts, `${id}.jsonl`]);
     if (remoteBody.equals(localBody)) {
       record(id, remoteBody, by, entry.mtimeSec);
-      continue;
+      return;
     }
     if (remoteBody.length > localBody.length && remoteBody.subarray(0, localBody.length).equals(localBody)) {
       if (running.has(id)) result.skippedRunning.push(id);
       else await download(id, local.file, remoteBody, entry, by);
-      continue;
+      return;
     }
     if (localBody.length > remoteBody.length && localBody.subarray(0, remoteBody.length).equals(remoteBody)) {
       if (!heldElsewhere(id)) await upload(id, localBody, localSec);
-      continue;
+      return;
     }
     if (running.has(id)) {
       result.diverged.push({ id, machine: by, kept: 'running here; resolved once it stops' });
-      continue;
+      return;
     }
     const forkId = crypto.randomUUID();
     const forkName = `${names[id] || 'session'}-${shortMachine(machine)}`;
@@ -328,6 +352,13 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
     names[forkId] = forkName;
     forks.push({ id, forkId, name: forkName, machine: by });
     await upload(forkId, forkBody, localSec);
+  };
+  for (const id of merged) {
+    try {
+      await syncOne(id);
+    } catch (err) {
+      result.failed.push({ id, error: err.message });
+    }
   }
   result.forked = forks;
 
