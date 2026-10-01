@@ -1,0 +1,8 @@
+{
+  "Self": { "DNSName": "hub.example.test.", "UserID": 1001, "Online": true },
+  "User": {
+    "1001": { "ID": 1001, "LoginName": "owner@example.test", "DisplayName": "Owner" },
+    "2002": { "ID": 2002, "LoginName": "other@example.test", "DisplayName": "Other" }
+  },
+  "Peer": {}
+}
