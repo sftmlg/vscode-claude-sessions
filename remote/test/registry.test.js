@@ -1,0 +1,168 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+const { tempHome, testCtx, killServer, capture, waitFor, FAKE_CLAUDE } = require('./fixtures/fs-helpers');
+
+const home = tempHome('remote-registry-');
+process.env.HOME = home;
+delete process.env.CLAUDE_CONFIG_DIR;
+const { Registry, realUnder, UUID_RE } = require('../registry');
+
+const work = path.join(home, 'work');
+const sessionsDir = path.join(home, '.claude-a', 'sessions');
+fs.mkdirSync(path.join(work, 'proj'), { recursive: true });
+fs.mkdirSync(sessionsDir, { recursive: true });
+const ID1 = '11111111-2222-4333-8444-555555555555';
+const ID2 = '66666666-7777-4888-9999-aaaaaaaaaaaa';
+const ID3 = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+
+function writePid(pid, fields) {
+  fs.writeFileSync(path.join(sessionsDir, `${pid}.json`), JSON.stringify({ pid, procStart: 'start-1', cwd: work, status: 'idle', ...fields }));
+}
+
+function sleeper(args = ['300']) {
+  const p = spawn('sleep', args, { stdio: 'ignore' });
+  return p;
+}
+
+test('realUnder accepts only real directories inside a root', async () => {
+  assert.strictEqual(await realUnder(path.join(work, 'proj'), [work]), path.join(work, 'proj'));
+  assert.strictEqual(await realUnder(work, [work]), work);
+  assert.strictEqual(await realUnder(path.join(work, '..', '..'), [work]), null);
+  assert.strictEqual(await realUnder('/etc', [work]), null);
+  assert.strictEqual(await realUnder(path.join(work, '$(touch x)'), [work]), null);
+  fs.symlinkSync('/tmp', path.join(work, 'escape'));
+  assert.strictEqual(await realUnder(path.join(work, 'escape'), [work]), null);
+});
+
+test('registry on a throwaway socket', async (t) => {
+  const ctx = testCtx();
+  const audits = [];
+  const config = { roots: [work], defaultDir: work, launcher: [], claudeCommand: ['/bin/sh', FAKE_CLAUDE], claudeArgs: ['--flag'] };
+  const reg = new Registry(config, { ctx, audit: (action, f) => audits.push({ action, ...f }), exitWaitMs: 500 });
+  const procs = [];
+  t.after(() => {
+    reg.stop();
+    killServer(ctx);
+    for (const p of procs) try { p.kill('SIGKILL'); } catch {}
+  });
+
+  const outside = sleeper();
+  procs.push(outside);
+  writePid(outside.pid, { sessionId: ID1, name: 'Demo task' });
+
+  await t.test('lists running claude sessions outside tmux as unmanaged', async () => {
+    await reg.start();
+    const item = reg.listAll().find((i) => i.sessionId === ID1);
+    assert.ok(item);
+    assert.strictEqual(item.managed, false);
+    assert.strictEqual(item.pid, outside.pid);
+    assert.strictEqual(item.slot, '.claude-a');
+    assert.strictEqual(item.title, 'Demo task');
+    assert.strictEqual(item.status, 'idle');
+    assert.strictEqual(reg.resolve(ID1), item);
+  });
+
+  await t.test('dead pids are not listed', async () => {
+    writePid(999999, { sessionId: ID3 });
+    await reg.refresh();
+    assert.strictEqual(reg.listAll().some((i) => i.sessionId === ID3), false);
+    fs.rmSync(path.join(sessionsDir, '999999.json'));
+  });
+
+  await t.test('new session validates name, dir, resume id and live owner', async () => {
+    const bad = async (args, code) => assert.rejects(reg.newSession(args), (e) => e.code === code);
+    await bad({ name: 'cc-x;kill-server', dir: work }, 'bad-name');
+    await bad({ name: 'cc-x', dir: '/etc' }, 'dir-not-allowed');
+    await bad({ name: 'cc-x', dir: path.join(work, '../..') }, 'dir-not-allowed');
+    await bad({ name: 'cc-x', dir: `${work}/$(touch ${work}/pwn)` }, 'dir-not-allowed');
+    await bad({ name: 'cc-x', dir: work, resumeId: '../../etc' }, 'bad-resume-id');
+    await bad({ name: 'cc-x', dir: work, resumeId: ID1 }, 'session-running');
+    assert.strictEqual(fs.existsSync(path.join(work, 'pwn')), false);
+  });
+
+  await t.test('new session runs launcher + command + args in the chosen dir', async () => {
+    await reg.newSession({ name: 'cc-new', dir: path.join(work, 'proj') }, { device: { id: 'dev-1' } });
+    await waitFor(() => capture(ctx, 'cc-new').includes('fake-claude args: [--flag]'), { what: 'args' });
+    const item = reg.listAll().find((i) => i.name === 'cc-new');
+    assert.strictEqual(item.managed, true);
+    assert.strictEqual(item.status, 'none');
+    assert.strictEqual(item.cwd, path.join(work, 'proj'));
+    assert.ok(audits.some((a) => a.action === 'new' && a.name === 'cc-new' && a.device === 'dev-1'));
+    await assert.rejects(reg.newSession({ name: 'cc-new', dir: work }), (e) => e.code === 'name-taken');
+  });
+
+  await t.test('a pid file under the pane links the managed session and status changes are pushed', async () => {
+    const { listSessions } = require('../tmux');
+    const pane = (await listSessions(ctx)).find((s) => s.name === 'cc-new');
+    writePid(pane.panePid, { sessionId: ID2, status: 'busy' });
+    const statuses = [];
+    reg.on('status', (s) => statuses.push(s));
+    await reg.refresh();
+    const item = reg.resolve('cc-new');
+    assert.strictEqual(item.sessionId, ID2);
+    assert.strictEqual(reg.resolve(ID2), item);
+    assert.deepStrictEqual(statuses.find((s) => s.sessionId === 'cc-new'), { sessionId: 'cc-new', status: 'busy', waitingFor: null });
+    writePid(pane.panePid, { sessionId: ID2, status: 'waiting', waitingFor: 'permission' });
+    await reg.refresh();
+    assert.deepStrictEqual(statuses[statuses.length - 1], { sessionId: 'cc-new', status: 'waiting', waitingFor: 'permission' });
+  });
+
+  await t.test('takeover is refused while busy and for managed sessions', async () => {
+    writePid(outside.pid, { sessionId: ID1, name: 'Demo task', status: 'busy' });
+    await assert.rejects(reg.prepareTakeover(outside.pid), (e) => e.code === 'busy');
+    writePid(outside.pid, { sessionId: ID1, name: 'Demo task' });
+    const pane = reg.resolve('cc-new');
+    await assert.rejects(reg.prepareTakeover(pane.pid), (e) => e.code === 'managed');
+    await assert.rejects(reg.prepareTakeover(1), (e) => e.code === 'bad-pid');
+  });
+
+  await t.test('takeover aborts when the session id changed after confirmation', async () => {
+    const info = await reg.prepareTakeover(outside.pid);
+    writePid(outside.pid, { sessionId: ID3, name: 'Demo task' });
+    await assert.rejects(reg.takeover(info.token), (e) => e.code === 'changed');
+    assert.ok(!outside.killed && outside.exitCode === null);
+    writePid(outside.pid, { sessionId: ID1, name: 'Demo task' });
+    await assert.rejects(reg.takeover(info.token), (e) => e.code === 'token-expired');
+  });
+
+  await t.test('takeover stops the process and resumes the session under tmux', async () => {
+    const info = await reg.prepareTakeover(outside.pid);
+    assert.strictEqual(info.sessionId, ID1);
+    assert.strictEqual(info.name, 'cc-demo-task');
+    assert.strictEqual(info.slot, '.claude-a');
+    assert.ok(info.expiresAt > Date.now());
+    const exited = new Promise((r) => outside.once('exit', r));
+    const res = await reg.takeover(info.token, { device: { id: 'dev-1' } });
+    await exited;
+    assert.strictEqual(res.name, 'cc-demo-task');
+    await waitFor(() => capture(ctx, 'cc-demo-task').includes(`[--flag] [--resume] [${ID1}]`), { what: 'resumed session' });
+    assert.deepStrictEqual(audits.filter((a) => a.sessionId === ID1).map((a) => a.action), ['takeover-term', 'takeover']);
+    assert.ok(audits.some((a) => a.action === 'new' && a.resume === ID1 && a.name === 'cc-demo-task'));
+  });
+
+  await t.test('a process that ignores SIGTERM is not replaced', async () => {
+    const stubborn = spawn('/bin/sh', ['-c', 'trap "" TERM; while :; do sleep 1; done'], { stdio: 'ignore' });
+    procs.push(stubborn);
+    await new Promise((r) => setTimeout(r, 100));
+    writePid(stubborn.pid, { sessionId: ID3, name: 'Stubborn' });
+    const info = await reg.prepareTakeover(stubborn.pid);
+    await assert.rejects(reg.takeover(info.token), (e) => e.code === 'still-running');
+    assert.strictEqual(reg.listAll().some((i) => i.name === 'cc-stubborn'), false);
+  });
+
+  await t.test('takeover tokens expire', async () => {
+    const quick = new Registry(config, { ctx, takeoverTtlMs: 30 });
+    const other = sleeper();
+    procs.push(other);
+    writePid(other.pid, { sessionId: ID3, name: 'Late' });
+    const info = await quick.prepareTakeover(other.pid);
+    await new Promise((r) => setTimeout(r, 60));
+    await assert.rejects(quick.takeover(info.token), (e) => e.code === 'token-expired');
+  });
+
+  assert.ok(UUID_RE.test(ID1));
+});
