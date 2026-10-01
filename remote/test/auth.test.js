@@ -277,3 +277,76 @@ test('admin approve, devices and revoke work end to end', async () => {
     assert.strictEqual(big.status, 413);
   });
 });
+
+const cli = require('../cli');
+
+function capture() {
+  const lines = [];
+  return { lines, out: (l) => lines.push(l), err: (l) => lines.push(l) };
+}
+
+test('cli pair, devices and revoke go through the admin channel of the running service', async () => {
+  await withAdminServer(async ({ a, c }) => {
+    const { code, waitToken } = a.createPairing('Phone');
+    const waiting = a.awaitPairing(waitToken);
+    const io = capture();
+    assert.strictEqual(await cli.main(['pair', code, 'My', 'Phone'], { config: c, ...io }), 0);
+    const token = await waiting;
+    const [device] = a.listDevices();
+    assert.strictEqual(device.name, 'My Phone');
+    const list = capture();
+    assert.strictEqual(await cli.main(['devices', '--json'], { config: c, ...list }), 0);
+    assert.deepStrictEqual(JSON.parse(list.lines[0]).map((d) => d.id), [device.id]);
+    const revoked = [];
+    a.on('revoked', (id) => revoked.push(id));
+    assert.strictEqual(await cli.main(['revoke', device.id], { config: c, ...capture() }), 0);
+    assert.deepStrictEqual(revoked, [device.id]);
+    assert.strictEqual(a.verifyToken(token), null);
+    assert.strictEqual(await cli.main(['pair', '12345'], { config: c, ...capture() }), 2);
+    assert.strictEqual(await cli.main(['pair', '000000'], { config: c, ...capture() }), 1);
+    assert.strictEqual(await cli.main(['revoke', '../../x'], { config: c, ...capture() }), 2);
+  });
+});
+
+test('cli devices and revoke fall back to the state file only when the port is closed', async () => {
+  const c = tmpConfig();
+  const a = createAuth(c);
+  const { code } = a.createPairing('x');
+  const device = a.approvePairing(code);
+  const probe = http.createServer();
+  await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+  c.port = probe.address().port;
+  await new Promise((r) => probe.close(r));
+  const list = capture();
+  assert.strictEqual(await cli.main(['devices', '--json'], { config: c, ...list }), 0);
+  assert.strictEqual(JSON.parse(list.lines[0])[0].id, device.id);
+  assert.strictEqual(await cli.main(['revoke', device.id], { config: c, ...capture() }), 0);
+  assert.deepStrictEqual(createAuth(c).listDevices(), []);
+});
+
+test('cli refuses the offline fallback while something listens on the port without an admin token', async () => {
+  const c = tmpConfig();
+  const a = createAuth(c);
+  const { code } = a.createPairing('x');
+  const device = a.approvePairing(code);
+  const server = http.createServer((q, s) => s.end());
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  c.port = server.address().port;
+  try {
+    await assert.rejects(cli.main(['revoke', device.id], { config: c, ...capture() }), { code: 'NO_ADMIN_TOKEN' });
+    assert.strictEqual(createAuth(c).listDevices().length, 1);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('serveEntry reads the proxy target and funnel state of the configured port only', () => {
+  const c = { publicHost: HOST, publicPort: 39180, port: 39181 };
+  const serve = {
+    TCP: { 39180: { HTTP: true }, 443: { HTTPS: true } },
+    Web: { [`${HOST}:39180`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:39181' } } }, [`${HOST}:443`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } } },
+  };
+  assert.deepStrictEqual(cli.serveEntry(serve, c), { proxy: 'http://127.0.0.1:39181', http: true, funnel: false });
+  assert.strictEqual(cli.serveEntry({ ...serve, AllowFunnel: { [`${HOST}:443`]: true } }, c).funnel, true);
+  assert.deepStrictEqual(cli.serveEntry({}, c), { proxy: null, http: false, funnel: false });
+});
