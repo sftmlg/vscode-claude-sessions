@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#141413">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Claude Remote">
+<meta name="referrer" content="no-referrer">
+<title>Claude Remote</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="vendor/xterm.css">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <button type="button" id="back" class="icon-btn" aria-label="Back to sessions" hidden>‹</button>
+    <h1 id="title">Claude Remote</h1>
+    <span id="conn" class="conn conn-connecting" role="status"><span class="dot"></span><span id="conn-text">connecting</span></span>
+    <button type="button" id="open-settings" class="icon-btn" aria-label="Settings" hidden>⚙</button>
+  </header>
+
+  <main id="main">
+    <section id="view-pair" class="view pane-pad" hidden>
+      <h2>Pair this device</h2>
+      <p class="muted">Name this device. A 6-digit code appears; approve it on the Mac that runs the service or on a device that is already paired.</p>
+      <form id="pair-form" class="stack">
+        <label for="device-name">Device name</label>
+        <input id="device-name" name="deviceName" maxlength="64" autocomplete="off" required>
+        <button type="submit" class="primary">Get pairing code</button>
+      </form>
+      <div id="pair-wait" class="stack" hidden>
+        <div class="muted">Pairing code</div>
+        <div id="pair-code" class="pair-code"></div>
+        <div class="muted"><span class="spinner"></span> waiting for approval…</div>
+      </div>
+    </section>
+
+    <section id="view-list" class="view" hidden>
+      <div class="list-toolbar">
+        <button type="button" id="new-session" class="primary">New session</button>
+      </div>
+      <ul id="session-list" class="session-list"></ul>
+      <p id="session-empty" class="muted pane-pad" hidden>No running Claude sessions.</p>
+    </section>
+
+    <section id="view-session" class="view session-view" hidden>
+      <div class="status-line">
+        <span id="status-indicator" class="status-indicator"></span>
+        <span id="status-text" class="status-text"></span>
+        <span class="spacer"></span>
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" id="tab-terminal" class="tab" aria-selected="true">Terminal</button>
+          <button type="button" role="tab" id="tab-chat" class="tab" aria-selected="false">Chat</button>
+        </div>
+      </div>
+      <div class="term-tools" id="term-tools">
+        <button type="button" id="fit-toggle" class="chip" aria-pressed="false">Fit to my screen</button>
+        <button type="button" id="scroll-lock" class="chip" aria-pressed="false">Scroll lock</button>
+        <span id="size-info" class="muted small"></span>
+      </div>
+      <div id="term-pane" class="term-pane"><div id="term" class="term"></div></div>
+      <div id="chat-pane" class="chat-pane" hidden></div>
+      <div id="readonly-note" class="readonly-note" hidden>This session runs outside the service. It is read-only here; take it over from the session list to steer it.</div>
+      <div id="keybar" class="keybar" aria-label="Keys">
+        <button type="button" data-key="Escape">Esc</button>
+        <button type="button" data-key="Up" aria-label="Up">↑</button>
+        <button type="button" data-key="Down" aria-label="Down">↓</button>
+        <button type="button" data-key="Left" aria-label="Left">←</button>
+        <button type="button" data-key="Right" aria-label="Right">→</button>
+        <button type="button" data-key="Tab">Tab</button>
+        <button type="button" data-key="BTab">⇧Tab</button>
+        <button type="button" data-key="Enter">Enter</button>
+        <button type="button" data-key="C-c">^C</button>
+        <button type="button" data-key="1">1</button>
+        <button type="button" data-key="2">2</button>
+        <button type="button" data-key="3">3</button>
+        <button type="button" data-key="y">y</button>
+        <button type="button" data-key="n">n</button>
+      </div>
+      <form id="input-bar" class="input-bar">
+        <textarea id="input" rows="1" placeholder="Message Claude…" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="enter" aria-label="Message"></textarea>
+        <span id="outbox-badge" class="badge" title="Messages waiting for delivery" hidden></span>
+        <button type="submit" id="send" class="primary send-btn">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+  <div id="sheet" class="sheet" role="dialog" aria-modal="true" hidden></div>
+  <div id="toast" class="toast" role="alert" hidden></div>
+</div>
+</body>
+</html>
