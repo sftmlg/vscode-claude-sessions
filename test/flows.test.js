@@ -866,13 +866,20 @@ test('Open remote sessions explains the missing address, then loads the local we
 
     live.receive({ t: 'setToken', id: 1, token: 'device-token-1' });
     await settle();
-    assert.strictEqual(fake.secretStore.get('claudeSessions.remote.token'), 'device-token-1');
+    const key = 'claudeSessions.remote.token:ws://remote.example:39180';
+    assert.strictEqual(fake.secretStore.get(key), 'device-token-1');
+    assert.strictEqual(fake.secretStore.has('claudeSessions.remote.token'), false, 'tokens are kept per service origin');
     live.receive({ t: 'getToken', id: 2 });
     await settle();
     assert.deepStrictEqual(live.posted.slice(-1), [{ t: 'reply', id: 2, value: 'device-token-1' }]);
+    fake.config['remote.url'] = 'ws://other.example:39180/ws';
+    live.receive({ t: 'getToken', id: 21 });
+    await settle();
+    assert.deepStrictEqual(live.posted.slice(-1), [{ t: 'reply', id: 21, value: null }], 'another service never gets this token');
+    fake.config['remote.url'] = 'ws://remote.example:39180/ws';
     live.receive({ t: 'setToken', id: 3, token: null });
     await settle();
-    assert.strictEqual(fake.secretStore.has('claudeSessions.remote.token'), false);
+    assert.strictEqual(fake.secretStore.has(key), false);
     live.receive({ t: 'nonsense', id: 4 });
     await settle();
     assert.match(live.posted.slice(-1)[0].error, /unknown request/);

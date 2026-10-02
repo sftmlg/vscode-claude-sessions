@@ -1400,6 +1400,13 @@ function activate(context) {
 
   let remotePanel = null;
   const remoteUrl = () => String(settings().get('remote.url') || '').trim();
+  const remoteTokenKey = () => {
+    try {
+      return `${REMOTE_TOKEN_SECRET}:${new URL(remoteUrl()).origin}`;
+    } catch {
+      return null;
+    }
+  };
   const renderRemote = () => {
     if (remotePanel) remotePanel.webview.html = remotePage(remotePanel.webview, remoteUrl());
   };
@@ -1419,11 +1426,13 @@ function activate(context) {
       if (!m || typeof m !== 'object' || !m.id || !remotePanel) return;
       const reply = (fields) => remotePanel && remotePanel.webview.postMessage({ t: 'reply', id: m.id, ...fields });
       try {
-        if (m.t === 'getToken') return reply({ value: (context.secrets && (await context.secrets.get(REMOTE_TOKEN_SECRET))) || null });
+        const key = remoteTokenKey();
+        if (m.t === 'getToken') return reply({ value: (key && context.secrets && (await context.secrets.get(key))) || null });
         if (m.t === 'setToken') {
           if (!context.secrets) return reply({ error: 'no secret storage' });
-          if (typeof m.token === 'string' && m.token) await context.secrets.store(REMOTE_TOKEN_SECRET, m.token);
-          else await context.secrets.delete(REMOTE_TOKEN_SECRET);
+          if (!key) return reply({ error: 'claudeSessions.remote.url is not a valid address' });
+          if (typeof m.token === 'string' && m.token) await context.secrets.store(key, m.token);
+          else await context.secrets.delete(key);
           return reply({ value: true });
         }
         return reply({ error: `unknown request ${m.t}` });
