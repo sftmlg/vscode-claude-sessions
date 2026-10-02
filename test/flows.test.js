@@ -891,3 +891,32 @@ test('Open remote sessions explains the missing address, then loads the local we
     api.deactivate();
   }
 });
+
+test('Attach to a service session opens a terminal tab attached to that tmux session, and reuses it', async () => {
+  const { execFileSync } = require('child_process');
+  const tmux = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((f) => fs.existsSync(f));
+  if (!tmux) return;
+  const socket = `test-attach-${process.pid}`;
+  execFileSync(tmux, ['-L', socket, 'new-session', '-d', '-s', 'cc-alpha', '--', '/bin/sh', '-c', 'sleep 30']);
+  execFileSync(tmux, ['-L', socket, 'new-session', '-d', '-s', 'cc-beta', '--', '/bin/sh', '-c', 'sleep 30']);
+  const { fake, api } = await setup();
+  try {
+    fake.config['remote.tmuxSocket'] = socket;
+    fake.quickPickAnswers.push((i) => i.label === 'cc-beta');
+    await fake.run('claudeSessions.attachRemote');
+    const t = fake.vscode.window.terminals.find((x) => x.name === 'cc-beta');
+    assert.ok(t, 'terminal for cc-beta');
+    assert.deepStrictEqual(t.creationOptions.shellArgs, ['-u', '-L', socket, 'attach', '-t', '=cc-beta']);
+    const before = fake.vscode.window.terminals.length;
+    fake.quickPickAnswers.push((i) => i.label === 'cc-beta');
+    await fake.run('claudeSessions.attachRemote');
+    assert.strictEqual(fake.vscode.window.terminals.length, before);
+
+    fake.config['remote.tmuxSocket'] = `${socket}-none`;
+    await fake.run('claudeSessions.attachRemote');
+    assert.ok(fake.messages.some((m) => /No service sessions run on this machine/.test(m)));
+  } finally {
+    try { execFileSync(tmux, ['-L', socket, 'kill-server']); } catch {}
+    api.deactivate();
+  }
+});

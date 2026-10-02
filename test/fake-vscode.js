@@ -205,6 +205,10 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
       },
       showInputBox: async () => inputAnswers.shift(),
       showWarningMessage: async () => warningAnswers.shift(),
+      showQuickPick: async (items) => {
+        const pick = quickPickAnswers.shift();
+        return pick ? items.find((i) => pick(typeof i === 'string' ? { label: i } : i)) : undefined;
+      },
       showInformationMessage: async (text) => {
         messages.push(text);
         return undefined;

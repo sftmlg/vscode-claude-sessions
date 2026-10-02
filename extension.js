@@ -1410,6 +1410,31 @@ function activate(context) {
   const renderRemote = () => {
     if (remotePanel) remotePanel.webview.html = remotePage(remotePanel.webview, remoteUrl());
   };
+  const remoteTmux = () => ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((f) => fs.existsSync(f)) || 'tmux';
+  const remoteSocket = () => String(settings().get('remote.tmuxSocket') || 'ccremote');
+  const listServiceSessions = () =>
+    new Promise((resolve) => {
+      execFile(remoteTmux(), ['-u', '-L', remoteSocket(), 'list-sessions', '-F', '#{session_name}'], { timeout: 3000 }, (err, out) => {
+        resolve(err ? [] : String(out).split('\n').filter((n) => /^cc-[a-z0-9-]{1,40}$/.test(n)));
+      });
+    });
+  const attachRemote = async () => {
+    const names = await listServiceSessions();
+    if (!names.length) {
+      vscode.window.showInformationMessage('No service sessions run on this machine. From another machine use Open remote sessions.');
+      return undefined;
+    }
+    const pick = names.length === 1 ? names[0] : await vscode.window.showQuickPick(names, { placeHolder: 'Attach to a service session in a terminal tab' });
+    if (!pick) return undefined;
+    const open = vscode.window.terminals.find((t) => t.name === pick && t.creationOptions && t.creationOptions.shellPath === remoteTmux());
+    if (open) {
+      open.show();
+      return open;
+    }
+    const t = vscode.window.createTerminal({ name: pick, shellPath: remoteTmux(), shellArgs: ['-u', '-L', remoteSocket(), 'attach', '-t', `=${pick}`], iconPath: new vscode.ThemeIcon('remote') });
+    t.show();
+    return t;
+  };
   const openRemote = () => {
     if (remotePanel) {
       remotePanel.reveal();
@@ -1521,6 +1546,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.loadRemote', (item) => loadRemote(item)),
     vscode.commands.registerCommand('claudeSessions.renameMachine', () => renameMachine(remoteView.snapshot && remoteView.snapshot.name)),
     vscode.commands.registerCommand('claudeSessions.openRemote', () => openRemote()),
+    vscode.commands.registerCommand('claudeSessions.attachRemote', () => attachRemote()),
     vscode.commands.registerCommand('claudeSessions.disconnectNextcloud', async () => {
       await context.secrets.delete(SYNC_SECRET);
       if (settings().get('sync.credentialsFile')) await settings().update('sync.credentialsFile', undefined, vscode.ConfigurationTarget.Global);

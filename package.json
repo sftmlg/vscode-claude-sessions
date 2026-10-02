@@ -227,6 +227,12 @@
         "title": "Open remote sessions",
         "category": "Claude Sessions",
         "icon": "$(remote-explorer)"
+      },
+      {
+        "command": "claudeSessions.attachRemote",
+        "title": "Attach to a service session in a terminal tab",
+        "category": "Claude Sessions",
+        "icon": "$(terminal)"
       }
     ],
     "viewsContainers": {
@@ -325,6 +331,11 @@
           "command": "claudeSessions.openRemote",
           "when": "view == claudeSessions.remote",
           "group": "navigation@0"
+        },
+        {
+          "command": "claudeSessions.attachRemote",
+          "when": "view == claudeSessions.remote",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -612,6 +623,12 @@
           "default": "",
           "scope": "machine",
           "description": "WebSocket address of the remote session service (ws://host:port/ws) opened by Open remote sessions. Empty: the panel explains how to set it."
+        },
+        "claudeSessions.remote.tmuxSocket": {
+          "type": "string",
+          "default": "ccremote",
+          "scope": "machine",
+          "description": "tmux socket name of the remote session service on this machine, used by Attach to a service session in a terminal tab."
         }
       }
     }
