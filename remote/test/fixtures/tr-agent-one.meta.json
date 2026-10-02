@@ -1,0 +1,9 @@
+{
+  "agentType": "scout",
+  "description": "Count sample lines",
+  "toolUseId": "toolu_01D",
+  "spawnDepth": 1,
+  "requestShape": "single",
+  "requestNonInteractive": true,
+  "model": "sample-model-3"
+}
