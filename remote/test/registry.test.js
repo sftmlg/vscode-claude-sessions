@@ -149,9 +149,27 @@ test('registry on a throwaway socket', async (t) => {
     procs.push(stubborn);
     await new Promise((r) => setTimeout(r, 100));
     writePid(stubborn.pid, { sessionId: ID3, name: 'Stubborn' });
+    const early = await reg.prepareTakeover(stubborn.pid);
+    await assert.rejects(reg.takeover(early.token, { force: true }), (e) => e.code === 'force-not-allowed');
     const info = await reg.prepareTakeover(stubborn.pid);
     await assert.rejects(reg.takeover(info.token), (e) => e.code === 'still-running');
     assert.strictEqual(reg.listAll().some((i) => i.name === 'cc-stubborn'), false);
+    assert.strictEqual(stubborn.exitCode, null);
+
+    writePid(stubborn.pid, { sessionId: ID1, name: 'Stubborn' });
+    await assert.rejects(reg.takeover(info.token, { force: true }), (e) => e.code === 'changed');
+    assert.strictEqual(stubborn.exitCode, null, 'a changed tuple is never killed');
+
+    writePid(stubborn.pid, { sessionId: ID3, name: 'Stubborn' });
+    const again = await reg.prepareTakeover(stubborn.pid);
+    await assert.rejects(reg.takeover(again.token), (e) => e.code === 'still-running');
+    const killed = new Promise((r) => stubborn.once('exit', (code, signal) => r(signal)));
+    const res = await reg.takeover(again.token, { device: { id: 'dev-1' }, force: true });
+    assert.strictEqual(await killed, 'SIGKILL');
+    assert.strictEqual(res.name, 'cc-stubborn');
+    await waitFor(() => capture(ctx, 'cc-stubborn').includes(`[--resume] [${ID3}]`), { what: 'resumed after SIGKILL' });
+    assert.ok(audits.some((a) => a.action === 'takeover-kill' && a.sessionId === ID3));
+    await assert.rejects(reg.takeover(again.token, { force: true }), (e) => e.code === 'token-expired');
   });
 
   await t.test('takeover tokens expire', async () => {

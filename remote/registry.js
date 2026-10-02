@@ -172,7 +172,16 @@ class Registry extends EventEmitter {
   }
 
   refresh() {
-    if (!this.refreshing) this.refreshing = this.doRefresh().finally(() => (this.refreshing = null));
+    if (this.refreshing) {
+      if (!this.queued) {
+        this.queued = this.refreshing.catch(() => {}).then(() => {
+          this.queued = null;
+          return this.refresh();
+        });
+      }
+      return this.queued;
+    }
+    this.refreshing = this.doRefresh().finally(() => (this.refreshing = null));
     return this.refreshing;
   }
 
@@ -280,10 +289,11 @@ class Registry extends EventEmitter {
     return { token, pid, tty: proc.tty, cwd: item.cwd, slot: item.slot, sessionId: item.sessionId, name, title: item.title, status: item.status, expiresAt };
   }
 
-  async takeover(token, { device } = {}) {
+  async takeover(token, { device, force = false } = {}) {
     const t = typeof token === 'string' ? this.tokens.get(token) : null;
     if (t) this.tokens.delete(token);
     if (!t || Date.now() > t.expiresAt) throw new RegistryError('token-expired', 'Takeover confirmation expired; start again');
+    if (force && !t.termSent) throw new RegistryError('force-not-allowed', 'Force is only offered after the process ignored SIGTERM');
     const records = await readPidRecords();
     const rec = records.get(t.pid);
     const proc = (await processTable()).procs.get(t.pid);
@@ -291,13 +301,19 @@ class Registry extends EventEmitter {
     if (!unchanged) throw new RegistryError('changed', 'The process changed since confirmation; nothing was stopped');
     if (rec.status === 'busy') throw new RegistryError('busy', 'The session started working; nothing was stopped');
     if (!(await realUnder(t.cwd, this.config.roots))) throw new RegistryError('dir-not-allowed');
-    this.audit('takeover-term', { device: device && device.id, pid: t.pid, sessionId: t.sessionId });
-    process.kill(t.pid, 'SIGTERM');
+    const signal = force ? 'SIGKILL' : 'SIGTERM';
+    this.audit(force ? 'takeover-kill' : 'takeover-term', { device: device && device.id, pid: t.pid, sessionId: t.sessionId });
+    process.kill(t.pid, signal);
     const until = Date.now() + this.exitWaitMs;
     while (isAlive(t.pid)) {
       if (Date.now() > until) {
-        this.audit('takeover-timeout', { device: device && device.id, pid: t.pid, sessionId: t.sessionId });
-        throw new RegistryError('still-running', 'The process did not exit within 10 s; nothing was started');
+        this.audit('takeover-timeout', { device: device && device.id, pid: t.pid, sessionId: t.sessionId, signal });
+        if (!force) {
+          this.tokens.set(token, { ...t, termSent: true });
+          const timer = setTimeout(() => this.tokens.delete(token), Math.max(0, t.expiresAt - Date.now()));
+          timer.unref();
+        }
+        throw new RegistryError('still-running', force ? 'The process survived SIGKILL; nothing was started' : 'The process ignored SIGTERM; confirm again to force it (SIGKILL)');
       }
       await new Promise((r) => setTimeout(r, 100));
     }
