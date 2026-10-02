@@ -144,6 +144,7 @@ The plugin never starts a second process for a session that already runs somewhe
 - Plain `http` over the tailnet (WireGuard-encrypted): no service worker and no clipboard API in the browser, so the app is reloaded by the browser, not installed offline.
 - A session is steerable only once it runs in the service's tmux; a session started elsewhere is shown read-only (chat from its JSONL and status) until it is taken over explicitly.
 - The chat view shows what the JSONL holds: a permission or question dialog that is open right now appears only as the `waiting` status, and the merged view of a paged assistant message may split at a page boundary until the page before it is loaded.
+- macOS privacy (TCC): processes started by the LaunchAgent hang on Desktop, Documents and Downloads until node is granted Full Disk Access on the service Mac; the service probes this every 10 minutes and the app, `cli.js status` and the installer warn with the node path to add (Homebrew's ad-hoc signed node loses the grant on every upgrade).
 - Transcript lines between 512 KB and 2 MB (rare, large tool results) appear as unreadable fragments in the paged history; the live tail parses them fully.
 
 ## Naming convention

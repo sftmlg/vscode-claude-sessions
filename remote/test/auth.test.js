@@ -398,3 +398,12 @@ test('cli devices shows age and idle time', async () => {
     assert.match(io.lines[0], /^dev-[0-9a-f]{12}  Phone  age \d+[smhd]  idle \d+[smhd]  expires in \d+d$/);
   });
 });
+
+test('cli status turns blocked folder access into a warning that names the node path', () => {
+  const body = { folderAccess: { desktop: 'blocked', documents: 'ok', checkedAt: 'x' }, nodePath: '/opt/sample/node' };
+  const w = cli.folderWarning(body);
+  assert.match(w, /Full Disk Access › add \/opt\/sample\/node/);
+  assert.match(w, /Desktop/);
+  assert.strictEqual(cli.folderWarning({ folderAccess: { desktop: 'ok', documents: 'ok' } }), null);
+  assert.strictEqual(cli.folderWarning({}), null);
+});

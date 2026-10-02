@@ -94,11 +94,21 @@ function serveEntry(serve, config) {
   return { proxy: proxy || null, http: Boolean(tcp && tcp.HTTP && !tcp.HTTPS), funnel };
 }
 
+function folderWarning(body) {
+  const access = body && body.folderAccess;
+  if (!access || (access.desktop !== 'blocked' && access.documents !== 'blocked')) return null;
+  const blocked = ['desktop', 'documents'].filter((k) => access[k] === 'blocked').map((k) => k[0].toUpperCase() + k.slice(1)).join(' and ');
+  return `node has no access to ${blocked}. On this Mac: System Settings › Privacy & Security › Full Disk Access › add ${body.nodePath || 'the node binary'} — sessions touching Desktop/Documents hang until then.`;
+}
+
 async function status(config) {
   const checks = {};
+  const warnings = [];
   try {
     const r = await admin(config, 'GET', '/admin/status');
     checks.service = { ok: r.status === 200, detail: r.status === 200 ? { pid: r.body.pid, devices: r.body.devices, pendingPairings: r.body.pendingPairings } : r.body };
+    const warning = r.status === 200 ? folderWarning(r.body) : null;
+    if (warning) warnings.push(warning);
   } catch (e) {
     checks.service = { ok: false, detail: e.code || 'error' };
   }
@@ -118,7 +128,7 @@ async function status(config) {
   } catch (e) {
     checks.rejectsAnonymous = { ok: false, detail: e.code || 'error' };
   }
-  return { ok: Object.values(checks).every((c) => c.ok), checks };
+  return { ok: Object.values(checks).every((c) => c.ok), checks, warnings };
 }
 
 function span(ms) {
@@ -210,7 +220,10 @@ async function main(argv, { config, out = console.log, err = console.error } = {
   if (command === 'status') {
     const s = await status(config);
     if (json) out(JSON.stringify(s, null, 2));
-    else for (const [name, c] of Object.entries(s.checks)) out(`${c.ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(c.detail)}`);
+    else {
+      for (const [name, c] of Object.entries(s.checks)) out(`${c.ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(c.detail)}`);
+      for (const w of s.warnings) out(`WARN folderAccess: ${w}`);
+    }
     return s.ok ? 0 : 1;
   }
 
@@ -228,4 +241,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { main, status, serveEntry, admin, TAILSCALE_APP };
+module.exports = { main, status, folderWarning, serveEntry, admin, TAILSCALE_APP };

@@ -207,6 +207,7 @@ if [ "$CHECK" = 1 ]; then
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if CLAUDE_REMOTE_CONFIG="$CONFIG_FILE" "$NODE" "$REPO_DIR/remote/cli.js" status >/dev/null 2>&1; then
       say "Self-check passed."
+      CLAUDE_REMOTE_CONFIG="$CONFIG_FILE" "$NODE" "$REPO_DIR/remote/cli.js" status 2>/dev/null | sed -n 's/^WARN folderAccess: /WARNING: /p'
       exit 0
     fi
     /bin/sleep 1
