@@ -154,7 +154,8 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     const c2 = await client(port);
     try {
       c2.send({ t: 'hello', clientId: 'c2' });
-      await c2.wait((m) => m.t === 'pairRequired', 'pairRequired');
+      const required = await c2.wait((m) => m.t === 'pairRequired', 'pairRequired');
+      assert.strictEqual(required.autoPair, true);
       c2.send({ t: 'pair', deviceName: 'auto phone' });
       const paired = await c2.wait((m) => m.t === 'paired', 'paired');
       assert.strictEqual(paired.device.name, 'auto phone');

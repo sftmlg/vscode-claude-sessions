@@ -298,7 +298,7 @@ async function start(config, deps = {}) {
         return send({ t: 'pong', t0: msg.t0, ts: msg.ts });
       case 'hello': {
         const device = typeof msg.token === 'string' ? await auth.verifyToken(msg.token) : null;
-        if (!device) return send({ t: 'pairRequired' });
+        if (!device) return send({ t: 'pairRequired', autoPair: config.autoApprovePairing === true });
         conn.device = device;
         log(`ws hello conn=${conn.id} device=${device.id}`);
         send({ t: 'helloOk', device, defaultDir: config.defaultDir, health });

@@ -392,6 +392,15 @@ function onJson(data) {
       conn.authed = false;
       if (conn.sentToken) setToken(null);
       setConn('online');
+      if (m.autoPair && !conn.autoPairTried) {
+        conn.autoPairTried = true;
+        show('pair');
+        $('pair-form').hidden = true;
+        $('pair-wait').hidden = false;
+        $('pair-code').textContent = 'connecting this device…';
+        conn.send({ t: 'pair', deviceName: defaultDeviceName() });
+        return undefined;
+      }
       return showPair();
     case 'pairCode':
       $('pair-form').hidden = true;
@@ -718,7 +727,17 @@ function showPair() {
   $('pair-form').hidden = false;
   $('pair-wait').hidden = true;
   const name = $('device-name');
-  if (!name.value) name.value = /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone' : /Android/.test(navigator.userAgent) ? 'Android phone' : host ? 'VS Code' : 'Browser';
+  if (!name.value) name.value = defaultDeviceName();
+}
+
+function defaultDeviceName() {
+  const ua = navigator.userAgent;
+  if (host) return 'VS Code';
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua)) return 'iPad';
+  if (/Android/.test(ua)) return 'Android phone';
+  if (/Macintosh/.test(ua)) return 'Mac browser';
+  return 'Browser';
 }
 
 function setupViewport() {
