@@ -1,5 +1,7 @@
 'use strict';
 const crypto = require('crypto');
+const { execFile } = require('child_process');
+const os = require('os');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -32,6 +34,8 @@ const MAX_UNAUTHENTICATED = 8;
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_KEEP = 3;
 const LOG_FILES = ['server.out.log', 'server.err.log'];
+const FOLDER_PROBE_TIMEOUT_MS = 3000;
+const HEALTH_INTERVAL_MS = 10 * 60 * 1000;
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -103,6 +107,29 @@ function rotateLogs(dir, names = LOG_FILES, { maxBytes = LOG_MAX_BYTES, keep = L
   }
 }
 
+function probeFolder(dir, { cmd = '/bin/ls', args, timeoutMs = FOLDER_PROBE_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    execFile(cmd, args || [dir], { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 }, (err, _out, stderr) => {
+      if (!err) return resolve('ok');
+      if (err.killed || /not permitted/i.test(String(stderr))) return resolve('blocked');
+      return resolve('ok');
+    });
+  });
+}
+
+async function checkFolderAccess(probe = probeFolder, home = os.homedir()) {
+  const [desktop, documents] = await Promise.all([probe(path.join(home, 'Desktop')), probe(path.join(home, 'Documents'))]);
+  return { desktop, documents, checkedAt: new Date().toISOString() };
+}
+
+function realNodePath() {
+  try {
+    return fs.realpathSync(process.execPath);
+  } catch {
+    return process.execPath;
+  }
+}
+
 const clientItem = ({ transcriptPath, ...rest }) => ({ ...rest, hasTranscript: Boolean(transcriptPath) });
 
 async function start(config, deps = {}) {
@@ -130,7 +157,7 @@ async function start(config, deps = {}) {
   const helloTimeoutMs = deps.helloTimeoutMs || limits.helloTimeoutMs || HELLO_TIMEOUT_MS;
 
   const server = http.createServer((req, res) => {
-    if (String(req.url).startsWith('/admin/')) return auth.handleAdmin(req, res, { sessions: registry.listAll().length, mirrors: mirrors.size, connections: conns.size });
+    if (String(req.url).startsWith('/admin/')) return auth.handleAdmin(req, res, { sessions: registry.listAll().length, mirrors: mirrors.size, connections: conns.size, ...health });
     const check = checkRequest(req, config);
     if (!check.ok) {
       log(`http denied reason=${check.reason}`);
@@ -274,7 +301,7 @@ async function start(config, deps = {}) {
         if (!device) return send({ t: 'pairRequired' });
         conn.device = device;
         log(`ws hello conn=${conn.id} device=${device.id}`);
-        send({ t: 'helloOk', device, defaultDir: config.defaultDir });
+        send({ t: 'helloOk', device, defaultDir: config.defaultDir, health });
         return send({ t: 'sessions', items: registry.listAll().map(clientItem) });
       }
       case 'pair': {
@@ -295,7 +322,7 @@ async function start(config, deps = {}) {
             if (!device || conn.ws.readyState !== WebSocket.OPEN) return;
             conn.device = device;
             send({ t: 'paired', token, device });
-            send({ t: 'helloOk', device, defaultDir: config.defaultDir });
+            send({ t: 'helloOk', device, defaultDir: config.defaultDir, health });
             send({ t: 'sessions', items: registry.listAll().map(clientItem) });
           },
           (e) => {
@@ -483,6 +510,19 @@ async function start(config, deps = {}) {
   }, deps.heartbeatMs || HEARTBEAT_MS);
   heartbeat.unref();
 
+  const health = { folderAccess: null, nodePath: realNodePath() };
+  async function checkHealth() {
+    const folderAccess = await checkFolderAccess(deps.probeFolder || probeFolder);
+    const changed = !health.folderAccess || health.folderAccess.desktop !== folderAccess.desktop || health.folderAccess.documents !== folderAccess.documents;
+    health.folderAccess = folderAccess;
+    if (folderAccess.desktop === 'blocked' || folderAccess.documents === 'blocked') log(`health folder access blocked desktop=${folderAccess.desktop} documents=${folderAccess.documents}`);
+    if (changed) broadcast({ t: 'health', ...health });
+    return health;
+  }
+  await checkHealth();
+  const healthTimer = setInterval(() => checkHealth().catch(() => {}), HEALTH_INTERVAL_MS);
+  healthTimer.unref();
+
   await registry.start();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -495,10 +535,12 @@ async function start(config, deps = {}) {
     port,
     server,
     registry,
+    checkHealth,
     stats: () => ({ tails: liveTails.size, mirrors: mirrors.size, connections: conns.size }),
     async close() {
       clearInterval(heartbeat);
       clearInterval(rotation);
+      clearInterval(healthTimer);
       registry.stop();
       for (const c of conns) c.ws.terminate();
       for (const m of mirrors.values()) m.close();
@@ -525,4 +567,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { start, csp, staticPath, rotateLogs };
+module.exports = { start, csp, staticPath, rotateLogs, probeFolder, checkFolderAccess };

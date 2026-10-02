@@ -11,7 +11,7 @@ const home = tempHome('remote-server-');
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
 const WebSocket = require('ws');
-const { start, csp, staticPath, rotateLogs } = require('../server');
+const { start, csp, staticPath, rotateLogs, probeFolder, checkFolderAccess } = require('../server');
 const { Registry } = require('../registry');
 const { createAuth } = require('../auth');
 const { parseFrame } = require('../mirror');
@@ -75,6 +75,17 @@ test('log rotation copies a large log aside, truncates it in place and keeps thr
   assert.strictEqual(fs.readFileSync(file, 'utf8'), 'small');
 });
 
+test('folder probe: a listing that hangs or is denied counts as blocked, a readable one as ok', async () => {
+  const dir = tempHome('remote-probe-');
+  assert.strictEqual(await probeFolder(dir), 'ok');
+  assert.strictEqual(await probeFolder(dir, { cmd: '/bin/sleep', args: ['5'], timeoutMs: 200 }), 'blocked');
+  assert.strictEqual(await probeFolder(dir, { cmd: '/bin/sh', args: ['-c', 'echo "ls: x: Operation not permitted" >&2; exit 1'] }), 'blocked');
+  const access = await checkFolderAccess(async (d) => (d.endsWith('Desktop') ? 'blocked' : 'ok'), '/home/sample');
+  assert.strictEqual(access.desktop, 'blocked');
+  assert.strictEqual(access.documents, 'ok');
+  assert.ok(Date.parse(access.checkedAt));
+});
+
 test('static paths stay inside web/ and only serve known types', () => {
   assert.ok(staticPath('/').endsWith(path.join('web', 'index.html')));
   assert.ok(staticPath('/vendor/xterm.mjs?x=1').endsWith(path.join('web', 'vendor', 'xterm.mjs')));
@@ -90,7 +101,8 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
   const auth = createAuth(config, { log: () => {} });
   const logs = [];
   const registry = new Registry(config, { ctx, pollMs: 150 });
-  const hub = await start(config, { auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400 });
+  let folderState = 'blocked';
+  const hub = await start(config, { auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400, probeFolder: async () => folderState });
   t.after(async () => {
     await hub.close();
     killServer(ctx);
@@ -128,6 +140,12 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     assert.strictEqual(paired.device.name, 'test phone');
     const ok = await c.wait((m) => m.t === 'helloOk', 'helloOk');
     assert.strictEqual(ok.defaultDir, work);
+    assert.strictEqual(ok.health.folderAccess.desktop, 'blocked');
+    assert.strictEqual(ok.health.nodePath, fs.realpathSync(process.execPath));
+    folderState = 'ok';
+    await hub.checkHealth();
+    const pushed = await c.wait((m) => m.t === 'health' && m.folderAccess.desktop === 'ok', 'health push');
+    assert.strictEqual(pushed.folderAccess.documents, 'ok');
     assert.ok(c.json.findIndex((m) => m.t === 'error' && m.code === 'unauthorized') < c.json.findIndex((m) => m.t === 'paired'));
   });
 
