@@ -125,6 +125,9 @@ async function start(config, deps = {}) {
   const conns = new Set();
   const buckets = new Map();
   const headers = baseHeaders(config);
+  const limits = auth.limits || {};
+  const maxUnauthed = limits.maxUnauthed || MAX_UNAUTHENTICATED;
+  const helloTimeoutMs = deps.helloTimeoutMs || limits.helloTimeoutMs || HELLO_TIMEOUT_MS;
 
   const server = http.createServer((req, res) => {
     if (String(req.url).startsWith('/admin/')) return auth.handleAdmin(req, res, { sessions: registry.listAll().length, mirrors: mirrors.size, connections: conns.size });
@@ -160,7 +163,7 @@ async function start(config, deps = {}) {
       log(`ws denied reason=${check.reason}`);
       return deny(403, 'Forbidden');
     }
-    if ([...conns].filter((c) => !c.device).length >= MAX_UNAUTHENTICATED) {
+    if ([...conns].filter((c) => !c.device).length >= maxUnauthed) {
       log('ws denied reason=too-many-unauthenticated');
       return deny(503, 'Service Unavailable');
     }
@@ -211,7 +214,7 @@ async function start(config, deps = {}) {
     log(`ws open conn=${conn.id}`);
     const helloTimer = setTimeout(() => {
       if (!conn.device && !conn.pairing) ws.close(4008, 'hello timeout');
-    }, deps.helloTimeoutMs || HELLO_TIMEOUT_MS);
+    }, helloTimeoutMs);
     helloTimer.unref();
     const send = (msg) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
     const viewer = { id: conn.id, sendJson: send, sendBinary: (b) => ws.readyState === WebSocket.OPEN && ws.send(b, { binary: true }), bufferedAmount: () => ws.bufferedAmount };
