@@ -97,6 +97,15 @@ test('outbox sender: one message in flight, next only after its ack, a rate-limi
   assert.deepStrictEqual(sender.onAck({ id: 'unknown', ok: true }), { handled: false });
 });
 
+test('chat and mirror recover after reconnects and recreated sessions', () => {
+  const app = read('app.js');
+  assert.match(app, /state\.chatMounting\) return;\s*state\.chatMounting = true;/, 'mounting flag set synchronously');
+  assert.match(app, /t: 'subEvents', sessionId, from: m\.to/, 'live tail starts where the first page ended');
+  assert.ok(!/r\.open\(sessionId\);\s*conn\.send\(\{ t: 'subEvents', sessionId \}\)/.test(app), 'no subscription before the first page');
+  assert.match(app, /addEventListener\('close'[\s\S]{0,400}unmountChat\(\)/, 'chat torn down on socket close so helloOk remounts it');
+  assert.match(app, /m\.code === 'session-ended' && m\.sessionId === state\.current[\s\S]{0,120}state\.subscribedKey = null/, 'ended session resubscribes when recreated');
+});
+
 test('every key in the key bar is on the server allowlist', () => {
   const { KEYS } = require('../tmux');
   const keys = [...read('index.html').matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);

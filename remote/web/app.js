@@ -130,6 +130,9 @@ const conn = {
       this.authed = false;
       clearInterval(this.ping);
       sender.reset();
+      for (const w of state.eventWaiters.splice(0)) w.reject(new Error('offline'));
+      unmountChat();
+      state.subscribedKey = null;
       if (e.code === 4001) {
         setToken(null);
         toast('This device was revoked.');
@@ -441,6 +444,11 @@ function onJson(data) {
         $('pair-form').hidden = false;
         $('pair-wait').hidden = true;
       }
+      if (m.code === 'session-ended' && m.sessionId === state.current) {
+        state.subscribedKey = null;
+        state.lastSeq = null;
+        state.awaitingBody = false;
+      }
       if (m.code === 'unauthorized') return undefined;
       return toast(errorText(m.code, m.msg));
     default:
@@ -502,14 +510,18 @@ function sendKey(key) {
 
 async function mountChat() {
   const s = currentItem();
-  if (!s || !s.sessionId || state.chatUnmount) return;
+  if (!s || !s.sessionId || state.chatUnmount || state.chatMounting) return;
+  state.chatMounting = true;
   const pane = $('chat-pane');
   let mod = null;
   try {
     mod = await import('./chat.js');
   } catch {
     mod = null;
+  } finally {
+    state.chatMounting = false;
   }
+  if (state.chatUnmount || state.tab !== 'chat' || currentItem() !== s) return;
   const mountChatFn = (mod && typeof mod.mountChat === 'function' && mod.mountChat) || (window.ClaudeChat && typeof window.ClaudeChat.mountChat === 'function' && window.ClaudeChat.mountChat);
   if (!mountChatFn) {
     pane.replaceChildren(el('p', { class: 'muted pane-pad', text: 'The chat view is not available in this build.' }));
@@ -517,11 +529,19 @@ async function mountChat() {
     return;
   }
   const sessionId = s.sessionId;
+  let liveSubscribed = false;
   const api = {
     sessionId,
     requestEvents(id, { before, limit } = {}) {
       return new Promise((resolve, reject) => {
-        state.eventWaiters.push({ type: 'events', sessionId: id, resolve, reject });
+        const done = (m) => {
+          if (before === undefined && id === sessionId && !liveSubscribed && state.chatUnmount === unmount) {
+            liveSubscribed = true;
+            conn.send({ t: 'subEvents', sessionId, from: m.to });
+          }
+          resolve(m);
+        };
+        state.eventWaiters.push({ type: 'events', sessionId: id, resolve: done, reject });
         if (!conn.send({ t: 'events', sessionId: id, before, limit })) reject(new Error('offline'));
       });
     },
@@ -542,9 +562,7 @@ async function mountChat() {
   };
   pane.replaceChildren();
   const r = mountChatFn(pane, api);
-  if (r && typeof r.open === 'function') r.open(sessionId);
-  conn.send({ t: 'subEvents', sessionId });
-  state.chatUnmount = () => {
+  const unmount = () => {
     if (typeof r === 'function') r();
     else if (r && typeof r.destroy === 'function') r.destroy();
     state.eventsListeners.clear();
@@ -552,6 +570,8 @@ async function mountChat() {
     conn.send({ t: 'unsub', sessionId });
     pane.replaceChildren();
   };
+  state.chatUnmount = unmount;
+  if (r && typeof r.open === 'function') r.open(sessionId);
 }
 
 function unmountChat() {
