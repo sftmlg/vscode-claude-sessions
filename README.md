@@ -106,6 +106,46 @@ Favorite sessions — open or closed — follow you to your other machines throu
 - **Only favorites move.** Requesting is the way to move a session that is not a favorite on its machine.
 - **Locks still apply:** a session running on its machine is uploaded as it is and stays locked there; resuming it here asks first, as in **Inactive**.
 
+## Remote
+
+A session runs in exactly one process, on one always-on machine. Everything else — the browser on a laptop, the VS Code panel, the phone — is a view of that process: it shows the live terminal and the conversation, sends messages and keys, and holds no state of its own. There is no second copy to merge and no sync to wait for; closing a view changes nothing on the machine.
+
+### Architecture
+
+1. `remote/server.js` runs as a per-user LaunchAgent on the always-on machine and listens on `127.0.0.1` only; the tailnet reaches it through `tailscale serve` (identity header on every request, never Funnel).
+2. Every managed session is a `tmux` session on a dedicated socket; the service mirrors each pane through a tmux control client and injects input through tmux buffers — nothing is read from or typed into an editor.
+3. `remote/transcript.js` derives the chat view from the session's own JSONL under `~/.claude*/projects` (read from the end in windows of at most 512 KB, paged by byte offset, tailed for live updates); the JSONL stays the single source of truth, unknown line types are shown and counted, never dropped.
+4. `remote/web/` is one static app for browser, phone (home-screen capable) and VS Code: a terminal mirror (xterm.js), a chat view (`chat.js`), a local input field that sends whole messages, and single-key controls for the TUI.
+5. One WebSocket per client carries everything (`/ws`): session list and status pushes, terminal bytes, transcript events, acknowledged and deduplicated input.
+
+### Install
+
+On the always-on machine: `remote/install.sh` (flags set the roots, default directory, launcher and claude arguments; it measures the tailnet name and login itself, writes `~/.config/claude-remote/config.json`, installs the LaunchAgent and the `tailscale serve` route). Nothing about a particular installation is in the code; every value is configuration written by the installer.
+
+### Pairing
+
+A new browser or phone shows a pairing code. Approve it on the machine (`node remote/cli.js pair <code> [name]`) or from an already paired device; the device receives a token that is kept only on that device (the server stores a hash). `node remote/cli.js devices` lists them, `revoke <id>` cuts one off within seconds.
+
+### VS Code
+
+**Open remote sessions** (globe button in the **Remote** view, or the command palette) opens the same web app in a webview panel. The app is loaded from the extension itself under a strict content security policy; only the WebSocket address from `claudeSessions.remote.url` is allowed as a connection target, and the device token lives in VS Code's secret storage. The panel is a client like any other: it needs the pairing above.
+
+The plugin never starts a second process for a session that already runs somewhere: ▶, ＋, the picker and *Restore saved tabs* check the running sessions first and focus the tab that holds the session, or tell you that it runs in another process.
+
+### Security model
+
+- Reachable only through the tailnet (loopback listener behind `tailscale serve`), deny-by-default identity check, plus a per-device token for every socket; both are needed, neither is enough alone.
+- Transcript and terminal content is rendered as text, never as HTML; the web app runs without inline scripts; links open only for `http(s)`.
+- Session and subagent ids must be UUIDs, transcript paths are resolved to real paths under the projects directory, reads are bounded (≤512 KB per request, lines over 2 MB shown as unreadable), terminal input goes through `tmux load-buffer` with control characters stripped, and process takeovers are bound to pid, start time, session id and tty.
+- Logs hold ids, lengths and event types, never message text.
+
+### Limits
+
+- Plain `http` over the tailnet (WireGuard-encrypted): no service worker and no clipboard API in the browser, so the app is reloaded by the browser, not installed offline.
+- A session is steerable only once it runs in the service's tmux; a session started elsewhere is shown read-only (chat from its JSONL and status) until it is taken over explicitly.
+- The chat view shows what the JSONL holds: a permission or question dialog that is open right now appears only as the `waiting` status, and the merged view of a paged assistant message may split at a page boundary until the page before it is loaded.
+- Transcript lines between 512 KB and 2 MB (rare, large tool results) appear as unreadable fragments in the paged history; the live tail parses them fully.
+
 ## Naming convention
 
 Default for names given automatically (by an agent or a batch run). Anyone renaming by hand can use any name.
@@ -157,6 +197,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.sync.checkSeconds` | `120` | Seconds between checks of the other machines (read at start) |
 | `claudeSessions.machineName` | empty | Name of this machine in **Remote**; asked once after connecting |
 | `claudeSessions.sync.credentialsFile` | empty | App-password file used when no connection is stored |
+| `claudeSessions.remote.url` | empty | WebSocket address of the remote service (`ws://host:port/ws`) for **Open remote sessions** |
 
 ## Command line and tests
 
