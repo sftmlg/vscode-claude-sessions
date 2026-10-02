@@ -181,6 +181,18 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     fs.appendFileSync(transcriptFile, line('appended synthetic prompt'));
     const live = await c.wait((m) => m.t === 'eventsLive' && m.items.some((e) => e.text === 'appended synthetic prompt'), 'eventsLive');
     assert.strictEqual(live.sessionId, SID);
+    const agents = path.join(projectDir, SID, 'subagents');
+    fs.mkdirSync(agents, { recursive: true });
+    fs.writeFileSync(path.join(agents, 'agent-fs0001.meta.json'), JSON.stringify({ agentType: 'scout', description: 'synthetic', toolUseId: 'toolu_fs0001' }));
+    fs.writeFileSync(path.join(agents, 'agent-fs0001.jsonl'), line('synthetic subagent prompt'));
+    c.send({ t: 'agentEvents', sessionId: SID, toolUseId: 'toolu_fs0001', limit: 10 });
+    const ag = await c.wait((m) => m.t === 'agentEvents', 'agentEvents');
+    assert.strictEqual(ag.toolUseId, 'toolu_fs0001');
+    assert.ok(ag.items.some((e) => e.kind === 'prompt' && e.text === 'synthetic subagent prompt'));
+    c.send({ t: 'agentEvents', sessionId: SID, toolUseId: 'toolu_missing', limit: 10 });
+    await c.wait((m) => m.t === 'error' && m.ref === 'agentEvents' && m.code === 'not-found', 'unknown tool use');
+    c.send({ t: 'agentEvents', sessionId: SID, toolUseId: '../../x', limit: 10 });
+    await c.wait((m) => m.t === 'error' && m.ref === 'agentEvents' && m.code === 'bad-request', 'bad tool use id');
     c.send({ t: 'events', sessionId: '../../etc/passwd', limit: 10 });
     await c.wait((m) => m.t === 'error' && m.code === 'not-found' && m.ref === 'events', 'traversal refused');
   });

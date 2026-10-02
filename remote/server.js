@@ -24,6 +24,7 @@ const MAX_TEXT = 64 * 1024;
 const MAX_SUBS = 8;
 const MAX_TAILS = 4;
 const MAX_EVENTS = 500;
+const TOOL_USE_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RATE_PER_SEC = 10;
 const HEARTBEAT_MS = 30000;
 const TYPES = {
@@ -335,6 +336,17 @@ async function start(config, deps = {}) {
         const r = await transcript.readEvents(file, { before, limit });
         return send({ t: 'events', sessionId: msg.sessionId, from: r.from, to: r.to, size: r.size, items: r.events, unknown: r.unknown });
       }
+      case 'agentEvents': {
+        if (typeof msg.toolUseId !== 'string' || !TOOL_USE_RE.test(msg.toolUseId)) return send({ t: 'error', code: 'bad-request', msg: 'invalid toolUseId', ref: 'agentEvents' });
+        const { item, file } = await transcriptFor(msg.sessionId);
+        const agent = (await transcript.listSubagents(file)).find((a) => a.toolUseId === msg.toolUseId);
+        const agentFile = agent && (await transcript.resolveSubagent(item.sessionId, agent.agentId));
+        if (!agentFile) return send({ t: 'error', code: 'not-found', msg: 'No subagent transcript for this tool call', ref: 'agentEvents' });
+        const limit = Math.max(1, Math.min(MAX_EVENTS, Number(msg.limit) || 100));
+        const before = Number.isFinite(msg.before) && msg.before >= 0 ? Math.floor(msg.before) : undefined;
+        const r = await transcript.readEvents(agentFile, { before, limit });
+        return send({ t: 'agentEvents', sessionId: msg.sessionId, toolUseId: msg.toolUseId, from: r.from, to: r.to, size: r.size, items: r.events, unknown: r.unknown });
+      }
       case 'subEvents': {
         if (conn.tails.has(msg.sessionId)) return undefined;
         if (conn.tails.size >= MAX_TAILS) return send({ t: 'error', code: 'too-many', msg: 'too many chat subscriptions' });
@@ -377,7 +389,7 @@ async function start(config, deps = {}) {
         const r = await registry.newSession({ name: msg.name, dir: msg.dir, resumeId: msg.resumeId }, { device });
         return { ok: true, name: r.name };
       }
-      const r = await registry.takeover(msg.token, { device });
+      const r = await registry.takeover(msg.token, { device, force: msg.force === true });
       return { ok: true, name: r.name };
     } catch (e) {
       if (e.code && typeof e.code === 'string' && !/^E[A-Z]+$/.test(e.code)) return { ok: false, error: e.code };
