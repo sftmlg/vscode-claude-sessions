@@ -18,6 +18,8 @@ const state = {
   current: null,
   tab: 'terminal',
   claim: false,
+  reclaim: false,
+  fitOptOut: false,
   sizeOwner: null,
   lastSeq: null,
   awaitingBody: false,
@@ -86,7 +88,8 @@ const ERROR_TEXT = {
   busy: 'The session is working right now. Try again when it is idle.',
   changed: 'The process changed since you confirmed. Nothing was stopped.',
   'token-expired': 'Confirmation expired. Start again.',
-  'still-running': 'The process did not exit in time. Nothing was started.',
+  'still-running': 'The process did not exit. Nothing was started.',
+  'force-not-allowed': 'Force is only possible after the process ignored the stop request.',
   'unknown-code': 'Unknown pairing code.',
   locked: 'Too many wrong codes. Pairing is locked for a while.',
   'too-many-pending': 'Too many pending pairings. Try again later.',
@@ -264,9 +267,24 @@ function openSession(key) {
   subscribe();
 }
 
+function wantsAutoFit() {
+  return isTouch() || window.innerWidth < 700;
+}
+
+function releaseClaim(reclaimLater) {
+  const s = currentItem();
+  if (state.claim && s && s.managed) conn.send({ t: 'releaseSize', sessionId: s.name });
+  if (state.claim) state.reclaim = Boolean(reclaimLater);
+  state.claim = false;
+  renderSize();
+}
+
 function closeSession() {
   if (!state.current) return;
   const s = currentItem();
+  releaseClaim(false);
+  state.reclaim = false;
+  state.fitOptOut = false;
   conn.send({ t: 'unsub', sessionId: state.current });
   if (s && s.sessionId && s.sessionId !== state.current) conn.send({ t: 'unsub', sessionId: s.sessionId });
   unmountChat();
@@ -285,12 +303,16 @@ function subscribe() {
     if (!term) term = createTerm($('term'));
     state.lastSeq = null;
     conn.send({ t: 'sub', sessionId: s.name, cols: 0, rows: 0 });
+    if (!state.claim && document.visibilityState !== 'hidden' && (state.reclaim || (wantsAutoFit() && !state.fitOptOut))) state.claim = true;
+    state.reclaim = false;
     if (state.claim) claimSize();
+    renderSize();
   }
   if (state.tab === 'chat') mountChat();
 }
 
 function setTab(tab) {
+  if (tab !== 'terminal' && state.tab === 'terminal') releaseClaim(true);
   state.tab = tab;
   $('tab-terminal').setAttribute('aria-selected', String(tab === 'terminal'));
   $('tab-chat').setAttribute('aria-selected', String(tab === 'chat'));
@@ -381,12 +403,13 @@ function onJson(data) {
     case 'size':
       if (m.sessionId !== state.current) return undefined;
       state.sizeOwner = m.claimedBy ? m : null;
-      if (state.claim && m.claimedBy !== (state.device && state.device.name)) state.claim = false;
+      if (state.claim && m.claimedBy && m.claimedBy !== (state.device && state.device.name)) state.claim = false;
       return renderSize();
     case 'ack':
       return onAck(m);
-    case 'events': {
-      const i = state.eventWaiters.findIndex((w) => w.sessionId === m.sessionId);
+    case 'events':
+    case 'agentEvents': {
+      const i = state.eventWaiters.findIndex((w) => w.type === m.t && w.sessionId === m.sessionId && (m.t === 'events' || w.toolUseId === m.toolUseId));
       if (i >= 0) state.eventWaiters.splice(i, 1)[0].resolve(m);
       return undefined;
     }
@@ -401,9 +424,10 @@ function onJson(data) {
     case 'devices':
       return renderDevices(m.items || []);
     case 'error':
-      if (m.ref === 'events' || m.ref === 'subEvents') {
-        const i = state.eventWaiters.findIndex(() => true);
-        if (i >= 0) state.eventWaiters.splice(i, 1)[0].reject(new Error(m.code));
+      if (m.ref === 'events' || m.ref === 'agentEvents') {
+        const i = state.eventWaiters.findIndex((w) => w.type === m.ref);
+        if (i >= 0) state.eventWaiters.splice(i, 1)[0].reject(new Error(errorText(m.code, m.msg)));
+        return undefined;
       }
       if (m.ref === 'pair') {
         $('pair-form').hidden = false;
@@ -496,12 +520,15 @@ async function mountChat() {
     sessionId,
     requestEvents(id, { before, limit } = {}) {
       return new Promise((resolve, reject) => {
-        state.eventWaiters.push({ sessionId: id, resolve, reject });
+        state.eventWaiters.push({ type: 'events', sessionId: id, resolve, reject });
         if (!conn.send({ t: 'events', sessionId: id, before, limit })) reject(new Error('offline'));
       });
     },
-    requestAgentEvents() {
-      return Promise.reject(new Error('subagent transcripts are not available yet'));
+    requestAgentEvents(id, toolUseId, { before, limit } = {}) {
+      return new Promise((resolve, reject) => {
+        state.eventWaiters.push({ type: 'agentEvents', sessionId: id, toolUseId, resolve, reject });
+        if (!conn.send({ t: 'agentEvents', sessionId: id, toolUseId, before, limit })) reject(new Error('offline'));
+      });
     },
     onEvents(cb) {
       state.eventsListeners.add(cb);
@@ -581,11 +608,19 @@ function showTakeoverSheet(info) {
   ];
   const dl = el('dl', { class: 'facts' }, rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]));
   const confirm = el('button', { type: 'button', class: 'danger', text: 'Stop it and resume here' });
+  const note = el('p', { class: 'muted', text: 'The running process gets SIGTERM, then the session resumes under the service with the same id. Unsent input in its terminal is lost.' });
+  let force = false;
   confirm.addEventListener('click', async () => {
     confirm.disabled = true;
-    const ack = await request({ t: 'takeover', id: newId('t'), token: info.token });
+    const ack = await request({ t: 'takeover', id: newId('t'), token: info.token, ...(force ? { force: true } : {}) });
     if (!ack.ok) {
       confirm.disabled = false;
+      if (ack.error === 'still-running' && !force) {
+        force = true;
+        note.textContent = 'The process ignored the stop request. Force it with SIGKILL? Anything it has not saved is lost. The process is checked again before the kill.';
+        confirm.textContent = 'Force stop (SIGKILL) and resume';
+        return undefined;
+      }
       return toast(errorText(ack.error));
     }
     closeSheet();
@@ -593,7 +628,7 @@ function showTakeoverSheet(info) {
     openSession(ack.name || info.name);
     return undefined;
   });
-  const body = el('div', { class: 'stack' }, [el('p', { class: 'muted', text: 'The running process gets SIGTERM, then the session resumes under the service with the same id. Unsent input in its terminal is lost.' }), dl, confirm]);
+  const body = el('div', { class: 'stack' }, [note, dl, confirm]);
   openSheet('Take over this session?', body);
 }
 
@@ -678,10 +713,15 @@ function init() {
   $('fit-toggle').addEventListener('click', () => {
     const s = currentItem();
     if (!s || !s.managed) return;
-    state.claim = !state.claim;
-    if (state.claim) claimSize();
-    else conn.send({ t: 'releaseSize', sessionId: s.name });
-    renderSize();
+    if (state.claim) {
+      state.fitOptOut = true;
+      releaseClaim(false);
+    } else {
+      state.fitOptOut = false;
+      state.claim = true;
+      claimSize();
+      renderSize();
+    }
   });
   $('scroll-lock').addEventListener('click', (e) => {
     const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
@@ -694,7 +734,15 @@ function init() {
   });
   window.addEventListener('online', () => conn.connect());
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') conn.connect();
+    if (document.visibilityState === 'hidden') return releaseClaim(true);
+    conn.connect();
+    if (state.reclaim && state.current && state.tab === 'terminal' && conn.authed) {
+      state.reclaim = false;
+      state.claim = true;
+      claimSize();
+      renderSize();
+    }
+    return undefined;
   });
   let resizeTimer = null;
   window.addEventListener('resize', () => {

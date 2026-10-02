@@ -52,6 +52,15 @@ test('app code renders text only and never registers a service worker', () => {
   assert.match(term, /noopener/);
 });
 
+test('phone fit, background release, subagent requests and forced takeover are wired', () => {
+  const app = read('app.js');
+  assert.match(app, /isTouch\(\) \|\| window\.innerWidth < 700/, 'auto-fit on touch or narrow screens');
+  assert.match(app, /visibilityState === 'hidden'\) return releaseClaim\(true\)/, 'claim released in background');
+  assert.match(app, /t: 'agentEvents', sessionId: id, toolUseId/, 'subagent events requested over the socket');
+  assert.match(app, /ack\.error === 'still-running' && !force/, 'SIGKILL only offered after an ignored SIGTERM');
+  assert.match(app, /\.\.\.\(force \? \{ force: true \} : \{\}\)/, 'force flag only on the second confirmation');
+});
+
 test('every key in the key bar is on the server allowlist', () => {
   const { KEYS } = require('../tmux');
   const keys = [...read('index.html').matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);
