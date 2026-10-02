@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { checkRequest, createAuth, TOKEN_RE, MAX_PENDING, MAX_FAILED_APPROVALS } = require('../auth');
+const { checkRequest, createAuth, limits, TOKEN_RE, MAX_PENDING, MAX_FAILED_APPROVALS } = require('../auth');
 
 const HOST = 'hub.example.test';
 const LOGIN = 'owner@example.test';
@@ -210,10 +210,11 @@ async function withAdminServer(fn) {
   const server = http.createServer();
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   c.port = server.address().port;
-  const a = createAuth(c, { admin: true });
+  const logs = [];
+  const a = createAuth(c, { admin: true, log: (l) => logs.push(l) });
   server.on('request', (q, s) => a.handleAdmin(q, s));
   try {
-    await fn({ a, c, port: c.port, token: () => fs.readFileSync(path.join(c.stateDir, 'admin.token'), 'utf8').trim() });
+    await fn({ a, c, logs, port: c.port, token: () => fs.readFileSync(path.join(c.stateDir, 'admin.token'), 'utf8').trim() });
   } finally {
     a.close();
     await new Promise((r) => server.close(r));
@@ -231,12 +232,12 @@ test('admin token file is 0600, rotates after each use and is removed on close',
     assert.strictEqual(r1.headers['cache-control'], 'no-store');
     assert.notStrictEqual(token(), t1);
     const r2 = await adminRequest(a, port, { url: '/admin/status', headers: { host, authorization: `Bearer ${t1}` } });
-    assert.deepStrictEqual([r2.status, r2.body.error], [403, 'bad-admin-token']);
+    assert.deepStrictEqual([r2.status, r2.body], [403, { error: 'forbidden' }]);
   });
 });
 
-test('admin routes refuse forwarded, browser and foreign-host requests even with the token', async () => {
-  await withAdminServer(async ({ a, port, token }) => {
+test('admin routes refuse forwarded, browser and foreign-host requests with a generic error and log the reason', async () => {
+  await withAdminServer(async ({ a, port, token, logs }) => {
     const host = `127.0.0.1:${port}`;
     const cases = [
       [{ host, 'tailscale-user-login': LOGIN }, 'forwarded'],
@@ -247,7 +248,8 @@ test('admin routes refuse forwarded, browser and foreign-host requests even with
     ];
     for (const [headers, reason] of cases) {
       const r = await adminRequest(a, port, { url: '/admin/devices', headers: { authorization: `Bearer ${token()}`, ...headers } });
-      assert.deepStrictEqual([r.status, r.body.error], [403, reason]);
+      assert.deepStrictEqual([r.status, r.body], [403, { error: 'forbidden' }]);
+      assert.ok(logs.pop().endsWith(`reason=${reason}`), reason);
     }
     assert.strictEqual(a.checkAdmin({ headers: { host }, socket: { remoteAddress: '100.64.0.1' } }).reason, 'not-loopback');
   });
@@ -349,4 +351,50 @@ test('serveEntry reads the proxy target and funnel state of the configured port 
   assert.deepStrictEqual(cli.serveEntry(serve, c), { proxy: 'http://127.0.0.1:39181', http: true, funnel: false });
   assert.strictEqual(cli.serveEntry({ ...serve, AllowFunnel: { [`${HOST}:443`]: true } }, c).funnel, true);
   assert.deepStrictEqual(cli.serveEntry({}, c), { proxy: null, http: false, funnel: false });
+});
+
+test('a token idle longer than tokenIdleDays is rejected and its device removed with an audit line', async () => {
+  let now = Date.UTC(2030, 0, 1);
+  const c = tmpConfig({ tokenIdleDays: 2 });
+  const a = createAuth(c, { now: () => now });
+  const revoked = [];
+  a.on('revoked', (id) => revoked.push(id));
+  const { code, waitToken } = a.createPairing('x');
+  const device = a.approvePairing(code);
+  const token = await a.awaitPairing(waitToken);
+  now += 1.5 * 86400000;
+  assert.ok(a.verifyToken(token), 'use within the idle window keeps it alive');
+  now += 1.9 * 86400000;
+  assert.ok(a.verifyToken(token), 'idle time counts from the last use');
+  now += 2 * 86400000 + 1;
+  assert.strictEqual(a.verifyToken(token), null);
+  assert.deepStrictEqual(a.listDevices(), []);
+  assert.deepStrictEqual(revoked, [device.id]);
+  assert.deepStrictEqual(createAuth(c, { now: () => now }).listDevices(), []);
+  const audit = fs.readFileSync(path.join(c.stateDir, 'audit.log'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepStrictEqual(audit.at(-1), { ts: new Date(now).toISOString(), action: 'expire', device: device.id, idleDays: 2 });
+});
+
+test('idle devices are dropped from listings and the default idle limit is 30 days', () => {
+  let now = Date.UTC(2030, 0, 1);
+  const a = createAuth(tmpConfig(), { now: () => now });
+  a.approvePairing(a.createPairing('x').code);
+  now += 29 * 86400000;
+  assert.strictEqual(a.listDevices().length, 1);
+  now += 1 * 86400000 + 1;
+  assert.strictEqual(a.listDevices().length, 0);
+});
+
+test('limits for unauthenticated sockets are exposed for the server', () => {
+  assert.deepStrictEqual(limits, { maxUnauthed: 8, helloTimeoutMs: 30000 });
+  assert.strictEqual(createAuth(tmpConfig()).limits, limits);
+});
+
+test('cli devices shows age and idle time', async () => {
+  await withAdminServer(async ({ a, c }) => {
+    a.approvePairing(a.createPairing('Phone').code);
+    const io = capture();
+    assert.strictEqual(await cli.main(['devices'], { config: c, ...io }), 0);
+    assert.match(io.lines[0], /^dev-[0-9a-f]{12}  Phone  age \d+[smhd]  idle \d+[smhd]  expires in \d+d$/);
+  });
 });

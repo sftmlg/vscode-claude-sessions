@@ -18,6 +18,9 @@ const LAST_SEEN_PERSIST_MS = 60 * 1000;
 const ADMIN_BODY_LIMIT = 4096;
 const NAME_MAX = 64;
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const DAY_MS = 86400000;
+const DEFAULT_IDLE_DAYS = 30;
+const limits = Object.freeze({ maxUnauthed: 8, helloTimeoutMs: 30000 });
 
 class AuthError extends Error {
   constructor(code) {
@@ -50,6 +53,11 @@ function cleanName(name) {
   const s = typeof name === 'string' ? name : '';
   const cleaned = s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '').trim().slice(0, NAME_MAX);
   return cleaned || 'device';
+}
+
+function idleDays(config) {
+  const n = Number(config && config.tokenIdleDays);
+  return n > 0 ? n : DEFAULT_IDLE_DAYS;
 }
 
 function publicDevice(d) {
@@ -103,6 +111,7 @@ class Auth extends EventEmitter {
     this.devicesFile = path.join(this.stateDir, 'devices.json');
     this.auditFile = path.join(this.stateDir, 'audit.log');
     this.adminFile = path.join(this.stateDir, 'admin.token');
+    this.limits = limits;
     this.log = typeof opts.log === 'function' ? opts.log : () => {};
     this.now = typeof opts.now === 'function' ? opts.now : Date.now;
     this.pending = new Map();
@@ -251,8 +260,23 @@ class Auth extends EventEmitter {
     });
   }
 
+  _expireIdle() {
+    const days = idleDays(this.config);
+    const cutoff = this.now() - days * DAY_MS;
+    const expired = this.devices.filter((d) => !(Date.parse(d.lastSeen) >= cutoff));
+    if (!expired.length) return;
+    this.devices = this.devices.filter((d) => !expired.includes(d));
+    this._persist();
+    for (const d of expired) {
+      this._audit('expire', { device: d.id, idleDays: days });
+      this.log(`auth device-expired device=${d.id}`);
+      this.emit('revoked', d.id);
+    }
+  }
+
   verifyToken(token) {
     if (typeof token !== 'string' || !TOKEN_RE.test(token)) return null;
+    this._expireIdle();
     const hash = sha256(token);
     let match = null;
     for (const d of this.devices) {
@@ -265,6 +289,7 @@ class Auth extends EventEmitter {
   }
 
   listDevices() {
+    this._expireIdle();
     return this.devices.map(publicDevice);
   }
 
@@ -311,7 +336,7 @@ class Auth extends EventEmitter {
     const check = this.checkAdmin(req);
     if (!check.ok) {
       this.log(`auth admin-denied reason=${check.reason}`);
-      return send(403, { error: check.reason });
+      return send(403, { error: 'forbidden' });
     }
     const route = `${req.method} ${String(req.url).split('?')[0]}`;
     if (route === 'GET /admin/status') {
@@ -364,6 +389,8 @@ function createAuth(config, opts) {
 module.exports = {
   checkRequest,
   createAuth,
+  idleDays,
+  limits,
   Auth,
   AuthError,
   expandHome,

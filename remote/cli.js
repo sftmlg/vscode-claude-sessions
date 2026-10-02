@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { execFile } = require('child_process');
-const { createAuth, expandHome, DEVICE_ID_RE } = require('./auth');
+const { createAuth, expandHome, idleDays, DEVICE_ID_RE } = require('./auth');
 
 const TAILSCALE_APP = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
 
@@ -64,9 +64,9 @@ async function admin(config, method, url, body) {
     const headers = { host: `127.0.0.1:${config.port}`, authorization: `Bearer ${token}` };
     if (body !== undefined) headers['content-type'] = 'application/json';
     const r = await request(config, { method, url, headers, body });
-    if (!(r.status === 403 && r.body && r.body.error === 'bad-admin-token')) return r;
+    if (r.status !== 403) return r;
   }
-  return { status: 403, body: { error: 'bad-admin-token' } };
+  return { status: 403, body: { error: 'forbidden' } };
 }
 
 async function serviceDown(config, e) {
@@ -121,9 +121,23 @@ async function status(config) {
   return { ok: Object.values(checks).every((c) => c.ok), checks };
 }
 
-function formatDevices(items) {
+function span(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+function formatDevices(items, config, now = Date.now()) {
   if (!items.length) return 'No paired devices.';
-  return items.map((d) => `${d.id}  ${d.name}  created ${d.createdAt}  last seen ${d.lastSeen}`).join('\n');
+  const limitMs = idleDays(config) * 86400000;
+  return items
+    .map((d) => {
+      const idle = now - Date.parse(d.lastSeen);
+      return `${d.id}  ${d.name}  age ${span(now - Date.parse(d.createdAt))}  idle ${span(idle)}  expires in ${Math.ceil(Math.max(0, limitMs - idle) / 86400000)}d`;
+    })
+    .join('\n');
 }
 
 async function main(argv, { config, out = console.log, err = console.error } = {}) {
@@ -166,7 +180,7 @@ async function main(argv, { config, out = console.log, err = console.error } = {
       if (!(await serviceDown(config, e))) throw e;
       items = createAuth(config).listDevices();
     }
-    out(json ? JSON.stringify(items, null, 2) : formatDevices(items));
+    out(json ? JSON.stringify(items, null, 2) : formatDevices(items, config));
     return 0;
   }
 
