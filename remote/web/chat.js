@@ -363,7 +363,7 @@
     rootEl.appendChild(footer);
     target.appendChild(rootEl);
 
-    const state = { sessionId: null, from: null, to: null, size: null, unknown: 0, loading: false, atStart: false, meta: {}, generation: 0 };
+    const state = { sessionId: null, from: null, to: null, size: null, unknown: 0, loading: false, atStart: false, meta: {}, generation: 0, pendingLive: [] };
     let firstAssistant = null;
     let lastAssistant = null;
 
@@ -483,6 +483,9 @@
           state.from = res.from;
           state.to = res.to;
           append(items);
+          const queued = state.pendingLive;
+          state.pendingLive = [];
+          for (const msg of queued) onLive(msg);
           scrollToBottom();
         } else {
           state.from = res.from;
@@ -519,6 +522,7 @@
       state.unknown = 0;
       state.atStart = false;
       state.meta = {};
+      state.pendingLive = [];
       renderer = createRenderer(doc, api, { onMeta: meta, expandAgent });
       updateTop();
       updateFooter();
@@ -542,10 +546,15 @@
       if (!msg || msg.sessionId !== state.sessionId) return;
       const items = msg.items || msg.events || [];
       if (!items.length) return;
-      if (state.from === null && state.loading) return;
-      append(items);
-      if (typeof msg.to === 'number') state.to = msg.to;
-      state.unknown += items.filter((e) => e.kind === 'raw' && !e.truncated).length;
+      if (state.from === null && state.loading) {
+        state.pendingLive.push(msg);
+        return;
+      }
+      const fresh = typeof state.to === 'number' ? items.filter((e) => typeof e.offset !== 'number' || e.offset >= state.to) : items;
+      if (typeof msg.to === 'number' && !(msg.to < state.to)) state.to = msg.to;
+      if (!fresh.length) return;
+      append(fresh);
+      state.unknown += fresh.filter((e) => e.kind === 'raw' && !e.truncated).length;
       updateFooter();
     };
 

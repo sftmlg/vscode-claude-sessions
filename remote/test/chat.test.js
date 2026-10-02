@@ -350,3 +350,25 @@ test('an Agent call offers to expand its subagent events when the api supports i
   await mountChat(root2, plain).open('s1');
   assert.strictEqual(root2.one('chat-subagent-toggle'), null, 'no button without api support');
 });
+
+test('live events during the first load are kept, events already in the page are not repeated', async () => {
+  const prompt = fixture.find((e) => e.kind === 'prompt');
+  let release;
+  const api = fakeApi([]);
+  api.requestEvents = () => new Promise((r) => (release = r));
+  const root = host();
+  const chat = mountChat(root, api);
+  const opened = chat.open('s1');
+  await tick();
+  api.emitLive({ sessionId: 's1', items: [{ ...prompt, uuid: 'early', text: 'arrived while loading', offset: 150 }], from: 120, to: 200 });
+  api.emitLive({ sessionId: 's1', items: [{ ...prompt, uuid: 'dup', text: 'already in the page', offset: 40 }], from: 40, to: 100 });
+  release(page([{ ...prompt, offset: 0 }, { ...prompt, uuid: 'p2', text: 'already in the page', offset: 40 }], 0, 120));
+  await opened;
+  const texts = root.all('chat-prompt').map((n) => n.textContent);
+  assert.strictEqual(texts.filter((t) => t.includes('already in the page')).length, 1);
+  assert.ok(texts.some((t) => t.includes('arrived while loading')));
+  assert.strictEqual(chat.state.to, 200);
+  api.emitLive({ sessionId: 's1', items: [{ ...prompt, uuid: 'old', text: 'replayed old line', offset: 150 }], from: 150, to: 200 });
+  assert.ok(!root.all('chat-prompt').some((n) => n.textContent.includes('replayed old line')));
+  chat.destroy();
+});
