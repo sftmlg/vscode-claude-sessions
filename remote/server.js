@@ -27,6 +27,11 @@ const MAX_EVENTS = 500;
 const TOOL_USE_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RATE_PER_SEC = 10;
 const HEARTBEAT_MS = 30000;
+const HELLO_TIMEOUT_MS = 30000;
+const MAX_UNAUTHENTICATED = 8;
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+const LOG_KEEP = 3;
+const LOG_FILES = ['server.out.log', 'server.err.log'];
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -75,6 +80,27 @@ function auditWriter(stateDir) {
       }
     } catch {}
   };
+}
+
+function rotateLogs(dir, names = LOG_FILES, { maxBytes = LOG_MAX_BYTES, keep = LOG_KEEP } = {}) {
+  for (const name of names) {
+    const file = path.join(dir, name);
+    let size;
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      continue;
+    }
+    if (size <= maxBytes) continue;
+    for (let i = keep - 1; i >= 1; i--) {
+      try {
+        fs.renameSync(`${file}.${i}`, `${file}.${i + 1}`);
+      } catch {}
+    }
+    fs.copyFileSync(file, `${file}.1`);
+    fs.chmodSync(`${file}.1`, 0o600);
+    fs.truncateSync(file, 0);
+  }
 }
 
 const clientItem = ({ transcriptPath, ...rest }) => ({ ...rest, hasTranscript: Boolean(transcriptPath) });
@@ -134,6 +160,10 @@ async function start(config, deps = {}) {
       log(`ws denied reason=${check.reason}`);
       return deny(403, 'Forbidden');
     }
+    if ([...conns].filter((c) => !c.device).length >= MAX_UNAUTHENTICATED) {
+      log('ws denied reason=too-many-unauthenticated');
+      return deny(503, 'Service Unavailable');
+    }
     wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));
   });
 
@@ -179,6 +209,10 @@ async function start(config, deps = {}) {
     const conn = { id: crypto.randomBytes(6).toString('hex'), ws, device: null, subs: new Map(), tails: new Map(), alive: true, pairing: false };
     conns.add(conn);
     log(`ws open conn=${conn.id}`);
+    const helloTimer = setTimeout(() => {
+      if (!conn.device && !conn.pairing) ws.close(4008, 'hello timeout');
+    }, deps.helloTimeoutMs || HELLO_TIMEOUT_MS);
+    helloTimer.unref();
     const send = (msg) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
     const viewer = { id: conn.id, sendJson: send, sendBinary: (b) => ws.readyState === WebSocket.OPEN && ws.send(b, { binary: true }), bufferedAmount: () => ws.bufferedAmount };
     ws.on('pong', () => (conn.alive = true));
@@ -201,6 +235,7 @@ async function start(config, deps = {}) {
     });
     ws.on('close', () => {
       conns.delete(conn);
+      clearTimeout(helloTimer);
       for (const m of conn.subs.values()) m.removeViewer(conn.id);
       conn.subs.clear();
       conn.closed = true;
@@ -322,7 +357,7 @@ async function start(config, deps = {}) {
       case 'new':
       case 'takeover': {
         if (!Queue.validId(msg.id)) return send({ t: 'error', code: 'bad-request', msg: 'id must match [A-Za-z0-9_-]{1,64}' });
-        const ack = await queue.run(msg.id, () => mutate(conn, msg));
+        const ack = await queue.run(`${conn.device.id}:${msg.id}`, () => mutate(conn, msg));
         if (ack.error === 'busy-dialog') send({ t: 'error', code: 'busy-dialog', msg: 'Claude is showing a dialog; send one line or use the keys', sessionId: msg.sessionId });
         return send({ t: 'ack', id: msg.id, ok: ack.ok, ...(ack.error ? { error: ack.error } : {}), ...(ack.name ? { name: ack.name } : {}) });
       }
@@ -427,6 +462,10 @@ async function start(config, deps = {}) {
     }
   }
 
+  rotateLogs(config.stateDir);
+  const rotation = setInterval(() => rotateLogs(config.stateDir), 3600000);
+  rotation.unref();
+
   const heartbeat = setInterval(() => {
     for (const c of conns) {
       if (!c.alive) {
@@ -456,6 +495,7 @@ async function start(config, deps = {}) {
     stats: () => ({ tails: liveTails.size, mirrors: mirrors.size, connections: conns.size }),
     async close() {
       clearInterval(heartbeat);
+      clearInterval(rotation);
       registry.stop();
       for (const c of conns) c.ws.terminate();
       for (const m of mirrors.values()) m.close();
@@ -482,4 +522,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { start, csp, staticPath };
+module.exports = { start, csp, staticPath, rotateLogs };

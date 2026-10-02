@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const KEY_RE = /^(?:[A-Za-z0-9_-]{1,64}:)?[A-Za-z0-9_-]{1,64}$/;
 
 class Queue {
   constructor(file, { max = 2000 } = {}) {
@@ -17,7 +18,7 @@ class Queue {
     if (!this.file) return;
     try {
       const items = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      if (Array.isArray(items)) for (const [id, ack] of items.slice(-this.max)) if (ID_RE.test(id)) this.done.set(id, ack);
+      if (Array.isArray(items)) for (const [id, ack] of items.slice(-this.max)) if (KEY_RE.test(id)) this.done.set(id, ack);
     } catch {}
   }
 

@@ -11,7 +11,7 @@ const home = tempHome('remote-server-');
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
 const WebSocket = require('ws');
-const { start, csp, staticPath } = require('../server');
+const { start, csp, staticPath, rotateLogs } = require('../server');
 const { Registry } = require('../registry');
 const { createAuth } = require('../auth');
 const { parseFrame } = require('../mirror');
@@ -58,6 +58,23 @@ function client(port) {
   });
 }
 
+test('log rotation copies a large log aside, truncates it in place and keeps three', () => {
+  const dir = tempHome('remote-logs-');
+  const file = path.join(dir, 'server.out.log');
+  for (let round = 1; round <= 4; round++) {
+    fs.writeFileSync(file, `round ${round} `.repeat(200));
+    rotateLogs(dir, ['server.out.log', 'missing.log'], { maxBytes: 1000, keep: 3 });
+    assert.strictEqual(fs.statSync(file).size, 0);
+  }
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['server.out.log', 'server.out.log.1', 'server.out.log.2', 'server.out.log.3']);
+  assert.match(fs.readFileSync(`${file}.1`, 'utf8'), /^round 4/);
+  assert.match(fs.readFileSync(`${file}.3`, 'utf8'), /^round 2/);
+  assert.strictEqual(fs.statSync(`${file}.1`).mode & 0o077, 0);
+  fs.writeFileSync(file, 'small');
+  rotateLogs(dir, ['server.out.log'], { maxBytes: 1000, keep: 3 });
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), 'small');
+});
+
 test('static paths stay inside web/ and only serve known types', () => {
   assert.ok(staticPath('/').endsWith(path.join('web', 'index.html')));
   assert.ok(staticPath('/vendor/xterm.mjs?x=1').endsWith(path.join('web', 'vendor', 'xterm.mjs')));
@@ -73,7 +90,7 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
   const auth = createAuth(config, { log: () => {} });
   const logs = [];
   const registry = new Registry(config, { ctx, pollMs: 150 });
-  const hub = await start(config, { auth, registry, log: (m) => logs.push(m) });
+  const hub = await start(config, { auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400 });
   t.after(async () => {
     await hub.close();
     killServer(ctx);
@@ -154,6 +171,42 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await waitFor(() => capture(ctx, 'cc-int').includes('got:burst-4'), { what: 'last burst line' });
     const got = capture(ctx, 'cc-int').split('\n').filter((l) => /^got:(burst|y$)/.test(l));
     assert.deepStrictEqual(got, ['got:burst-0', 'got:burst-1', 'got:burst-2', 'got:burst-3', 'got:y', 'got:burst-4']);
+  });
+
+  await t.test('a second device: same message id is its own message, bursts from two sockets never interleave', async () => {
+    const d = await client(port);
+    t.after(() => d.ws.close());
+    d.send({ t: 'pair', deviceName: 'second device' });
+    const code = await d.wait((m) => m.t === 'pairCode', 'pairCode 2');
+    auth.approvePairing(code.code);
+    await d.wait((m) => m.t === 'helloOk', 'helloOk 2');
+    await new Promise((r) => setTimeout(r, 1100));
+    for (let i = 0; i < 4; i++) {
+      c.send({ t: 'send', id: `x-${i}`, sessionId: 'cc-int', text: `from-a-${i}` });
+      d.send({ t: 'send', id: `x-${i}`, sessionId: 'cc-int', text: `from-b-${i}` });
+    }
+    d.send({ t: 'send', id: 'm-1', sessionId: 'cc-int', text: 'reused id from b' });
+    await waitFor(() => c.json.filter((m) => m.t === 'ack' && /^x-/.test(m.id) && m.ok).length === 4 && d.json.filter((m) => m.t === 'ack' && (/^x-/.test(m.id) || m.id === 'm-1') && m.ok).length === 5, { what: 'acks from both devices', timeout: 8000 });
+    await waitFor(() => capture(ctx, 'cc-int').includes('got:reused id from b'), { what: 'reused id delivered' });
+    const lines = capture(ctx, 'cc-int').split('\n').filter((l) => /^got:from-/.test(l));
+    assert.strictEqual(lines.length, 8);
+    for (const l of lines) assert.match(l, /^got:from-[ab]-[0-3]$/);
+    for (const who of ['a', 'b']) assert.deepStrictEqual(lines.filter((l) => l.includes(`from-${who}-`)), [0, 1, 2, 3].map((i) => `got:from-${who}-${i}`));
+  });
+
+  await t.test('unauthenticated sockets: closed after the hello timeout, at most 8 at once', async () => {
+    const idle = await client(port);
+    const code = await new Promise((r) => idle.ws.once('close', (c) => r(c)));
+    assert.strictEqual(code, 4008);
+    const open = [];
+    for (let i = 0; i < 8; i++) {
+      const x = await client(port);
+      x.send({ t: 'ping', ts: i });
+      open.push(x);
+    }
+    await assert.rejects(client(port), /503/);
+    for (const x of open) x.ws.terminate();
+    await new Promise((r) => setTimeout(r, 100));
   });
 
   await t.test('keys: allowlist enforced', async () => {

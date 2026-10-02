@@ -49,3 +49,12 @@ test('persisted LRU survives a restart, keeps only the newest ids, file mode 060
   assert.strictEqual(Queue.validId('bad id'), false);
   assert.strictEqual(Queue.validId('x'.repeat(65)), false);
 });
+
+test('device-namespaced keys persist and stay separate per device', async () => {
+  const file = path.join(tempHome(), 'queue.json');
+  const q = new Queue(file);
+  await q.run('dev-aaaaaaaaaaaa:m-1', async () => ({ ok: true }));
+  const again = new Queue(file);
+  assert.strictEqual(again.seen('dev-aaaaaaaaaaaa:m-1'), true);
+  assert.strictEqual(again.seen('dev-bbbbbbbbbbbb:m-1'), false);
+});
