@@ -165,6 +165,7 @@ class Mirror extends EventEmitter {
     rows = Math.floor(Number(rows));
     if (!(cols >= MIN_COLS && cols <= MAX_COLS && rows >= MIN_ROWS && rows <= MAX_ROWS)) throw new Error('size out of range');
     const previous = this.claimState ? this.claimState.previous : await this.windowSize();
+    if (this.closed || !this.viewers.has(viewerId)) throw new Error('not subscribed');
     this.claimState = { viewerId, label, cols, rows, previous, lastSeen: Date.now() };
     if (!this.sizer || this.sizer.closed) {
       this.sizer = new this.ControlClientClass(this.ctx, this.name).start();

@@ -90,6 +90,17 @@ test('mirror integration on a throwaway socket', async (t) => {
     await assert.rejects(m.claim('nobody', 'x', 50, 10), /not subscribed/);
   });
 
+  await t.test('a claim from a viewer that left while it was pending is dropped', async () => {
+    const gone = viewer('gone');
+    await m.addViewer(gone);
+    const pending = m.claim('gone', 'leaver', 70, 11);
+    m.removeViewer('gone');
+    await assert.rejects(pending, /not subscribed/);
+    assert.strictEqual(m.claimState, null);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.strictEqual(windowSize(ctx, 'cc-m'), '80x12');
+  });
+
   await t.test('a claim without heartbeat expires', async () => {
     await m.claim('a', 'phone', 60, 10);
     await waitFor(() => windowSize(ctx, 'cc-m') === '60x10', { what: 'claimed size' });
