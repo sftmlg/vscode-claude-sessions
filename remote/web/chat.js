@@ -524,10 +524,13 @@
       updateFooter();
     };
 
-    const open = (sessionId) => {
+    const open = async (sessionId) => {
       clear();
       state.sessionId = sessionId;
-      return load(null);
+      const generation = state.generation;
+      let res = await load(null);
+      for (let page = 0; res && page < 6 && state.from > 0 && list.childElementCount < 12 && generation === state.generation; page++) res = await load(state.from);
+      return res;
     };
 
     const close = () => {
