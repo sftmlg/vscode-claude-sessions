@@ -61,6 +61,42 @@ test('phone fit, background release, subagent requests and forced takeover are w
   assert.match(app, /\.\.\.\(force \? \{ force: true \} : \{\}\)/, 'force flag only on the second confirmation');
 });
 
+test('outbox sender: one message in flight, next only after its ack, a rate-limited retry stays first', async () => {
+  const { Outbox, OutboxSender } = await import(path.join(WEB, 'input.js'));
+  const data = new Map();
+  const box = new Outbox({ getItem: (k) => data.get(k) ?? null, setItem: (k, v) => data.set(k, v), removeItem: (k) => data.delete(k) });
+  const sent = [];
+  const timers = [];
+  let ready = true;
+  const sender = new OutboxSender({ outbox: box, send: (m) => (sent.push(m.text), true), isReady: () => ready, retryMs: 1000, setTimer: (fn) => timers.push(fn) });
+  const a = box.add('cc-a', 'one');
+  const b = box.add('cc-a', 'two');
+  sender.pump();
+  sender.pump();
+  assert.deepStrictEqual(sent, ['one']);
+  assert.deepStrictEqual(sender.onAck({ id: a.id, ok: false, error: 'rate-limited' }), { handled: true });
+  box.add('cc-a', 'three');
+  sender.pump();
+  assert.deepStrictEqual(sent, ['one'], 'nothing overtakes the rate-limited head');
+  timers.shift()();
+  assert.deepStrictEqual(sent, ['one', 'one']);
+  sender.onAck({ id: a.id, ok: true });
+  assert.deepStrictEqual(sent, ['one', 'one', 'two']);
+  const r = sender.onAck({ id: b.id, ok: false, error: 'busy-dialog' });
+  assert.strictEqual(r.item.text, 'two');
+  assert.strictEqual(r.error, 'busy-dialog');
+  assert.deepStrictEqual(sent, ['one', 'one', 'two', 'three']);
+  ready = false;
+  sender.reset();
+  sender.pump();
+  assert.strictEqual(sent.length, 4, 'offline: nothing sent');
+  ready = true;
+  sender.reset();
+  sender.pump();
+  assert.deepStrictEqual(sent.slice(4), ['three'], 'reconnect resends the unacked head once');
+  assert.deepStrictEqual(sender.onAck({ id: 'unknown', ok: true }), { handled: false });
+});
+
 test('every key in the key bar is on the server allowlist', () => {
   const { KEYS } = require('../tmux');
   const keys = [...read('index.html').matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);

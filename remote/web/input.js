@@ -68,6 +68,43 @@ export class Outbox {
   }
 }
 
+export class OutboxSender {
+  constructor({ outbox, send, isReady, retryMs = 1000, setTimer = (fn, ms) => setTimeout(fn, ms) }) {
+    Object.assign(this, { outbox, send, isReady, retryMs, setTimer });
+    this.inflight = null;
+    this.waiting = false;
+  }
+
+  reset() {
+    this.inflight = null;
+    this.waiting = false;
+  }
+
+  pump() {
+    if (this.inflight || this.waiting || !this.isReady()) return;
+    const next = this.outbox.pending()[0];
+    if (!next) return;
+    if (this.send({ t: 'send', id: next.id, sessionId: next.sessionId, text: next.text })) this.inflight = next.id;
+  }
+
+  onAck(m) {
+    const item = this.outbox.pending().find((i) => i.id === m.id);
+    if (!item) return { handled: false };
+    if (this.inflight === m.id) this.inflight = null;
+    if (!m.ok && m.error === 'rate-limited') {
+      this.waiting = true;
+      this.setTimer(() => {
+        this.waiting = false;
+        this.pump();
+      }, this.retryMs);
+      return { handled: true };
+    }
+    this.outbox.remove(m.id);
+    this.pump();
+    return m.ok ? { handled: true } : { handled: true, item, error: m.error };
+  }
+}
+
 export function setupInput({ form, textarea, badge, keybar, outbox, isTouch, onSubmit, onKey }) {
   const grow = () => {
     textarea.style.height = 'auto';

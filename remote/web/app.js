@@ -1,5 +1,5 @@
 import { createTerm } from './term.js';
-import { Outbox, setupInput, newId } from './input.js';
+import { Outbox, OutboxSender, setupInput, newId } from './input.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const BACKOFF = [500, 1000, 2000, 4000, 8000, 10000];
@@ -129,6 +129,7 @@ const conn = {
       this.open = false;
       this.authed = false;
       clearInterval(this.ping);
+      sender.reset();
       if (e.code === 4001) {
         setToken(null);
         toast('This device was revoked.');
@@ -166,6 +167,7 @@ function setConn(kind) {
 }
 
 const outbox = new Outbox();
+const sender = new OutboxSender({ outbox, send: (m) => conn.send(m), isReady: () => conn.authed, retryMs: RETRY_MS });
 let term = null;
 let input = null;
 
@@ -453,26 +455,19 @@ function onAck(m) {
     waiter(m);
     return;
   }
-  const item = outbox.pending().find((i) => i.id === m.id);
-  if (!item) {
+  const r = sender.onAck(m);
+  if (!r.handled) {
     if (!m.ok) toast(errorText(m.error));
     return;
   }
-  if (m.ok) {
-    outbox.remove(m.id);
-    return;
-  }
-  if (m.error === 'rate-limited') {
-    setTimeout(() => conn.send({ t: 'send', id: item.id, sessionId: item.sessionId, text: item.text }), RETRY_MS);
-    return;
-  }
-  outbox.remove(m.id);
-  if (m.error !== 'busy-dialog') toast(errorText(m.error));
-  if (PERMANENT_LOCAL.has(m.error) && input) input.restore(item.text);
+  if (!r.item) return;
+  if (r.error !== 'busy-dialog') toast(errorText(r.error));
+  if (PERMANENT_LOCAL.has(r.error) && input) input.restore(r.item.text);
 }
 
 function flushOutbox() {
-  for (const item of outbox.pending()) conn.send({ t: 'send', id: item.id, sessionId: item.sessionId, text: item.text });
+  sender.reset();
+  sender.pump();
 }
 
 function request(msg) {
@@ -493,7 +488,7 @@ function submitText(text) {
     toast('Outbox is full; wait for the connection.');
     return false;
   }
-  if (conn.authed) conn.send({ t: 'send', id: item.id, sessionId: item.sessionId, text: item.text });
+  if (conn.authed) sender.pump();
   else toast('Offline: the message is queued and sent on reconnect.');
   return true;
 }
