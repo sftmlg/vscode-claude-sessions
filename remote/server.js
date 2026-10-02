@@ -364,6 +364,16 @@ async function start(config, deps = {}) {
     }
   }
 
+  const inputChains = new Map();
+  function serialized(name, fn) {
+    const prev = inputChains.get(name) || Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.catch(() => {});
+    inputChains.set(name, tail);
+    tail.then(() => inputChains.get(name) === tail && inputChains.delete(name));
+    return run;
+  }
+
   async function mutate(conn, msg) {
     const device = conn.device;
     try {
@@ -372,7 +382,7 @@ async function start(config, deps = {}) {
         const item = sessionFor(msg.sessionId, { managed: true });
         if (msg.t === 'key') {
           if (!tmux.KEYS.has(msg.key)) return { ok: false, error: 'bad-key' };
-          await tmux.sendKey(ctx, item.name, msg.key);
+          await serialized(item.name, () => tmux.sendKey(ctx, item.name, msg.key));
           audit('key', { device: device.id, session: item.name, key: msg.key });
           return { ok: true };
         }
@@ -381,7 +391,7 @@ async function start(config, deps = {}) {
         if (!text.trim()) return { ok: false, error: 'empty' };
         if (text.length > MAX_TEXT) return { ok: false, error: 'too-long' };
         if (item.status === 'waiting' && text.trim().includes('\n')) return { ok: false, error: 'busy-dialog' };
-        await tmux.paste(ctx, item.name, msg.id, text);
+        await serialized(item.name, () => tmux.paste(ctx, item.name, msg.id, text));
         audit('send', { device: device.id, session: item.name, length: text.length });
         return { ok: true };
       }

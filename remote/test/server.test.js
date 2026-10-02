@@ -144,6 +144,18 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     seqs.forEach((s, i) => i && assert.strictEqual(s, seqs[i - 1] + 1));
   });
 
+  await t.test('a burst of sends and keys reaches the pane in order, one line each', async () => {
+    await new Promise((r) => setTimeout(r, 1100));
+    for (let i = 0; i < 4; i++) c.send({ t: 'send', id: `b-${i}`, sessionId: 'cc-int', text: `burst-${i}` });
+    c.send({ t: 'key', id: 'b-k', sessionId: 'cc-int', key: 'y' });
+    c.send({ t: 'key', id: 'b-e', sessionId: 'cc-int', key: 'Enter' });
+    c.send({ t: 'send', id: 'b-4', sessionId: 'cc-int', text: 'burst-4' });
+    await waitFor(() => ['b-0', 'b-1', 'b-2', 'b-3', 'b-k', 'b-e', 'b-4'].every((id) => c.json.some((m) => m.t === 'ack' && m.id === id && m.ok)), { what: 'burst acks', timeout: 8000 });
+    await waitFor(() => capture(ctx, 'cc-int').includes('got:burst-4'), { what: 'last burst line' });
+    const got = capture(ctx, 'cc-int').split('\n').filter((l) => /^got:(burst|y$)/.test(l));
+    assert.deepStrictEqual(got, ['got:burst-0', 'got:burst-1', 'got:burst-2', 'got:burst-3', 'got:y', 'got:burst-4']);
+  });
+
   await t.test('keys: allowlist enforced', async () => {
     c.send({ t: 'key', id: 'k-1', sessionId: 'cc-int', key: 'y' });
     c.send({ t: 'key', id: 'k-2', sessionId: 'cc-int', key: 'Enter' });
