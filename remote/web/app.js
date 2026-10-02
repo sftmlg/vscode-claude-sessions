@@ -169,6 +169,19 @@ function clientId() {
   return id;
 }
 
+function folderBlockedText(health) {
+  const access = health && health.folderAccess;
+  if (!access || (access.desktop !== 'blocked' && access.documents !== 'blocked')) return '';
+  return `The Mac running the service has not granted file access to node. On that Mac: System Settings › Privacy & Security › Full Disk Access › add ${health.nodePath || 'the node binary'} — sessions touching Desktop/Documents hang until then.`;
+}
+
+function renderHealth(health) {
+  const banner = $('health-banner');
+  const text = folderBlockedText(health);
+  banner.textContent = text;
+  banner.hidden = !text;
+}
+
 function setConn(kind) {
   const c = $('conn');
   c.className = `conn conn-${kind}`;
@@ -388,8 +401,11 @@ function onJson(data) {
     case 'paired':
       setToken(m.token);
       return undefined;
+    case 'health':
+      return renderHealth(m);
     case 'helloOk':
       conn.authed = true;
+      renderHealth(m.health);
       state.device = m.device;
       state.defaultDir = m.defaultDir || '';
       setConn('online');

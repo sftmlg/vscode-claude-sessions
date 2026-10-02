@@ -557,6 +557,15 @@ h3 {
   gap: 6px;
 }
 
+.health-banner {
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #141413;
+  background: var(--warn);
+  word-break: break-word;
+}
+
 .toast {
   position: fixed;
   left: 50%;

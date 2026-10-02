@@ -113,6 +113,15 @@ test('a slow or failing editor bridge never blocks the hello', () => {
   assert.match(app, /if \(conn\.sentToken\) setToken\(null\)/, 'a hello without token never deletes the stored token');
 });
 
+test('a blocked folder access shows a persistent banner naming the node path', () => {
+  const app = read('app.js');
+  assert.match(read('index.html'), /id="health-banner"[^>]*role="alert"[^>]*hidden/);
+  assert.match(app, /case 'health':\s*return renderHealth\(m\);/);
+  assert.match(app, /renderHealth\(m\.health\)/);
+  assert.match(app, /Full Disk Access › add \$\{health\.nodePath/);
+  assert.match(app, /banner\.textContent = text;/);
+});
+
 test('every key in the key bar is on the server allowlist', () => {
   const { KEYS } = require('../tmux');
   const keys = [...read('index.html').matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);
