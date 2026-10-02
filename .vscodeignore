@@ -5,3 +5,9 @@ release.sh
 .gitignore
 bench.js
 e2e/**
+remote/*.js
+remote/*.sh
+remote/launchd/**
+remote/test/**
+remote/measurements/**
+node_modules/ws/**

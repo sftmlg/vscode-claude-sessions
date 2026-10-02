@@ -17,10 +17,10 @@
     "onStartupFinished"
   ],
   "scripts": {
-    "test": "node --test --test-force-exit test/*.test.js",
+    "test": "node --test --test-force-exit test/*.test.js remote/test/*.test.js",
     "list": "node cli.js list",
     "bench": "node bench.js",
-    "verify": "node --check extension.js && node --check sessions.js && node --check cli.js && npm test",
+    "verify": "node --check extension.js && node --check sessions.js && node --check cli.js && for f in remote/*.js; do node --check \"$f\" || exit 1; done && npm test",
     "release": "./release.sh"
   },
   "contributes": {
