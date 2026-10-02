@@ -25,6 +25,7 @@ function sandbox() {
   fs.mkdirSync(path.join(home, 'work'));
   fakeBin(bin, 'tailscale', `echo "tailscale $*" >> "${log}"\nif [ "$1" = status ]; then cat "${STATUS_FIXTURE}"; fi`);
   fakeBin(bin, 'launchctl', `echo "launchctl $*" >> "${log}"`);
+  fakeBin(bin, 'tmux', 'exit 0');
   fakeBin(bin, 'npm', `echo "npm $* cwd=$(pwd -P)" >> "${log}"`);
   const env = { HOME: home, PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin` };
   const install = (...args) => spawnSync('/bin/bash', [INSTALL, ...args], { env, encoding: 'utf8' });
@@ -73,7 +74,7 @@ test('install writes a private merged config and a valid LaunchAgent, and is re-
   const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
   assert.deepStrictEqual(cfg, {
     port: 40001, publicPort: 40000, claudeArgs: ['--keep'], custom: 'x',
-    publicHost: 'hub.example.test', allowedLogin: 'owner@example.test',
+    publicHost: 'hub.example.test', allowedLogin: 'owner@example.test', tmuxPath: path.join(s.bin, 'tmux'),
     roots: [work], defaultDir: work, launcher: ['/opt/x/wrapper', 'exec', 'auto'],
   });
   assert.strictEqual(fs.statSync(cfgFile).mode & 0o777, 0o600);

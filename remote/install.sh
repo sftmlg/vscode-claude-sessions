@@ -69,6 +69,13 @@ if [ -z "$TAILSCALE" ] && [ -x /Applications/Tailscale.app/Contents/MacOS/Tailsc
 fi
 [ -n "$TAILSCALE" ] || { echo "tailscale CLI not found." >&2; exit 1; }
 
+TMUX_BIN="$(command -v tmux || true)"
+for candidate in /opt/homebrew/bin/tmux /usr/local/bin/tmux; do
+  [ -n "$TMUX_BIN" ] || { [ -x "$candidate" ] && TMUX_BIN="$candidate"; } || true
+done
+[ -n "$TMUX_BIN" ] || { echo "tmux not found." >&2; exit 1; }
+TMUX_BIN="$(cd "$(dirname "$TMUX_BIN")" && pwd -P)/$(basename "$TMUX_BIN")"
+
 LAUNCHCTL="$(command -v launchctl || echo /bin/launchctl)"
 GUI="gui/$(id -u)"
 
@@ -108,19 +115,20 @@ MERGED="$(mktemp)"
 trap 'rm -f "$MERGED"' EXIT
 "$NODE" -e '
   const fs = require("fs");
-  const [file, out, host, login, defaultDir, launcherSet, claudeArgsSet, ...rest] = process.argv.slice(1);
+  const [file, out, host, login, tmuxPath, defaultDir, launcherSet, claudeArgsSet, ...rest] = process.argv.slice(1);
   const sep = rest.indexOf("--"), sep2 = rest.indexOf("--", sep + 1);
   const roots = rest.slice(0, sep), launcher = rest.slice(sep + 1, sep2), claudeArgs = rest.slice(sep2 + 1);
   let c = {};
   try { c = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { if (e.code !== "ENOENT") throw e; }
   c.publicHost = host;
   c.allowedLogin = login;
+  c.tmuxPath = tmuxPath;
   if (roots.length) c.roots = roots.map((r) => fs.realpathSync(r));
   if (defaultDir) c.defaultDir = fs.realpathSync(defaultDir);
   if (launcherSet === "1") c.launcher = launcher;
   if (claudeArgsSet === "1") c.claudeArgs = claudeArgs;
   fs.writeFileSync(out, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
-' "$CONFIG_FILE" "$MERGED" "$PUBLIC_HOST" "$ALLOWED_LOGIN" "$DEFAULT_DIR" "$LAUNCHER_SET" "$CLAUDE_ARGS_SET" \
+' "$CONFIG_FILE" "$MERGED" "$PUBLIC_HOST" "$ALLOWED_LOGIN" "$TMUX_BIN" "$DEFAULT_DIR" "$LAUNCHER_SET" "$CLAUDE_ARGS_SET" \
   ${ROOTS[@]+"${ROOTS[@]}"} -- ${LAUNCHER[@]+"${LAUNCHER[@]}"} -- ${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}
 
 if [ "$DRY_RUN" = 1 ]; then
