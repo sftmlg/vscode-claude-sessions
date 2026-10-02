@@ -43,7 +43,7 @@ function csp(config) {
 }
 
 function baseHeaders(config) {
-  return { 'Content-Security-Policy': csp(config), 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cross-Origin-Opener-Policy': 'same-origin' };
+  return { 'Content-Security-Policy': csp(config), 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
 }
 
 function staticPath(url) {
