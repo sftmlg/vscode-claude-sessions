@@ -116,8 +116,8 @@ trap 'rm -f "$MERGED"' EXIT
 "$NODE" -e '
   const fs = require("fs");
   const [file, out, host, login, tmuxPath, defaultDir, launcherSet, claudeArgsSet, ...rest] = process.argv.slice(1);
-  const sep = rest.indexOf("--"), sep2 = rest.indexOf("--", sep + 1);
-  const roots = rest.slice(0, sep), launcher = rest.slice(sep + 1, sep2), claudeArgs = rest.slice(sep2 + 1);
+  const nRoots = Number(rest[0]), nLauncher = Number(rest[1]), items = rest.slice(2);
+  const roots = items.slice(0, nRoots), launcher = items.slice(nRoots, nRoots + nLauncher), claudeArgs = items.slice(nRoots + nLauncher);
   let c = {};
   try { c = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { if (e.code !== "ENOENT") throw e; }
   c.publicHost = host;
@@ -129,7 +129,7 @@ trap 'rm -f "$MERGED"' EXIT
   if (claudeArgsSet === "1") c.claudeArgs = claudeArgs;
   fs.writeFileSync(out, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
 ' "$CONFIG_FILE" "$MERGED" "$PUBLIC_HOST" "$ALLOWED_LOGIN" "$TMUX_BIN" "$DEFAULT_DIR" "$LAUNCHER_SET" "$CLAUDE_ARGS_SET" \
-  ${ROOTS[@]+"${ROOTS[@]}"} -- ${LAUNCHER[@]+"${LAUNCHER[@]}"} -- ${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}
+  "${#ROOTS[@]}" "${#LAUNCHER[@]}" ${ROOTS[@]+"${ROOTS[@]}"} ${LAUNCHER[@]+"${LAUNCHER[@]}"} ${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}
 
 if [ "$DRY_RUN" = 1 ]; then
   RESOLVED="$(resolve "$MERGED" "$(mktemp -d)")"

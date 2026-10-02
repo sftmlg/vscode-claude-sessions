@@ -767,7 +767,7 @@ const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;
 
 function remotePage(webview, wsUrl) {
   const origin = remoteSocketOrigin(wsUrl);
-  const csp = `default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource}; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; connect-src ${origin || "'none'"}`;
+  const csp = `default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; connect-src ${origin || "'none'"}`;
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
   const plain = (text) => `<!DOCTYPE html><html><head><meta charset="utf-8">${cspMeta}</head><body><p>${text}</p></body></html>`;
   if (!origin) return plain('Set <code>claudeSessions.remote.url</code> to the WebSocket address of your remote service (for example <code>ws://your-machine.example:39180/ws</code>), then open this panel again.');

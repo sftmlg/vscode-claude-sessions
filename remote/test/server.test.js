@@ -62,7 +62,7 @@ test('static paths stay inside web/ and only serve known types', () => {
   assert.ok(staticPath('/').endsWith(path.join('web', 'index.html')));
   assert.ok(staticPath('/vendor/xterm.mjs?x=1').endsWith(path.join('web', 'vendor', 'xterm.mjs')));
   for (const bad of ['/../server.js', '/..%2fserver.js', '/vendor/VERSIONS', '/vendor/xterm.LICENSE', '/%00.html', '/%E0%A4%A.html']) assert.strictEqual(staticPath(bad), null, bad);
-  assert.strictEqual(csp({ publicHost: HOST, publicPort: 39180 }), `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws://${HOST}:39180; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`);
+  assert.strictEqual(csp({ publicHost: HOST, publicPort: 39180 }), `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://${HOST}:39180; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`);
 });
 
 test('hub end to end on a throwaway tmux socket', async (t) => {

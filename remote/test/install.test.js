@@ -130,3 +130,14 @@ test('bad arguments and a node without identity are refused before any change', 
   assert.notStrictEqual(r.status, 0);
   assert.ok(!fs.existsSync(path.join(s.home, '.config')));
 });
+
+test('a "--" inside the launcher stays in the launcher and claude args stay separate', () => {
+  const s = sandbox();
+  const work = path.join(s.home, 'work');
+  fs.mkdirSync(work, { recursive: true });
+  const r = s.install('--no-check', '--root', work, '--launcher', '/opt/x/wrapper', '--launcher-arg', 'exec', '--launcher-arg', '--', '--claude-arg', '--flag');
+  assert.strictEqual(r.status, 0, r.stderr + r.stdout);
+  const cfg = JSON.parse(fs.readFileSync(path.join(s.home, '.config', 'claude-remote', 'config.json'), 'utf8'));
+  assert.deepStrictEqual(cfg.launcher, ['/opt/x/wrapper', 'exec', '--']);
+  assert.deepStrictEqual(cfg.claudeArgs, ['--flag']);
+});

@@ -856,13 +856,13 @@ test('Open remote sessions explains the missing address, then loads the local we
     assert.strictEqual(fake.webviewPanels.length, 2);
     const live = fake.webviewPanels[1];
     const html = live.webview.html;
-    assert.match(html, /<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https:\/\/fake\.webview\.invalid; style-src https:\/\/fake\.webview\.invalid; img-src https:\/\/fake\.webview\.invalid data:; font-src https:\/\/fake\.webview\.invalid; connect-src ws:\/\/remote\.example:39180">/);
+    assert.match(html, /<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https:\/\/fake\.webview\.invalid; style-src https:\/\/fake\.webview\.invalid 'unsafe-inline'; img-src https:\/\/fake\.webview\.invalid data:; font-src https:\/\/fake\.webview\.invalid; connect-src ws:\/\/remote\.example:39180">/);
     assert.match(html, /<html lang="en" data-ws-url="ws:\/\/remote\.example:39180\/ws">/);
     assert.ok(!/\b(src|href)="(?!https:\/\/fake\.webview\.invalid)[^"]*"/.test(html.replace(/http-equiv="[^"]*"/g, '')), 'every asset reference points into the webview origin');
     assert.match(html, /src="https:\/\/fake\.webview\.invalid[^"]*remote[\\/]web[\\/]vscode-bridge\.js"/);
     assert.strictEqual((html.match(/vscode-bridge\.js/g) || []).length, 1, 'the bridge is loaded once');
     assert.ok(!/manifest\.webmanifest/.test(html));
-    assert.ok(!/'unsafe-inline'/.test(html));
+    assert.ok(!/script-src[^;]*'unsafe-inline'/.test(html));
 
     live.receive({ t: 'setToken', id: 1, token: 'device-token-1' });
     await settle();

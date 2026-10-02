@@ -289,6 +289,7 @@ function closeSession() {
   if (s && s.sessionId && s.sessionId !== state.current) conn.send({ t: 'unsub', sessionId: s.sessionId });
   unmountChat();
   state.current = null;
+  state.subscribedKey = null;
   state.claim = false;
   state.sizeOwner = null;
   state.lastSeq = null;
@@ -299,6 +300,7 @@ function closeSession() {
 function subscribe() {
   const s = currentItem();
   if (!s || !conn.authed) return;
+  state.subscribedKey = state.current;
   if (s.managed && state.tab === 'terminal') {
     if (!term) term = createTerm($('term'));
     state.lastSeq = null;
@@ -390,6 +392,10 @@ function onJson(data) {
       state.sessions = Array.isArray(m.items) ? m.items : [];
       renderList();
       if (state.current) renderStatus();
+      if (state.current && state.subscribedKey !== state.current && currentItem()) {
+        if (!currentItem().managed && state.tab !== 'chat') setTab('chat');
+        subscribe();
+      }
       return undefined;
     case 'status': {
       for (const s of state.sessions) if (keyOf(s) === m.sessionId || s.sessionId === m.sessionId) Object.assign(s, { status: m.status, waitingFor: m.waitingFor });
@@ -577,7 +583,7 @@ function field(label, input) {
 
 function showNewSession() {
   const rand = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, '0')).join('');
-  const name = el('input', { value: `cc-${rand}`, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', pattern: 'cc-[a-z0-9-]{1,40}', required: true });
+  const name = el('input', { value: `cc-${rand}`, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', pattern: 'cc-[a-z0-9\\-]{1,40}', required: true });
   const dir = el('input', { value: state.defaultDir, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
   const resume = el('input', { placeholder: 'optional session UUID', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
   const form = el('form', { class: 'stack' }, [field('Name', name), field('Directory', dir), field('Resume session', resume), el('button', { type: 'submit', class: 'primary', text: 'Start' })]);

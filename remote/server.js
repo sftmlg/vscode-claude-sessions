@@ -40,7 +40,7 @@ const TYPES = {
 
 function csp(config) {
   const ws = config.publicHost ? ` ws://${config.publicHost}:${config.publicPort}` : '';
-  return `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'${ws}; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`;
+  return `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'${ws}; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`;
 }
 
 function baseHeaders(config) {
