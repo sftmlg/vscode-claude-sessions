@@ -123,7 +123,9 @@ const conn = {
     ws.addEventListener('open', async () => {
       this.open = true;
       this.attempt = 0;
-      this.send({ t: 'hello', token: (await getToken()) || undefined, clientId: clientId() });
+      const token = await getToken();
+      this.sentToken = Boolean(token);
+      this.send({ t: 'hello', token: token || undefined, clientId: clientId() });
       clearInterval(this.ping);
       this.ping = setInterval(() => this.send({ t: 'ping', ts: Date.now() }), PING_MS);
     });
@@ -375,7 +377,7 @@ function onJson(data) {
   switch (m.t) {
     case 'pairRequired':
       conn.authed = false;
-      setToken(null);
+      if (conn.sentToken) setToken(null);
       setConn('online');
       return showPair();
     case 'pairCode':

@@ -110,6 +110,7 @@ test('a slow or failing editor bridge never blocks the hello', () => {
   const app = read('app.js');
   assert.match(app, /async function getToken\(\) \{\s*try \{[\s\S]{0,300}\} catch \{\s*return null;/, 'bridge failures fall back to hello without a token');
   assert.match(read('vscode-bridge.js'), /\}, 15000\);/, 'bridge waits 15 s for the editor');
+  assert.match(app, /if \(conn\.sentToken\) setToken\(null\)/, 'a hello without token never deletes the stored token');
 });
 
 test('every key in the key bar is on the server allowlist', () => {
