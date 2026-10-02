@@ -96,3 +96,16 @@ test('tmux integration on a throwaway socket', async (t) => {
     await assert.rejects(cc.command('a\nb'), /one line/);
   });
 });
+
+test('works without a UTF-8 locale in the environment, as under launchd', async (t) => {
+  const ctx = testCtx();
+  t.after(() => killServer(ctx));
+  startPane(ctx, 'cc-locale', ['/bin/sh', '-c', 'printf "\\342\\234\\273 star\\n"; sleep 30']);
+  await waitFor(() => capture(ctx, 'cc-locale').includes('star'), { what: 'pane output' });
+  const script = `const t=require(${JSON.stringify(path.join(__dirname, '..', 'tmux.js'))});(async()=>{const c=${JSON.stringify(ctx)};const s=await t.listSessions(c);const cl=new t.ControlClient(c,'cc-locale').start();await new Promise(r=>setTimeout(r,500));const snap=await cl.snapshot();cl.close&&cl.close();console.log(JSON.stringify({names:s.map(x=>x.name),text:snap.lines.join('\\n')}));process.exit(0)})().catch(e=>{console.error(e);process.exit(1)})`;
+  const { execFileSync } = require('child_process');
+  const out = execFileSync(process.execPath, ['-e', script], { env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: process.env.HOME }, encoding: 'utf8' });
+  const res = JSON.parse(out);
+  assert.deepStrictEqual(res.names, ['cc-locale']);
+  assert.ok(res.text.includes('✻ star'), 'snapshot keeps UTF-8');
+});

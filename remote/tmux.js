@@ -23,7 +23,7 @@ function stripControls(text) {
 
 function run(ctx, args, { input } = {}) {
   return new Promise((resolve, reject) => {
-    const child = execFile(ctx.bin || 'tmux', ['-L', ctx.socket, ...args], { maxBuffer: 8 * 1024 * 1024, timeout: 10000 }, (err, stdout, stderr) => {
+    const child = execFile(ctx.bin || 'tmux', ['-u', '-L', ctx.socket, ...args], { maxBuffer: 8 * 1024 * 1024, timeout: 10000 }, (err, stdout, stderr) => {
       if (err) {
         err.stderr = String(stderr || '').trim();
         reject(err);
@@ -115,7 +115,7 @@ class ControlClient extends EventEmitter {
   }
 
   start() {
-    this.proc = spawn(this.ctx.bin || 'tmux', ['-L', this.ctx.socket, '-C', 'attach', '-t', `=${this.name}`], { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.proc = spawn(this.ctx.bin || 'tmux', ['-u', '-L', this.ctx.socket, '-C', 'attach', '-t', `=${this.name}`], { stdio: ['pipe', 'pipe', 'pipe'] });
     this.proc.stdout.on('data', (chunk) => this.onData(chunk));
     this.proc.stderr.on('data', () => {});
     this.proc.stdin.on('error', () => {});
