@@ -91,6 +91,11 @@ async function start(config, deps = {}) {
   const registry = deps.registry || new Registry(config, { ctx, audit });
   const queue = deps.queue || new Queue(path.join(config.stateDir, 'queue.json'));
   const mirrors = new Map();
+  const liveTails = new Set();
+  const closeTail = (t) => {
+    liveTails.delete(t);
+    t.close();
+  };
   const conns = new Set();
   const buckets = new Map();
   const headers = baseHeaders(config);
@@ -198,7 +203,8 @@ async function start(config, deps = {}) {
       conns.delete(conn);
       for (const m of conn.subs.values()) m.removeViewer(conn.id);
       conn.subs.clear();
-      for (const t of conn.tails.values()) t.close();
+      conn.closed = true;
+      for (const t of conn.tails.values()) if (t) closeTail(t);
       conn.tails.clear();
       log(`ws close conn=${conn.id}`);
     });
@@ -291,10 +297,10 @@ async function start(config, deps = {}) {
           m.removeViewer(conn.id);
         }
         for (const key of [msg.sessionId, item && item.sessionId]) {
-          const t = key && conn.tails.get(key);
-          if (t) {
-            t.close();
+          if (key && conn.tails.has(key)) {
+            const t = conn.tails.get(key);
             conn.tails.delete(key);
+            if (t) closeTail(t);
           }
         }
         return undefined;
@@ -348,15 +354,28 @@ async function start(config, deps = {}) {
         return send({ t: 'agentEvents', sessionId: msg.sessionId, toolUseId: msg.toolUseId, from: r.from, to: r.to, size: r.size, items: r.events, unknown: r.unknown });
       }
       case 'subEvents': {
-        if (conn.tails.has(msg.sessionId)) return undefined;
+        const key = msg.sessionId;
+        if (typeof key !== 'string' || conn.tails.has(key)) return undefined;
         if (conn.tails.size >= MAX_TAILS) return send({ t: 'error', code: 'too-many', msg: 'too many chat subscriptions' });
-        const { file } = await transcriptFor(msg.sessionId);
-        const tail = new transcript.Tail(file);
-        conn.tails.set(msg.sessionId, tail);
-        tail.on('events', (e) => send({ t: 'eventsLive', sessionId: msg.sessionId, items: e.events, from: e.from, to: e.to, size: e.size }));
-        tail.on('reset', () => send({ t: 'reset', sessionId: msg.sessionId }));
-        tail.on('error', (e) => log(`tail error conn=${conn.id} ${e.code || e.message}`));
-        await tail.start();
+        conn.tails.set(key, null);
+        let tail = null;
+        try {
+          const { file } = await transcriptFor(key);
+          if (conn.closed || conn.tails.get(key) !== null) return undefined;
+          const from = Number.isFinite(msg.from) && msg.from >= 0 ? Math.floor(msg.from) : undefined;
+          tail = new transcript.Tail(file, { from });
+          conn.tails.set(key, tail);
+          liveTails.add(tail);
+          tail.on('events', (e) => send({ t: 'eventsLive', sessionId: key, items: e.events, from: e.from, to: e.to, size: e.size }));
+          tail.on('reset', () => send({ t: 'reset', sessionId: key }));
+          tail.on('error', (e) => log(`tail error conn=${conn.id} ${e.code || e.message}`));
+          await tail.start();
+          if (conn.closed || conn.tails.get(key) !== tail) closeTail(tail);
+        } catch (e) {
+          if (conn.tails.get(key) === tail) conn.tails.delete(key);
+          if (tail) closeTail(tail);
+          throw e;
+        }
         return undefined;
       }
       default:
@@ -434,6 +453,7 @@ async function start(config, deps = {}) {
     port,
     server,
     registry,
+    stats: () => ({ tails: liveTails.size, mirrors: mirrors.size, connections: conns.size }),
     async close() {
       clearInterval(heartbeat);
       registry.stop();

@@ -188,8 +188,9 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     c.send({ t: 'events', sessionId: SID, limit: 10 });
     const ev = await c.wait((m) => m.t === 'events' && m.sessionId === SID, 'events');
     assert.ok(ev.items.some((e) => e.kind === 'prompt' && e.text === 'first synthetic prompt'));
-    c.send({ t: 'subEvents', sessionId: SID });
-    await new Promise((r) => setTimeout(r, 200));
+    fs.appendFileSync(transcriptFile, line('written between page and subscription'));
+    c.send({ t: 'subEvents', sessionId: SID, from: ev.to });
+    await c.wait((m) => m.t === 'eventsLive' && m.items.some((e) => e.text === 'written between page and subscription'), 'gap event delivered live');
     fs.appendFileSync(transcriptFile, line('appended synthetic prompt'));
     const live = await c.wait((m) => m.t === 'eventsLive' && m.items.some((e) => e.text === 'appended synthetic prompt'), 'eventsLive');
     assert.strictEqual(live.sessionId, SID);
@@ -207,6 +208,27 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await c.wait((m) => m.t === 'error' && m.ref === 'agentEvents' && m.code === 'bad-request', 'bad tool use id');
     c.send({ t: 'events', sessionId: '../../etc/passwd', limit: 10 });
     await c.wait((m) => m.t === 'error' && m.code === 'not-found' && m.ref === 'events', 'traversal refused');
+  });
+
+  await t.test('chat subscriptions never leak tails: duplicate subscribe and close during setup', async () => {
+    assert.strictEqual(hub.stats().tails, 1);
+    const d = await client(port);
+    d.send({ t: 'hello', token, clientId: 'c-tail' });
+    await d.wait((m) => m.t === 'helloOk');
+    d.send({ t: 'subEvents', sessionId: SID });
+    d.send({ t: 'subEvents', sessionId: SID });
+    await waitFor(() => hub.stats().tails === 2, { what: 'one tail for the duplicate subscribe' });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(hub.stats().tails, 2);
+    d.ws.close();
+    await waitFor(() => hub.stats().tails === 1, { what: 'tail closed with its socket' });
+    const e = await client(port);
+    e.send({ t: 'hello', token, clientId: 'c-tail2' });
+    await e.wait((m) => m.t === 'helloOk');
+    e.send({ t: 'subEvents', sessionId: SID });
+    e.ws.terminate();
+    await new Promise((r) => setTimeout(r, 400));
+    assert.strictEqual(hub.stats().tails, 1, 'socket gone before the tail started');
   });
 
   await t.test('rate limit: more than 10 inputs per second are deferred, not dropped', async () => {

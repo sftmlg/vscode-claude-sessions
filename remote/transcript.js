@@ -347,6 +347,7 @@ class Tail extends EventEmitter {
 
   async start() {
     const st = await fsp.stat(this.file);
+    if (this.closed) return this;
     this.ino = st.ino;
     if (this.offset === null || this.offset > st.size) this.offset = st.size;
     try {

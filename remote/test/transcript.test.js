@@ -317,3 +317,14 @@ test('resolveTranscript accepts only UUIDs and realpaths under a projects root, 
   assert.strictEqual(await resolveSubagent(SESSION, '../agent-00000001'), null);
   assert.strictEqual(await resolveSubagent(SESSION, 'agent-missing'), null);
 });
+
+test('Tail closed while start is pending installs no watcher or timer', async () => {
+  const file = path.join(home, 'closed-early.jsonl');
+  fs.writeFileSync(file, '');
+  const tail = new Tail(file, { pollMs: 200 });
+  const started = tail.start();
+  tail.close();
+  await started;
+  assert.strictEqual(tail.watcher, null);
+  assert.strictEqual(tail.timer, null);
+});
