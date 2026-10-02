@@ -126,6 +126,8 @@ On the always-on machine: `remote/install.sh` (flags set the roots, default dire
 
 A new browser or phone shows a pairing code. Approve it on the machine (`node remote/cli.js pair <code> [name]`) or from an already paired device; the device receives a token that is kept only on that device (the server stores a hash). `node remote/cli.js devices` lists them, `revoke <id>` cuts one off within seconds.
 
+With `install.sh --auto-approve-pairing` (config `autoApprovePairing`), a pairing request that already passed the identity check is approved at once, without a manual step; every approval is still written to the audit log (`"by":"auto"`) and can be revoked. Use it only when the tailnet holds nothing but your own devices.
+
 ### VS Code
 
 **Open remote sessions** (globe button in the **Remote** view, or the command palette) opens the same web app in a webview panel. The app is loaded from the extension itself under a strict content security policy; only the WebSocket address from `claudeSessions.remote.url` is allowed as a connection target, and the device token lives in VS Code's secret storage. The panel is a client like any other: it needs the pairing above.

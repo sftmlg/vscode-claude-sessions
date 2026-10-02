@@ -150,3 +150,11 @@ test('a "--" inside the launcher stays in the launcher and claude args stay sepa
   assert.deepStrictEqual(cfg.launcher, ['/opt/x/wrapper', 'exec', '--']);
   assert.deepStrictEqual(cfg.claudeArgs, ['--flag']);
 });
+
+test('--auto-approve-pairing writes autoApprovePairing into the config', () => {
+  const s = sandbox();
+  const r = s.install('--no-check', '--auto-approve-pairing');
+  assert.strictEqual(r.status, 0, r.stderr + r.stdout);
+  const cfg = JSON.parse(fs.readFileSync(path.join(s.home, '.config', 'claude-remote', 'config.json'), 'utf8'));
+  assert.strictEqual(cfg.autoApprovePairing, true);
+});

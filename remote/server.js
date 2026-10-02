@@ -315,6 +315,13 @@ async function start(config, deps = {}) {
           return send({ t: 'error', code: e.code || 'pair-failed', msg: 'pairing refused', ref: 'pair' });
         }
         send({ t: 'pairCode', code: p.code, expiresAt: p.expiresAt });
+        if (config.autoApprovePairing === true) {
+          try {
+            auth.approvePairing(p.code, { id: 'auto' }, String(msg.deviceName || ''));
+          } catch (e) {
+            log(`auto-approve failed conn=${conn.id} ${e.code || 'error'}`);
+          }
+        }
         auth.awaitPairing(p.waitToken).then(
           async (token) => {
             conn.pairing = false;

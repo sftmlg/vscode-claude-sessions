@@ -149,6 +149,23 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     assert.ok(c.json.findIndex((m) => m.t === 'error' && m.code === 'unauthorized') < c.json.findIndex((m) => m.t === 'paired'));
   });
 
+  await t.test('auto-approved pairing: a device of the allowed identity is paired without a manual step', async () => {
+    config.autoApprovePairing = true;
+    const c2 = await client(port);
+    try {
+      c2.send({ t: 'hello', clientId: 'c2' });
+      await c2.wait((m) => m.t === 'pairRequired', 'pairRequired');
+      c2.send({ t: 'pair', deviceName: 'auto phone' });
+      const paired = await c2.wait((m) => m.t === 'paired', 'paired');
+      assert.strictEqual(paired.device.name, 'auto phone');
+      await c2.wait((m) => m.t === 'helloOk', 'helloOk');
+      assert.ok(fs.readFileSync(path.join(stateDir, 'audit.log'), 'utf8').includes('"by":"auto"'));
+    } finally {
+      config.autoApprovePairing = false;
+      c2.ws.close();
+    }
+  });
+
   await t.test('new session is acked, listed and pushed', async () => {
     c.send({ t: 'new', id: 'n-1', name: 'cc-int', dir: work });
     const ack = await c.wait((m) => m.t === 'ack' && m.id === 'n-1', 'new ack');

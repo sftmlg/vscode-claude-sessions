@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: remote/install.sh [--root <dir>]... [--default-dir <dir>] [--launcher <path> [--launcher-arg <arg>]...]
-                         [--claude-arg <arg>]... [--dry-run] [--no-check] [--uninstall]
+                         [--claude-arg <arg>]... [--auto-approve-pairing] [--dry-run] [--no-check] [--uninstall]
 Installs the claude-remote LaunchAgent for the current user, writes the config, exposes the
 loopback port with `tailscale serve --http` (never Funnel) and runs a self-check.
 --uninstall removes the LaunchAgent and this service's serve port; config and state stay.
@@ -25,6 +25,7 @@ CLAUDE_ARGS=()
 DEFAULT_DIR=""
 LAUNCHER_SET=0
 CLAUDE_ARGS_SET=0
+AUTO_PAIR=0
 DRY_RUN=0
 CHECK=1
 UNINSTALL=0
@@ -40,6 +41,7 @@ while [ $# -gt 0 ]; do
     --launcher) need_value "$@"; LAUNCHER=("$2"); LAUNCHER_SET=1; shift 2 ;;
     --launcher-arg) need_value "$@"; [ "$LAUNCHER_SET" = 1 ] || { echo "--launcher-arg needs --launcher first" >&2; exit 2; }; LAUNCHER+=("$2"); shift 2 ;;
     --claude-arg) need_value "$@"; CLAUDE_ARGS+=("$2"); CLAUDE_ARGS_SET=1; shift 2 ;;
+    --auto-approve-pairing) AUTO_PAIR=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --no-check) CHECK=0; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
@@ -114,7 +116,7 @@ say "Measured public host (${#PUBLIC_HOST} chars) and allowed login (${#ALLOWED_
 
 MERGED="$(mktemp)"
 trap 'rm -f "$MERGED"' EXIT
-"$NODE" -e '
+AUTO_PAIR="$AUTO_PAIR" "$NODE" -e '
   const fs = require("fs");
   const [file, out, host, login, tmuxPath, defaultDir, launcherSet, claudeArgsSet, ...rest] = process.argv.slice(1);
   const nRoots = Number(rest[0]), nLauncher = Number(rest[1]), items = rest.slice(2);
@@ -128,6 +130,7 @@ trap 'rm -f "$MERGED"' EXIT
   if (defaultDir) c.defaultDir = fs.realpathSync(defaultDir);
   if (launcherSet === "1") c.launcher = launcher;
   if (claudeArgsSet === "1") c.claudeArgs = claudeArgs;
+  if (process.env.AUTO_PAIR === "1") c.autoApprovePairing = true;
   fs.writeFileSync(out, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
 ' "$CONFIG_FILE" "$MERGED" "$PUBLIC_HOST" "$ALLOWED_LOGIN" "$TMUX_BIN" "$DEFAULT_DIR" "$LAUNCHER_SET" "$CLAUDE_ARGS_SET" \
   "${#ROOTS[@]}" "${#LAUNCHER[@]}" ${ROOTS[@]+"${ROOTS[@]}"} ${LAUNCHER[@]+"${LAUNCHER[@]}"} ${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}
