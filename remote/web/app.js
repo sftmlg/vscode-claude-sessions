@@ -39,8 +39,12 @@ function safeStorage(fn, fallback = null) {
 }
 
 async function getToken() {
-  if (host && typeof host.getToken === 'function') return (await host.getToken()) || null;
-  return safeStorage((s) => s.getItem(TOKEN_KEY));
+  try {
+    if (host && typeof host.getToken === 'function') return (await host.getToken()) || null;
+    return safeStorage((s) => s.getItem(TOKEN_KEY));
+  } catch {
+    return null;
+  }
 }
 
 async function setToken(token) {

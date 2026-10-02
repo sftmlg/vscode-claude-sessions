@@ -106,6 +106,12 @@ test('chat and mirror recover after reconnects and recreated sessions', () => {
   assert.match(app, /m\.code === 'session-ended' && m\.sessionId === state\.current[\s\S]{0,120}state\.subscribedKey = null/, 'ended session resubscribes when recreated');
 });
 
+test('a slow or failing editor bridge never blocks the hello', () => {
+  const app = read('app.js');
+  assert.match(app, /async function getToken\(\) \{\s*try \{[\s\S]{0,300}\} catch \{\s*return null;/, 'bridge failures fall back to hello without a token');
+  assert.match(read('vscode-bridge.js'), /\}, 15000\);/, 'bridge waits 15 s for the editor');
+});
+
 test('every key in the key bar is on the server allowlist', () => {
   const { KEYS } = require('../tmux');
   const keys = [...read('index.html').matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);

@@ -23,7 +23,7 @@
         if (!pending.has(id)) return;
         pending.delete(id);
         reject(new Error('no answer from the editor'));
-      }, 5000);
+      }, 15000);
     });
   }
 
