@@ -791,3 +791,96 @@ test('loading a remote session while a sync runs waits for it instead of doing n
     await cloud.stop();
   }
 });
+
+test('a session that already runs in a tab of this window is focused instead of resumed a second time', async () => {
+  const id = '99999999-0000-0000-0000-000000000009';
+  writeSession(id, 'already running here');
+  const claude = startClaude(id);
+  const { fake, api } = await setup();
+  try {
+    const running = fake.vscode.window.createTerminal({ name: 'running', pid: claude.pid });
+    running.show();
+    await api.tracker.poll();
+    const other = fake.vscode.window.createTerminal({ name: 'other', pid: 999999 });
+    other.show();
+    const before = fake.vscode.window.terminals.length;
+    const item = { data: { tab: { name: 'running', sessionId: id, cwd: workspace } } };
+    await fake.run('claudeSessions.resume', item);
+    assert.strictEqual(fake.vscode.window.activeTerminal, running, '▶ focuses the tab that holds the session');
+    await fake.run('claudeSessions.resumeNewTab', item);
+    assert.strictEqual(fake.vscode.window.terminals.length, before, 'no second tab is opened');
+    const typed = fake.vscode.window.terminals.flatMap((t) => t.sent);
+    assert.ok(!typed.some((s) => s.includes(id)), 'nothing resumes the running session again');
+    assert.deepStrictEqual(fake.messages, []);
+  } finally {
+    stopClaude(claude);
+    api.deactivate();
+  }
+});
+
+test('a session running in another process without a tab here is reported, not resumed', async () => {
+  const id = '99999999-0000-0000-0000-000000000010';
+  writeSession(id, 'running elsewhere');
+  const claude = startClaude(id);
+  const { fake, api } = await setup();
+  try {
+    const shell = fake.vscode.window.createTerminal({ name: 'zsh', pid: 999999 });
+    shell.show();
+    await api.tracker.poll();
+    await fake.run('claudeSessions.resume', { data: { tab: { name: 'elsewhere', sessionId: id, cwd: workspace } } });
+    assert.strictEqual(shell.sent.length, 0, 'nothing is typed into the active terminal');
+    assert.strictEqual(fake.vscode.window.terminals.length, 1);
+    assert.strictEqual(fake.messages.length, 1);
+    assert.match(fake.messages[0], /already runs in another process/);
+  } finally {
+    stopClaude(claude);
+    api.deactivate();
+  }
+});
+
+test('Open remote sessions explains the missing address, then loads the local web app under a strict CSP', async () => {
+  const { fake, api } = await setup();
+  try {
+    await fake.run('claudeSessions.openRemote');
+    assert.strictEqual(fake.webviewPanels.length, 1);
+    const panel = fake.webviewPanels[0];
+    assert.match(panel.webview.html, /claudeSessions\.remote\.url/);
+    assert.match(panel.webview.html, /connect-src 'none'/);
+    assert.ok(fake.messages.some((m) => /claudeSessions\.remote\.url/.test(m)));
+    assert.ok(panel.options.enableScripts && panel.options.retainContextWhenHidden);
+    assert.match(panel.options.localResourceRoots[0].fsPath, /remote[\\/]web$/);
+    panel.dispose();
+
+    fake.config['remote.url'] = 'ws://remote.example:39180/ws';
+    await fake.run('claudeSessions.openRemote');
+    assert.strictEqual(fake.webviewPanels.length, 2);
+    const live = fake.webviewPanels[1];
+    const html = live.webview.html;
+    assert.match(html, /<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https:\/\/fake\.webview\.invalid; style-src https:\/\/fake\.webview\.invalid; img-src https:\/\/fake\.webview\.invalid data:; font-src https:\/\/fake\.webview\.invalid; connect-src ws:\/\/remote\.example:39180">/);
+    assert.match(html, /<html lang="en" data-ws-url="ws:\/\/remote\.example:39180\/ws">/);
+    assert.ok(!/\b(src|href)="(?!https:\/\/fake\.webview\.invalid)[^"]*"/.test(html.replace(/http-equiv="[^"]*"/g, '')), 'every asset reference points into the webview origin');
+    assert.match(html, /src="https:\/\/fake\.webview\.invalid[^"]*remote[\\/]web[\\/]vscode-bridge\.js"/);
+    assert.strictEqual((html.match(/vscode-bridge\.js/g) || []).length, 1, 'the bridge is loaded once');
+    assert.ok(!/manifest\.webmanifest/.test(html));
+    assert.ok(!/'unsafe-inline'/.test(html));
+
+    live.receive({ t: 'setToken', id: 1, token: 'device-token-1' });
+    await settle();
+    assert.strictEqual(fake.secretStore.get('claudeSessions.remote.token'), 'device-token-1');
+    live.receive({ t: 'getToken', id: 2 });
+    await settle();
+    assert.deepStrictEqual(live.posted.slice(-1), [{ t: 'reply', id: 2, value: 'device-token-1' }]);
+    live.receive({ t: 'setToken', id: 3, token: null });
+    await settle();
+    assert.strictEqual(fake.secretStore.has('claudeSessions.remote.token'), false);
+    live.receive({ t: 'nonsense', id: 4 });
+    await settle();
+    assert.match(live.posted.slice(-1)[0].error, /unknown request/);
+
+    await fake.run('claudeSessions.openRemote');
+    assert.strictEqual(fake.webviewPanels.length, 2, 'a second call reveals the open panel');
+    assert.strictEqual(live.revealed, 1);
+  } finally {
+    api.deactivate();
+  }
+});

@@ -751,6 +751,43 @@ class RemoteProvider {
   }
 }
 
+const REMOTE_WEB = path.join(__dirname, 'remote', 'web');
+const REMOTE_TOKEN_SECRET = 'claudeSessions.remote.token';
+
+function remoteSocketOrigin(url) {
+  try {
+    const u = new URL(String(url || ''));
+    return u.protocol === 'ws:' || u.protocol === 'wss:' ? `${u.protocol}//${u.host}` : null;
+  } catch {
+    return null;
+  }
+}
+
+const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+function remotePage(webview, wsUrl) {
+  const origin = remoteSocketOrigin(wsUrl);
+  const csp = `default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource}; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; connect-src ${origin || "'none'"}`;
+  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
+  const plain = (text) => `<!DOCTYPE html><html><head><meta charset="utf-8">${cspMeta}</head><body><p>${text}</p></body></html>`;
+  if (!origin) return plain('Set <code>claudeSessions.remote.url</code> to the WebSocket address of your remote service (for example <code>ws://your-machine.example:39180/ws</code>), then open this panel again.');
+  let html;
+  try {
+    html = fs.readFileSync(path.join(REMOTE_WEB, 'index.html'), 'utf8');
+  } catch {
+    return plain('The remote web app is missing from this build.');
+  }
+  const root = vscode.Uri.file(REMOTE_WEB);
+  const asset = (rel) => webview.asWebviewUri(vscode.Uri.joinPath(root, ...rel.replace(/^\.\//, '').split('/'))).toString();
+  if (!/vscode-bridge\.js/.test(html)) html = html.replace(/<script\b/i, '<script src="vscode-bridge.js"></script><script');
+  return html
+    .replace(/<meta http-equiv="Content-Security-Policy"[^>]*>\s*/gi, '')
+    .replace(/<link rel="manifest"[^>]*>\s*/gi, '')
+    .replace(/\b(src|href)="(?!(?:[a-z]+:|\/\/|#))([^"]+)"/g, (m, attr, rel) => `${attr}="${asset(rel)}"`)
+    .replace(/<html([^>]*)>/i, (m, attrs) => `<html${attrs} data-ws-url="${escapeAttr(wsUrl)}">`)
+    .replace(/<head([^>]*)>/i, (m, attrs) => `<head${attrs}>${cspMeta}`);
+}
+
 function activate(context) {
   const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
   if (!folder) return;
@@ -868,6 +905,13 @@ function activate(context) {
   };
   tracker.mayResume = (sessionId) => mayResume(sessionId);
   const mayResume = async (sessionId) => {
+    const live = [...(await readRunningSessions()).values()].find((r) => r.sessionId === sessionId);
+    if (live) {
+      const open = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === sessionId);
+      if (open) open.show(false);
+      else vscode.window.showInformationMessage(`This session already runs in another process${live.cwd ? ` (${live.cwd})` : ''}; it is not started a second time. Use that process, or open it read-only in Remote sessions.`);
+      return false;
+    }
     const lock = await lockElsewhere(sessionId);
     if (!lock) return true;
     const choice = await vscode.window.showWarningMessage(
@@ -1354,6 +1398,45 @@ function activate(context) {
     view.refresh(true);
   };
 
+  let remotePanel = null;
+  const remoteUrl = () => String(settings().get('remote.url') || '').trim();
+  const renderRemote = () => {
+    if (remotePanel) remotePanel.webview.html = remotePage(remotePanel.webview, remoteUrl());
+  };
+  const openRemote = () => {
+    if (remotePanel) {
+      remotePanel.reveal();
+      return remotePanel;
+    }
+    if (!remoteUrl()) {
+      Promise.resolve(vscode.window.showInformationMessage('Set claudeSessions.remote.url to the WebSocket address of your remote service first.', 'Open settings')).then((choice) => {
+        if (choice === 'Open settings') vscode.commands.executeCommand('workbench.action.openSettings', 'claudeSessions.remote.url');
+      });
+    }
+    remotePanel = vscode.window.createWebviewPanel('claudeSessions.remotePanel', 'Remote sessions', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.file(REMOTE_WEB)] });
+    renderRemote();
+    remotePanel.webview.onDidReceiveMessage(async (m) => {
+      if (!m || typeof m !== 'object' || !m.id || !remotePanel) return;
+      const reply = (fields) => remotePanel && remotePanel.webview.postMessage({ t: 'reply', id: m.id, ...fields });
+      try {
+        if (m.t === 'getToken') return reply({ value: (context.secrets && (await context.secrets.get(REMOTE_TOKEN_SECRET))) || null });
+        if (m.t === 'setToken') {
+          if (!context.secrets) return reply({ error: 'no secret storage' });
+          if (typeof m.token === 'string' && m.token) await context.secrets.store(REMOTE_TOKEN_SECRET, m.token);
+          else await context.secrets.delete(REMOTE_TOKEN_SECRET);
+          return reply({ value: true });
+        }
+        return reply({ error: `unknown request ${m.t}` });
+      } catch (err) {
+        return reply({ error: err.message });
+      }
+    });
+    remotePanel.onDidDispose(() => {
+      remotePanel = null;
+    });
+    return remotePanel;
+  };
+
   const minuteTimer = setInterval(() => view.refresh(true), 60000);
   updateBadge();
 
@@ -1428,6 +1511,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.syncRunning', () => vscode.window.showInformationMessage('Sync running.')),
     vscode.commands.registerCommand('claudeSessions.loadRemote', (item) => loadRemote(item)),
     vscode.commands.registerCommand('claudeSessions.renameMachine', () => renameMachine(remoteView.snapshot && remoteView.snapshot.name)),
+    vscode.commands.registerCommand('claudeSessions.openRemote', () => openRemote()),
     vscode.commands.registerCommand('claudeSessions.disconnectNextcloud', async () => {
       await context.secrets.delete(SYNC_SECRET);
       if (settings().get('sync.credentialsFile')) await settings().update('sync.credentialsFile', undefined, vscode.ConfigurationTarget.Global);
@@ -1524,7 +1608,11 @@ function activate(context) {
       tracker.meta.delete(t);
       tracker.poll();
     }),
-    vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeSessions') && startTimer()),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration('claudeSessions')) return;
+      startTimer();
+      if (e.affectsConfiguration('claudeSessions.remote.url')) renderRemote();
+    }),
     { dispose: () => clearInterval(timer) },
     vscode.commands.registerCommand('claudeSessions.restore', () => tracker.restore()),
     vscode.commands.registerCommand('claudeSessions.openSessionFile', async (item) => {

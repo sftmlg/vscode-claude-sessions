@@ -1,5 +1,6 @@
 'use strict';
 const Module = require('module');
+const path = require('path');
 
 class Emitter {
   constructor() {
@@ -33,6 +34,7 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
   const config = {};
   const secretStore = new Map();
   const messages = [];
+  const webviewPanels = [];
   let onOpenExternal = null;
   const groupOf = (t) => panes.find((g) => g.includes(t));
   const focusPane = (step) => {
@@ -105,7 +107,15 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
     QuickPickItemKind: { Separator: -1 },
     ProgressLocation: { Notification: 15 },
     ConfigurationTarget: { Global: 1 },
-    Uri: { file: (p) => ({ fsPath: p, path: p }), parse: (s) => ({ toString: () => s }) },
+    ViewColumn: { Active: -1, One: 1 },
+    Uri: {
+      file: (p) => ({ fsPath: p, path: p }),
+      parse: (s) => ({ toString: () => s }),
+      joinPath: (base, ...segments) => {
+        const p = path.join(base.fsPath, ...segments);
+        return { fsPath: p, path: p, toString: () => p };
+      },
+    },
     env: { clipboard: { writeText: async () => undefined }, openExternal: async (uri) => opened.push(uri.toString()) && (onOpenExternal ? onOpenExternal(uri.toString()) : true) },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
@@ -133,6 +143,39 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
         return view;
       },
       createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
+      createWebviewPanel(viewType, title, column, options) {
+        const received = new Emitter();
+        const disposed = new Emitter();
+        const panel = {
+          viewType,
+          title,
+          column,
+          options,
+          revealed: 0,
+          posted: [],
+          webview: {
+            html: '',
+            cspSource: 'https://fake.webview.invalid',
+            asWebviewUri: (uri) => ({ toString: () => `https://fake.webview.invalid${uri.fsPath}` }),
+            onDidReceiveMessage: received.event,
+            postMessage: async (m) => {
+              panel.posted.push(m);
+              return true;
+            },
+          },
+          receive: (m) => received.fire(m),
+          reveal() {
+            panel.revealed++;
+          },
+          onDidDispose: disposed.event,
+          dispose() {
+            panel.disposed = true;
+            disposed.fire();
+          },
+        };
+        webviewPanels.push(panel);
+        return panel;
+      },
       createQuickPick() {
         const accept = new Emitter();
         const hide = new Emitter();
@@ -256,6 +299,7 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
     config,
     secretStore,
     messages,
+    webviewPanels,
     onOpenExternal: (fn) => {
       onOpenExternal = fn;
     },

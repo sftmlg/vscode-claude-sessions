@@ -221,6 +221,12 @@
         "title": "Rename this machine",
         "category": "Claude Sessions",
         "icon": "$(edit)"
+      },
+      {
+        "command": "claudeSessions.openRemote",
+        "title": "Open remote sessions",
+        "category": "Claude Sessions",
+        "icon": "$(remote-explorer)"
       }
     ],
     "viewsContainers": {
@@ -314,6 +320,11 @@
           "command": "claudeSessions.renameMachine",
           "when": "view == claudeSessions.remote && claudeSessions.syncConnected",
           "group": "navigation@8"
+        },
+        {
+          "command": "claudeSessions.openRemote",
+          "when": "view == claudeSessions.remote",
+          "group": "navigation@0"
         }
       ],
       "view/item/context": [
@@ -595,6 +606,12 @@
           "default": "",
           "scope": "machine",
           "description": "Name of this machine as the other machines see it in Remote. Asked once after Nextcloud is connected; Rename this machine changes it."
+        },
+        "claudeSessions.remote.url": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "WebSocket address of the remote session service (ws://host:port/ws) opened by Open remote sessions. Empty: the panel explains how to set it."
         }
       }
     }
