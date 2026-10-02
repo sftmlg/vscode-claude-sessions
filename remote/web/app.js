@@ -391,7 +391,7 @@ function onJson(data) {
       return undefined;
     }
     case 'eventsLive':
-      for (const fn of state.eventsListeners) fn(m.items, m);
+      for (const fn of state.eventsListeners) fn(m);
       return undefined;
     case 'reset':
       for (const fn of state.resetListeners) fn(m);
@@ -485,7 +485,8 @@ async function mountChat() {
   } catch {
     mod = null;
   }
-  if (!mod || typeof mod.mountChat !== 'function') {
+  const mountChatFn = (mod && typeof mod.mountChat === 'function' && mod.mountChat) || (window.ClaudeChat && typeof window.ClaudeChat.mountChat === 'function' && window.ClaudeChat.mountChat);
+  if (!mountChatFn) {
     pane.replaceChildren(el('p', { class: 'muted pane-pad', text: 'The chat view is not available in this build.' }));
     state.chatUnmount = () => pane.replaceChildren();
     return;
@@ -499,15 +500,21 @@ async function mountChat() {
         if (!conn.send({ t: 'events', sessionId: id, before, limit })) reject(new Error('offline'));
       });
     },
+    requestAgentEvents() {
+      return Promise.reject(new Error('subagent transcripts are not available yet'));
+    },
     onEvents(cb) {
       state.eventsListeners.add(cb);
+      return () => state.eventsListeners.delete(cb);
     },
     onReset(cb) {
       state.resetListeners.add(cb);
+      return () => state.resetListeners.delete(cb);
     },
   };
   pane.replaceChildren();
-  const r = mod.mountChat(pane, api);
+  const r = mountChatFn(pane, api);
+  if (r && typeof r.open === 'function') r.open(sessionId);
   conn.send({ t: 'subEvents', sessionId });
   state.chatUnmount = () => {
     if (typeof r === 'function') r();
