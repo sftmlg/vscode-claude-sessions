@@ -14,6 +14,7 @@ EOF
 LABEL="com.claude-remote.hub"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+DEPS_DIR="${CLAUDE_REMOTE_DEPS_DIR:-$REPO_DIR}"
 CONFIG_FILE="${CLAUDE_REMOTE_CONFIG:-$HOME/.config/claude-remote/config.json}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 CHILD_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -155,7 +156,15 @@ for log in server.out.log server.err.log; do
   act chmod 600 "$STATE_DIR/$log"
 done
 
-(cd "$REPO_DIR" && act npm ci --omit=dev --ignore-scripts)
+LOCK_SUM="$(/usr/bin/shasum -a 256 "$DEPS_DIR/package-lock.json" | cut -d' ' -f1)"
+DEPS_STAMP="$DEPS_DIR/node_modules/.claude-remote-lock.sha256"
+if [ -f "$DEPS_STAMP" ] && [ "$(cat "$DEPS_STAMP")" = "$LOCK_SUM" ]; then
+  say "Dependencies already match package-lock.json; npm ci skipped."
+else
+  act "$LAUNCHCTL" bootout "$GUI/$LABEL" 2>/dev/null || true
+  (cd "$DEPS_DIR" && act npm ci --ignore-scripts)
+  if [ "$DRY_RUN" != 1 ] && [ -d "$DEPS_DIR/node_modules" ]; then printf '%s\n' "$LOCK_SUM" > "$DEPS_STAMP"; fi
+fi
 
 RENDERED="$(mktemp)"
 trap 'rm -f "$MERGED" "$RENDERED"' EXIT

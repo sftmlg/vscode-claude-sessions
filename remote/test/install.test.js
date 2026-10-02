@@ -27,10 +27,13 @@ function sandbox() {
   fakeBin(bin, 'launchctl', `echo "launchctl $*" >> "${log}"`);
   fakeBin(bin, 'tmux', 'exit 0');
   fakeBin(bin, 'npm', `echo "npm $* cwd=$(pwd -P)" >> "${log}"`);
-  const env = { HOME: home, PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin` };
+  const repo = path.join(base, 'repo');
+  fs.mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', '..', 'package-lock.json'), path.join(repo, 'package-lock.json'));
+  const env = { HOME: home, PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`, CLAUDE_REMOTE_DEPS_DIR: repo };
   const install = (...args) => spawnSync('/bin/bash', [INSTALL, ...args], { env, encoding: 'utf8' });
   const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
-  return { base, home, bin, log, env, install, calls };
+  return { base, home, bin, log, env, install, calls, repo };
 }
 
 function listTree(dir) {
@@ -52,7 +55,8 @@ test('dry run prints every action, renders the plist and changes nothing', () =>
   assert.deepStrictEqual(s.calls(), ['tailscale status --json']);
   assert.match(r.stdout, /\+ \S*launchctl bootstrap gui\/\d+ \S+com\.claude-remote\.hub\.plist/);
   assert.match(r.stdout, /\+ \S*tailscale serve --bg --http=39180 http:\/\/127\.0\.0\.1:39181/);
-  assert.match(r.stdout, /\+ npm ci --omit=dev --ignore-scripts/);
+  assert.match(r.stdout, /\+ npm ci --ignore-scripts/);
+  assert.ok(!/--omit=dev/.test(r.stdout), 'devDependencies are never removed');
   assert.match(r.stdout, /<string>com\.claude-remote\.hub<\/string>/);
   assert.ok(!/funnel/i.test(r.stdout));
   assert.ok(!r.stdout.includes('owner@example.test'), 'the login is not echoed');
@@ -104,7 +108,12 @@ test('install writes a private merged config and a valid LaunchAgent, and is re-
   assert.ok(calls.includes(`launchctl bootout gui/${uid}/${LABEL}`));
   assert.ok(calls.includes(`launchctl bootstrap gui/${uid} ${plist}`));
   assert.ok(calls.includes('tailscale serve --bg --http=40000 http://127.0.0.1:40001'));
-  assert.ok(calls.some((c) => /^npm ci --omit=dev --ignore-scripts cwd=/.test(c)));
+  const npmRuns = calls.filter((c) => /^npm /.test(c));
+  assert.deepStrictEqual(npmRuns, [`npm ci --ignore-scripts cwd=${s.repo}`], 'npm ci runs once; the second install sees node_modules in sync with the lockfile');
+  assert.ok(calls.indexOf(`launchctl bootout gui/${uid}/${LABEL}`) < calls.indexOf(npmRuns[0]), 'the service is stopped before node_modules changes');
+  fs.appendFileSync(path.join(s.repo, 'package-lock.json'), '\n');
+  assert.strictEqual(s.install(...args).status, 0);
+  assert.strictEqual(s.calls().filter((c) => /^npm /.test(c)).length, 2, 'a changed lockfile reinstalls');
   assert.ok(!calls.some((c) => /funnel|reset/.test(c)));
 });
 
