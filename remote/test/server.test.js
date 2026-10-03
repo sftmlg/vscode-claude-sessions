@@ -127,7 +127,7 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     unsubscribe: (id) => subscribed.delete(id),
     notify: async (n) => (pushed.push(n), { sent: 1 }),
   };
-  const hub = await start(config, { auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400, push, probeFolder: async () => folderState, tailnet: { viewerHost: async (ip) => (ip === '100.64.0.9' ? 'laptop.example.test' : null), selfName: async () => 'studio' } });
+  const hub = await start(config, { peerCheck: { verify: async () => ({ ok: true, reason: null }) }, auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400, push, probeFolder: async () => folderState, tailnet: { viewerHost: async (ip) => (ip === '100.64.0.9' ? 'laptop.example.test' : null), selfName: async () => 'studio' } });
   t.after(async () => {
     await hub.close();
     killServer(ctx);

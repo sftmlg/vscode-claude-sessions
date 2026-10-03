@@ -32,6 +32,7 @@ const MAX_TAILS = 4;
 const MAX_EVENTS = 500;
 const TOOL_USE_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RATE_PER_SEC = 10;
+const SEARCH_PER_SEC = 5;
 const HEARTBEAT_MS = 30000;
 const HELLO_TIMEOUT_MS = 30000;
 const MAX_UNAUTHENTICATED = 8;
@@ -165,6 +166,7 @@ async function start(config, deps = {}) {
   const auth = deps.auth || (authModule && authModule.createAuth(config, { admin: true, log }));
   if (!auth) throw new Error('remote/auth.js is required');
   const checkRequest = deps.checkRequest || (authModule && authModule.checkRequest);
+  const peerCheck = deps.peerCheck || authModule.createPeerCheck(config);
   const transcript = deps.transcript === undefined ? optional('./transcript') : deps.transcript;
   const audit = deps.audit || auditWriter(config.stateDir);
   const ctx = { socket: config.tmuxSocket, bin: config.tmuxPath, childPath: config.childPath };
@@ -205,11 +207,14 @@ async function start(config, deps = {}) {
   const maxUnauthed = limits.maxUnauthed || MAX_UNAUTHENTICATED;
   const helloTimeoutMs = deps.helloTimeoutMs || limits.helloTimeoutMs || HELLO_TIMEOUT_MS;
 
-  const server = http.createServer((req, res) => {
+  const verifyPeer = (socket) => peerCheck.verify(socket).catch(() => ({ ok: false, reason: 'peer-unknown' }));
+
+  const server = http.createServer(async (req, res) => {
     if (String(req.url).startsWith('/admin/')) return auth.handleAdmin(req, res, { sessions: registry.listAll().length, mirrors: mirrors.size, connections: conns.size, ...health });
     const check = checkRequest(req, config);
-    if (!check.ok) {
-      log(`http denied reason=${check.reason}`);
+    const peer = check.ok ? await verifyPeer(req.socket) : null;
+    if (!check.ok || !peer.ok) {
+      log(`http denied reason=${check.ok ? peer.reason : check.reason}`);
       res.writeHead(403, { ...headers, 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end('Forbidden\n');
     }
@@ -229,23 +234,25 @@ async function start(config, deps = {}) {
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: { threshold: 128, zlibDeflateOptions: { level: 6 } } });
 
-  server.on('upgrade', (req, socket, head) => {
+  server.on('upgrade', async (req, socket, head) => {
     const deny = (code, text) => {
       socket.end(`HTTP/1.1 ${code} ${text}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n`);
     };
     if (String(req.url).split('?')[0] !== '/ws') return deny(404, 'Not Found');
     const check = checkRequest(req, config);
-    if (!check.ok) {
-      log(`ws denied reason=${check.reason}`);
+    const peer = check.ok ? await verifyPeer(socket) : null;
+    if (!check.ok || !peer.ok) {
+      log(`ws denied reason=${check.ok ? peer.reason : check.reason}`);
       return deny(403, 'Forbidden');
     }
+    if (socket.destroyed) return undefined;
     const unauthed = [...conns].filter((c) => !c.device);
     if (unauthed.length >= maxUnauthed) {
       log('ws evicted oldest unauthenticated socket');
       unauthed[0].ws.close(4009, 'superseded');
       conns.delete(unauthed[0]);
     }
-    wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, req));
+    return wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, req, peer));
   });
 
   wss.on('headers', (h) => h.push('Cache-Control: no-store'));
@@ -272,7 +279,40 @@ async function start(config, deps = {}) {
   registry.on('error', (e) => log(`registry error ${e.code || e.message}`));
   auth.on('revoked', (id) => {
     for (const c of conns) if (c.device && c.device.id === id) c.ws.close(4001, 'revoked');
+    if (push) push.unsubscribe(id);
+    if (seen.devices) seen.devices.delete(id);
+    if (seen.dirty) seen.dirty.delete(id);
+    if (/^dev-[0-9a-f]{12}$/.test(id)) fs.rmSync(path.join(config.stateDir, 'seen', `${id}.json`), { force: true });
   });
+  if (typeof auth.on === 'function') {
+    auth.on('added', (device, source) => {
+      const data = JSON.stringify({ t: 'deviceAdded', device, node: (source && source.node) || device.node || null });
+      for (const c of conns) if (c.device && c.device.id !== device.id && c.ws.readyState === WebSocket.OPEN) c.ws.send(data);
+    });
+  }
+
+  async function sourceOf(conn) {
+    const ip = String(conn.forwardedFor || '').split(',')[0].trim().replace(/^::ffff:/, '') || null;
+    let node = null;
+    if (ip && typeof tailnet.map === 'function') {
+      const { self, peers } = await tailnet.map();
+      const hit = [self, ...peers].find((n) => n && Array.isArray(n.ips) && n.ips.includes(ip));
+      if (hit) node = { name: hit.name, os: hit.os || null };
+    }
+    return { via: conn.peer && conn.peer.ok ? 'serve' : 'loopback', ip, node };
+  }
+
+  const searchBuckets = new Map();
+  function allowSearch(deviceId) {
+    const now = Date.now();
+    const b = searchBuckets.get(deviceId) || { tokens: SEARCH_PER_SEC, at: now };
+    b.tokens = Math.min(SEARCH_PER_SEC, b.tokens + ((now - b.at) / 1000) * SEARCH_PER_SEC);
+    b.at = now;
+    searchBuckets.set(deviceId, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
 
   function allow(deviceId) {
     const now = Date.now();
@@ -298,8 +338,8 @@ async function start(config, deps = {}) {
     return m;
   }
 
-  function onConnection(ws, req) {
-    const conn = { forwardedFor: req && req.headers['x-forwarded-for'], id: crypto.randomBytes(6).toString('hex'), ws, device: null, subs: new Map(), tails: new Map(), alive: true, pairing: false };
+  function onConnection(ws, req, peer) {
+    const conn = { peer: peer || null, forwardedFor: req && req.headers['x-forwarded-for'], id: crypto.randomBytes(6).toString('hex'), ws, device: null, subs: new Map(), tails: new Map(), alive: true, pairing: false };
     conns.add(conn);
     log(`ws open conn=${conn.id}`);
     const helloTimer = setTimeout(() => {
@@ -372,15 +412,15 @@ async function start(config, deps = {}) {
         conn.pairing = true;
         let p;
         try {
-          p = await auth.createPairing(String(msg.deviceName || ''));
+          p = await auth.createPairing(String(msg.deviceName || ''), { source: await sourceOf(conn) });
         } catch (e) {
           conn.pairing = false;
           return send({ t: 'error', code: e.code || 'pair-failed', msg: 'pairing refused', ref: 'pair' });
         }
         send({ t: 'pairCode', code: p.code, expiresAt: p.expiresAt });
-        if (config.autoApprovePairing === true) {
+        if (config.autoApprovePairing === true && conn.peer && conn.peer.ok) {
           try {
-            auth.approvePairing(p.code, { id: 'auto' }, String(msg.deviceName || ''));
+            auth.autoApprove(p.code, String(msg.deviceName || ''));
           } catch (e) {
             log(`auto-approve failed conn=${conn.id} ${e.code || 'error'}`);
           }
@@ -499,6 +539,7 @@ async function start(config, deps = {}) {
         return pushSessions(conn, true);
       }
       case 'search': {
+        if (!allowSearch(conn.device.id)) return send({ t: 'error', code: 'rate-limited', msg: 'too many searches, try again in a moment', ref: 'search' });
         if (!Queue.validId(msg.id) || typeof msg.query !== 'string' || msg.query.length > 200) return send({ t: 'error', code: 'bad-request', msg: 'search needs an id and a query of at most 200 characters', ref: 'search' });
         const limit = Math.max(1, Math.min(50, Number(msg.limit) || 20));
         const running = new Map(registry.listAll().filter((i) => i.sessionId).map((i) => [i.sessionId, { managed: i.managed, name: i.name, pid: i.pid }]));

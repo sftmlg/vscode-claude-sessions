@@ -134,12 +134,14 @@ try {
 } catch {}
 const serverSkip = !fs.existsSync(SERVER) ? 'remote/server.js missing: server black-box tests skipped' : !WebSocket ? 'ws not installed' : false;
 
-async function startServer() {
+const ACT_AS_PROXY = { proxyProcesses: [path.basename(process.execPath)], proxyUids: [process.getuid()] };
+
+async function startServer(extra = ACT_AS_PROXY) {
   const home = tmpHome();
   const port = await freePort();
   const stateDir = path.join(home, 'state');
   const configFile = path.join(home, 'config.json');
-  const config = { port, publicPort: 39180, publicHost: HOST, allowedLogin: LOGIN, stateDir, tmuxSocket: `sectest-${crypto.randomBytes(4).toString('hex')}`, roots: [home], defaultDir: home };
+  const config = { port, publicPort: 39180, publicHost: HOST, allowedLogin: LOGIN, stateDir, tmuxSocket: `sectest-${crypto.randomBytes(4).toString('hex')}`, roots: [home], defaultDir: home, ...extra };
   fs.writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
   let output = '';
   const child = spawn(process.execPath, [SERVER], { env: { HOME: home, PATH: process.env.PATH, CLAUDE_REMOTE_CONFIG: configFile }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -356,4 +358,122 @@ test('server: state files are private', { skip: serverSkip }, async () => {
   } finally {
     await s.stop();
   }
+});
+
+test('server: a loopback client that is not the tailscale proxy is refused even with forged identity headers', { skip: serverSkip }, async () => {
+  const s = await startServer({});
+  try {
+    const r = await get(s.port, { headers: ident });
+    assert.strictEqual(r.status, 403);
+    const c = await connect(s.port);
+    assert.ok(!c.ws, 'WebSocket upgrade refused');
+    await until(() => /peer-not-proxy/.test(s.output()));
+    assert.match(s.output(), /denied reason=peer-not-proxy/);
+    const token = fs.readFileSync(path.join(s.config.stateDir, 'admin.token'), 'utf8').trim();
+    const admin = await get(s.port, { path: '/admin/status', headers: { host: `127.0.0.1:${s.port}`, authorization: `Bearer ${token}` } });
+    assert.strictEqual(admin.status, 200, 'the local admin channel stays available to the CLI');
+  } finally {
+    await s.stop();
+  }
+});
+
+async function autoPair(s, name = 'auto device') {
+  const c = await connect(s.port);
+  c.ws.send(JSON.stringify({ t: 'pair', deviceName: name }));
+  await until(() => c.messages.find((m) => m.t === 'pairCode'));
+  const paired = await until(() => c.messages.find((m) => m.t === 'paired'), 1500);
+  return { c, paired };
+}
+
+test('server: auto-approved pairing is announced to the other devices and stops at maxDevices', { skip: serverSkip }, async () => {
+  const s = await startServer({ ...ACT_AS_PROXY, autoApprovePairing: true, maxDevices: 2 });
+  try {
+    const first = await autoPair(s, 'first');
+    assert.ok(first.paired, 'first device pairs without a click');
+    const watcher = await connect(s.port);
+    watcher.ws.send(JSON.stringify({ t: 'hello', token: first.paired.token, clientId: 'w' }));
+    assert.ok(await until(() => watcher.messages.find((m) => m.t === 'helloOk')));
+    const second = await autoPair(s, 'second');
+    assert.ok(second.paired, 'second device pairs without a click');
+    const added = await until(() => watcher.messages.find((m) => m.t === 'deviceAdded'));
+    assert.ok(added, 'paired devices learn about the new one');
+    assert.strictEqual(added.device.id, second.paired.device.id);
+    assert.ok('node' in added);
+    assert.ok(!second.c.messages.some((m) => m.t === 'deviceAdded'), 'the new device itself is not told');
+    const third = await autoPair(s, 'third');
+    assert.ok(!third.paired, 'beyond maxDevices a pairing needs an approval');
+    const audit = fs.readFileSync(path.join(s.config.stateDir, 'audit.log'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(audit.some((l) => l.action === 'auto-refused' && l.reason === 'max-devices'));
+    assert.ok(audit.filter((l) => l.action === 'pair').every((l) => l.src && l.src.via === 'serve'), 'pairings record that they came through serve');
+  } finally {
+    await s.stop();
+  }
+});
+
+test('server: revoking a device drops its push subscription and its unread markers', { skip: serverSkip }, async () => {
+  const s = await startServer();
+  try {
+    const { token, device } = await pairDevice(s);
+    const c = await connect(s.port);
+    c.ws.send(JSON.stringify({ t: 'hello', token, clientId: 'c1' }));
+    await until(() => c.messages.find((m) => m.t === 'helloOk'));
+    const ecdh = crypto.createECDH('prime256v1');
+    ecdh.generateKeys();
+    const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/sectest', keys: { p256dh: ecdh.getPublicKey().toString('base64url'), auth: crypto.randomBytes(16).toString('base64url') } };
+    c.ws.send(JSON.stringify({ t: 'pushSubscribe', subscription }));
+    const subsFile = path.join(s.config.stateDir, 'push-subscriptions.json');
+    assert.ok(await until(() => fs.existsSync(subsFile) && fs.readFileSync(subsFile, 'utf8').includes(device.id)));
+    const seenDir = path.join(s.config.stateDir, 'seen');
+    fs.mkdirSync(seenDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(seenDir, `${device.id}.json`), '{}', { mode: 0o600 });
+    execFileSync(process.execPath, [path.join(REMOTE, 'cli.js'), 'revoke', device.id], { env: { HOME: s.home, PATH: process.env.PATH, CLAUDE_REMOTE_CONFIG: path.join(s.home, 'config.json') } });
+    assert.ok(await until(() => !fs.readFileSync(subsFile, 'utf8').includes(device.id)), 'push subscription removed');
+    await sleep(2500);
+    assert.ok(!fs.existsSync(path.join(seenDir, `${device.id}.json`)), 'unread markers removed and not written back');
+  } finally {
+    await s.stop();
+  }
+});
+
+test('server: search is rate limited per device', { skip: serverSkip }, async () => {
+  const s = await startServer();
+  try {
+    const { token } = await pairDevice(s);
+    const c = await connect(s.port);
+    c.ws.send(JSON.stringify({ t: 'hello', token, clientId: 'c1' }));
+    await until(() => c.messages.find((m) => m.t === 'helloOk'));
+    for (let i = 0; i < 12; i++) c.ws.send(JSON.stringify({ t: 'search', id: `s${i}`, query: 'x' }));
+    await until(() => c.messages.filter((m) => m.t === 'searchResults' || (m.t === 'error' && m.ref === 'search')).length >= 12, 5000);
+    const limited = c.messages.filter((m) => m.t === 'error' && m.ref === 'search' && m.code === 'rate-limited');
+    const answered = c.messages.filter((m) => m.t === 'searchResults');
+    assert.ok(limited.length >= 6, `limited ${limited.length}`);
+    assert.ok(answered.length >= 1 && answered.length <= 6, `answered ${answered.length}`);
+  } finally {
+    await s.stop();
+  }
+});
+
+test('catalog: sessions whose real working directory is outside the roots are not listed', { skip: !fs.existsSync(path.join(REMOTE, 'catalog.js')) && 'remote/catalog.js missing' }, async () => {
+  const base = tmpHome();
+  const root = path.join(base, 'work');
+  const sibling = path.join(base, 'work-shop');
+  fs.mkdirSync(root);
+  fs.mkdirSync(sibling);
+  const projects = path.join(base, '.claude', 'projects');
+  const write = (cwd) => {
+    const dir = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(dir, { recursive: true });
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    fs.writeFileSync(path.join(dir, `${id}.jsonl`), `${JSON.stringify({ type: 'user', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { role: 'user', content: 'hello there' } })}\n`);
+    return id;
+  };
+  const inside = write(root);
+  const outside = write(sibling);
+  await withHome(base, async () => {
+    const { Catalog } = require('../catalog');
+    const ids = (await new Catalog({ roots: [root] }).list()).map((m) => m.id);
+    assert.ok(ids.includes(inside), 'session in the root is listed');
+    assert.ok(!ids.includes(outside), 'a sibling folder sharing the encoded prefix is not');
+  });
 });
