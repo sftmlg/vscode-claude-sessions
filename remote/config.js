@@ -10,6 +10,8 @@ function defaults(home) {
     port: 39181,
     publicPort: 39180,
     publicHost: null,
+    publicScheme: 'http',
+    peers: [],
     allowedLogin: null,
     tmuxSocket: 'ccremote',
     tmuxPath: TMUX_CANDIDATES.find((p) => fs.existsSync(p)) || 'tmux',
@@ -32,12 +34,24 @@ function expandHome(p, home) {
 const isStringArray = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string' && x.length > 0);
 const isPort = (v) => Number.isInteger(v) && v > 0 && v < 65536;
 
+function validPeer(p) {
+  if (!p || typeof p.name !== 'string' || !p.name.trim() || p.name.length > 64 || typeof p.url !== 'string') return false;
+  try {
+    const u = new URL(p.url);
+    return (u.protocol === 'ws:' || u.protocol === 'wss:') && Boolean(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function validate(c) {
   const errors = [];
   if (!isPort(c.port)) errors.push('port must be an integer 1..65535');
   if (!isPort(c.publicPort)) errors.push('publicPort must be an integer 1..65535');
   if (c.publicHost !== null && !/^[a-zA-Z0-9.-]+$/.test(String(c.publicHost))) errors.push('publicHost must be a host name');
   if (c.allowedLogin !== null && typeof c.allowedLogin !== 'string') errors.push('allowedLogin must be a string');
+  if (c.publicScheme !== 'http' && c.publicScheme !== 'https') errors.push('publicScheme must be http or https');
+  if (!Array.isArray(c.peers) || !c.peers.every(validPeer)) errors.push('peers must be a list of {name, url} with a ws:// or wss:// url');
   if (!/^[a-zA-Z0-9_-]{1,40}$/.test(String(c.tmuxSocket))) errors.push('tmuxSocket must match [a-zA-Z0-9_-]{1,40}');
   for (const key of ['tmuxPath', 'stateDir', 'defaultDir', 'childPath']) {
     if (typeof c[key] !== 'string' || !c[key]) errors.push(`${key} must be a non-empty string`);

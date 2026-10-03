@@ -53,3 +53,18 @@ test('invalid values are rejected with a readable error', () => {
   fs.writeFileSync(file, '[]');
   assert.throws(() => loadConfig({ file, home }), /must be a JSON object/);
 });
+
+test('public scheme and peer hubs are validated', () => {
+  const home = tempHome();
+  const file = path.join(home, 'peers.json');
+  fs.writeFileSync(file, JSON.stringify({ publicScheme: 'https', peers: [{ name: 'Studio', url: 'wss://studio.example.test:39180/ws' }] }));
+  const c = loadConfig({ file, home });
+  assert.strictEqual(c.publicScheme, 'https');
+  assert.deepStrictEqual(c.peers, [{ name: 'Studio', url: 'wss://studio.example.test:39180/ws' }]);
+  assert.deepStrictEqual(loadConfig({ home, env: {} }).peers, []);
+  assert.strictEqual(loadConfig({ home, env: {} }).publicScheme, 'http');
+  for (const bad of [{ publicScheme: 'ftp' }, { peers: {} }, { peers: [{ name: 'x', url: 'http://a/ws' }] }, { peers: [{ name: '', url: 'wss://a/ws' }] }, { peers: [{ name: 'x'.repeat(65), url: 'wss://a/ws' }] }]) {
+    fs.writeFileSync(file, JSON.stringify(bad));
+    assert.throws(() => loadConfig({ file, home }), /Invalid remote config/, JSON.stringify(bad));
+  }
+});

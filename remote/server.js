@@ -49,8 +49,21 @@ const TYPES = {
   '.json': 'application/json',
 };
 
+function socketOrigin(scheme, host, port) {
+  const defaultPort = scheme === 'wss' ? 443 : 80;
+  return !port || Number(port) === defaultPort ? `${scheme}://${host}` : `${scheme}://${host}:${port}`;
+}
+
 function csp(config) {
-  const ws = config.publicHost ? ` ws://${config.publicHost}:${config.publicPort}` : '';
+  const origins = [];
+  if (config.publicHost) origins.push(socketOrigin(config.publicScheme === 'https' ? 'wss' : 'ws', config.publicHost, config.publicPort));
+  for (const peer of Array.isArray(config.peers) ? config.peers : []) {
+    try {
+      const u = new URL(peer.url);
+      origins.push(socketOrigin(u.protocol.slice(0, -1), u.hostname, u.port));
+    } catch {}
+  }
+  const ws = [...new Set(origins)].map((o) => ` ${o}`).join('');
   return `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'${ws}; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`;
 }
 
@@ -307,7 +320,7 @@ async function start(config, deps = {}) {
         if (!device) return send({ t: 'pairRequired', autoPair: config.autoApprovePairing === true });
         conn.device = device;
         log(`ws hello conn=${conn.id} device=${device.id}`);
-        send({ t: 'helloOk', device, defaultDir: config.defaultDir, health });
+        send({ t: 'helloOk', device, defaultDir: config.defaultDir, health, peers: config.peers || [] });
         return send({ t: 'sessions', items: registry.listAll().map(clientItem) });
       }
       case 'pair': {
@@ -335,7 +348,7 @@ async function start(config, deps = {}) {
             if (!device || conn.ws.readyState !== WebSocket.OPEN) return;
             conn.device = device;
             send({ t: 'paired', token, device });
-            send({ t: 'helloOk', device, defaultDir: config.defaultDir, health });
+            send({ t: 'helloOk', device, defaultDir: config.defaultDir, health, peers: config.peers || [] });
             send({ t: 'sessions', items: registry.listAll().map(clientItem) });
           },
           (e) => {

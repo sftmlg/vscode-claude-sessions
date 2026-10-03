@@ -91,12 +91,13 @@ test('static paths stay inside web/ and only serve known types', () => {
   assert.ok(staticPath('/vendor/xterm.mjs?x=1').endsWith(path.join('web', 'vendor', 'xterm.mjs')));
   for (const bad of ['/../server.js', '/..%2fserver.js', '/vendor/VERSIONS', '/vendor/xterm.LICENSE', '/%00.html', '/%E0%A4%A.html']) assert.strictEqual(staticPath(bad), null, bad);
   assert.strictEqual(csp({ publicHost: HOST, publicPort: 39180 }), `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://${HOST}:39180; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`);
+  assert.match(csp({ publicHost: HOST, publicPort: 443, publicScheme: 'https', peers: [{ name: 'Studio', url: 'wss://studio.example.test/ws' }, { name: 'Old', url: 'ws://old.example.test:39180/ws' }] }), /connect-src 'self' wss:\/\/hub\.example\.test wss:\/\/studio\.example\.test ws:\/\/old\.example\.test:39180;/);
 });
 
 test('hub end to end on a throwaway tmux socket', async (t) => {
   const ctx = testCtx();
   const stateDir = path.join(home, 'state');
-  const config = { port: 0, publicPort: 39180, publicHost: HOST, allowedLogin: LOGIN, tmuxSocket: ctx.socket, tmuxPath: ctx.bin, childPath: ctx.childPath, stateDir, roots: [work], defaultDir: work, launcher: [], claudeCommand: ['/bin/sh', FAKE_CLAUDE], claudeArgs: [] };
+  const config = { peers: [{ name: 'Studio', url: 'ws://studio.example.test:39180/ws' }], port: 0, publicPort: 39180, publicHost: HOST, allowedLogin: LOGIN, tmuxSocket: ctx.socket, tmuxPath: ctx.bin, childPath: ctx.childPath, stateDir, roots: [work], defaultDir: work, launcher: [], claudeCommand: ['/bin/sh', FAKE_CLAUDE], claudeArgs: [] };
   fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const auth = createAuth(config, { log: () => {} });
   const logs = [];
@@ -140,6 +141,7 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     assert.strictEqual(paired.device.name, 'test phone');
     const ok = await c.wait((m) => m.t === 'helloOk', 'helloOk');
     assert.strictEqual(ok.defaultDir, work);
+    assert.deepStrictEqual(ok.peers, [{ name: 'Studio', url: 'ws://studio.example.test:39180/ws' }]);
     assert.strictEqual(ok.health.folderAccess.desktop, 'blocked');
     assert.strictEqual(ok.health.nodePath, fs.realpathSync(process.execPath));
     folderState = 'ok';
