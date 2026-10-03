@@ -11,6 +11,7 @@ function defaults(home) {
     publicPort: 39180,
     publicHost: null,
     publicScheme: 'http',
+    displayName: null,
     peers: [],
     allowedLogin: null,
     tmuxSocket: 'ccremote',
@@ -50,6 +51,7 @@ function validate(c) {
   if (!isPort(c.publicPort)) errors.push('publicPort must be an integer 1..65535');
   if (c.publicHost !== null && !/^[a-zA-Z0-9.-]+$/.test(String(c.publicHost))) errors.push('publicHost must be a host name');
   if (c.allowedLogin !== null && typeof c.allowedLogin !== 'string') errors.push('allowedLogin must be a string');
+  if (c.displayName !== null && (typeof c.displayName !== 'string' || !c.displayName.trim() || c.displayName.length > 64)) errors.push('displayName must be a short name');
   if (c.publicScheme !== 'http' && c.publicScheme !== 'https') errors.push('publicScheme must be http or https');
   if (!Array.isArray(c.peers) || !c.peers.every(validPeer)) errors.push('peers must be a list of {name, url} with a ws:// or wss:// url');
   if (!/^[a-zA-Z0-9_-]{1,40}$/.test(String(c.tmuxSocket))) errors.push('tmuxSocket must match [a-zA-Z0-9_-]{1,40}');

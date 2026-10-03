@@ -13,6 +13,7 @@ const { Queue } = require('./queue');
 const tmux = require('./tmux');
 const { Catalog } = require('./catalog');
 const { SeenStore } = require('./seen');
+const { Tailnet } = require('./tailnet');
 const sessions = require('../sessions');
 
 function optional(name) {
@@ -161,6 +162,12 @@ async function start(config, deps = {}) {
   sessions.loadCache(path.join(config.stateDir, 'cache'));
   const catalog = deps.catalog || new Catalog(config);
   const seen = deps.seen || new SeenStore(config.stateDir);
+  const tailnet = deps.tailnet || new Tailnet();
+  async function helloPayload(c, device) {
+    const hostName = config.displayName || (await tailnet.selfName()) || String(config.publicHost || 'this hub').split('.')[0];
+    const viewerHost = await tailnet.viewerHost(c.forwardedFor);
+    return { t: 'helloOk', device, defaultDir: config.defaultDir, health, peers: config.peers || [], hostName, publicHost: config.publicHost, viewerHost };
+  }
   const itemsFor = (c) => registry.listAll().map((i) => ({ ...clientItem(i), unread: c.device ? seen.unread(c.device.id, i) : false }));
   const queue = deps.queue || new Queue(path.join(config.stateDir, 'queue.json'));
   const mirrors = new Map();
@@ -216,7 +223,7 @@ async function start(config, deps = {}) {
       unauthed[0].ws.close(4009, 'superseded');
       conns.delete(unauthed[0]);
     }
-    wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));
+    wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, req));
   });
 
   wss.on('headers', (h) => h.push('Cache-Control: no-store'));
@@ -259,8 +266,8 @@ async function start(config, deps = {}) {
     return m;
   }
 
-  function onConnection(ws) {
-    const conn = { id: crypto.randomBytes(6).toString('hex'), ws, device: null, subs: new Map(), tails: new Map(), alive: true, pairing: false };
+  function onConnection(ws, req) {
+    const conn = { forwardedFor: req && req.headers['x-forwarded-for'], id: crypto.randomBytes(6).toString('hex'), ws, device: null, subs: new Map(), tails: new Map(), alive: true, pairing: false };
     conns.add(conn);
     log(`ws open conn=${conn.id}`);
     const helloTimer = setTimeout(() => {
@@ -325,7 +332,7 @@ async function start(config, deps = {}) {
         if (!device) return send({ t: 'pairRequired', autoPair: config.autoApprovePairing === true });
         conn.device = device;
         log(`ws hello conn=${conn.id} device=${device.id}`);
-        send({ t: 'helloOk', device, defaultDir: config.defaultDir, health, peers: config.peers || [] });
+        send(await helloPayload(conn, device));
         return send({ t: 'sessions', items: itemsFor(conn) });
       }
       case 'pair': {
@@ -353,7 +360,7 @@ async function start(config, deps = {}) {
             if (!device || conn.ws.readyState !== WebSocket.OPEN) return;
             conn.device = device;
             send({ t: 'paired', token, device });
-            send({ t: 'helloOk', device, defaultDir: config.defaultDir, health, peers: config.peers || [] });
+            send(await helloPayload(conn, device));
             send({ t: 'sessions', items: itemsFor(conn) });
           },
           (e) => {

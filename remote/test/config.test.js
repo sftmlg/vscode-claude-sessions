@@ -63,7 +63,9 @@ test('public scheme and peer hubs are validated', () => {
   assert.deepStrictEqual(c.peers, [{ name: 'Studio', url: 'wss://studio.example.test:39180/ws' }]);
   assert.deepStrictEqual(loadConfig({ home, env: {} }).peers, []);
   assert.strictEqual(loadConfig({ home, env: {} }).publicScheme, 'http');
-  for (const bad of [{ publicScheme: 'ftp' }, { peers: {} }, { peers: [{ name: 'x', url: 'http://a/ws' }] }, { peers: [{ name: '', url: 'wss://a/ws' }] }, { peers: [{ name: 'x'.repeat(65), url: 'wss://a/ws' }] }]) {
+  fs.writeFileSync(file, JSON.stringify({ displayName: 'Studio' }));
+  assert.strictEqual(loadConfig({ file, home }).displayName, 'Studio');
+  for (const bad of [{ displayName: '' }, { displayName: 7 }, { publicScheme: 'ftp' }, { peers: {} }, { peers: [{ name: 'x', url: 'http://a/ws' }] }, { peers: [{ name: '', url: 'wss://a/ws' }] }, { peers: [{ name: 'x'.repeat(65), url: 'wss://a/ws' }] }]) {
     fs.writeFileSync(file, JSON.stringify(bad));
     assert.throws(() => loadConfig({ file, home }), /Invalid remote config/, JSON.stringify(bad));
   }

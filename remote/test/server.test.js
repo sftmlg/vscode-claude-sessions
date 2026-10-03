@@ -46,7 +46,7 @@ function get(port, p, headers = ident) {
 
 function client(port) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { ...ident, origin: `http://${HOST}:39180` } });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { ...ident, origin: `http://${HOST}:39180`, 'x-forwarded-for': '100.64.0.9' } });
     const c = { ws, json: [], frames: [] };
     c.send = (m) => ws.send(JSON.stringify(m));
     c.find = (pred) => c.json.find(pred);
@@ -103,7 +103,7 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
   const logs = [];
   const registry = new Registry(config, { ctx, pollMs: 150 });
   let folderState = 'blocked';
-  const hub = await start(config, { auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400, probeFolder: async () => folderState });
+  const hub = await start(config, { auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400, probeFolder: async () => folderState, tailnet: { viewerHost: async (ip) => (ip === '100.64.0.9' ? 'laptop.example.test' : null), selfName: async () => 'studio' } });
   t.after(async () => {
     await hub.close();
     killServer(ctx);
@@ -142,6 +142,9 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     const ok = await c.wait((m) => m.t === 'helloOk', 'helloOk');
     assert.strictEqual(ok.defaultDir, work);
     assert.deepStrictEqual(ok.peers, [{ name: 'Studio', url: 'ws://studio.example.test:39180/ws' }]);
+    assert.strictEqual(ok.hostName, 'studio', 'the hub names itself by its tailnet host name');
+    assert.strictEqual(ok.viewerHost, 'laptop.example.test', 'the viewer machine comes from the forwarded tailnet address');
+    assert.strictEqual(ok.publicHost, HOST);
     assert.strictEqual(ok.health.folderAccess.desktop, 'blocked');
     assert.strictEqual(ok.health.nodePath, fs.realpathSync(process.execPath));
     folderState = 'ok';
