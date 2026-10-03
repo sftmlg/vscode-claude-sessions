@@ -741,12 +741,24 @@ h3 {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 88px;
   white-space: nowrap;
   min-height: 34px;
   padding: 4px 12px;
   border-radius: 99px;
   background: transparent;
+}
+
+.host-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.host-tab .dot,
+.host-count {
+  flex: none;
 }
 
 .host-tab[aria-selected="true"] {

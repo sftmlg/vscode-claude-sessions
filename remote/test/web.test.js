@@ -512,3 +512,12 @@ test('every device row offers Rename, which sends renameDevice with the trimmed 
   assert.match(app, /text: 'Rename', onclick: \(\) => showRenameDevice\(d\)/);
   assert.match(app, /conn\.send\(\{ t: 'renameDevice', deviceId: d\.id, name: next \}\)/);
 });
+
+test('host tabs shrink with an ellipsis and keep the full name for assistive tech', () => {
+  const app = fs.readFileSync(path.join(WEB, 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(WEB, 'style.css'), 'utf8');
+  assert.match(app, /label: el\('span', \{ class: 'host-label' \}\)/);
+  assert.match(app, /setAttr\(t\.btn, 'aria-label', /);
+  assert.match(css, /\.host-label \{[^}]*text-overflow: ellipsis/);
+  assert.match(css, /\.host-tab \{[^}]*flex: 0 1 auto;[^}]*min-width: /);
+});

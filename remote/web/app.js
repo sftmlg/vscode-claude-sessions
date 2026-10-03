@@ -297,7 +297,7 @@ function renderHostTabs() {
   const nodes = ordered.map((c) => {
     let t = tabNodes.get(c.id);
     if (!t) {
-      t = { dot: el('span'), label: el('span'), count: el('span', { class: 'host-count' }) };
+      t = { dot: el('span'), label: el('span', { class: 'host-label' }), count: el('span', { class: 'host-count' }) };
       t.btn = el('button', { type: 'button', role: 'tab', class: 'host-tab', onclick: () => switchHost(c) }, [t.dot, t.label, t.count]);
       tabNodes.set(c.id, t);
     }
@@ -305,7 +305,9 @@ function renderHostTabs() {
     setAttr(t.btn, 'aria-selected', String(c === conn));
     setAttr(t.btn, 'title', `${c.label}: ${c.connState === 'online' ? 'connected' : c.connState}${waiting ? `, ${waiting} waiting for you` : ''}`);
     setAttr(t.dot, 'class', `dot dot-${c.connState}`);
-    setText(t.label, isViewerHost(c) ? `${c.label} (this device)` : c.label);
+    const name = isViewerHost(c) ? `${c.label} (this device)` : c.label;
+    setText(t.label, name);
+    setAttr(t.btn, 'aria-label', waiting ? `${name}, ${waiting} waiting` : name);
     setText(t.count, waiting ? String(waiting) : '');
     t.count.hidden = !waiting;
     setAttr(t.count, 'aria-label', waiting ? `${waiting} waiting` : null);
