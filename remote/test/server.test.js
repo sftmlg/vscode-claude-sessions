@@ -86,6 +86,21 @@ test('folder probe: a listing that hangs or is denied counts as blocked, a reada
   assert.ok(Date.parse(access.checkedAt));
 });
 
+test('a notification payload, after encryption, still links to the session', async () => {
+  const { createPush } = require('../push');
+  const { notificationFor } = require('../server');
+  const { pushClient } = require('./fixtures/fs-helpers');
+  const sent = [];
+  const push = createPush({ stateDir: path.join(tempHome('remote-push-'), 'state') }, { send: async (endpoint, headers, body) => (sent.push(body), 201) });
+  const device = pushClient();
+  push.subscribe('dev-aaaaaaaaaaaa', device.subscription);
+  await push.notify(notificationFor({ sessionId: 'cc-a b', status: 'waiting' }, { project: 'shop' }));
+  const payload = device.decrypt(sent[0]);
+  assert.strictEqual(payload.url, '/#session=cc-a%20b');
+  assert.strictEqual(payload.title, 'A session in shop needs you');
+  assert.strictEqual(payload.tag, 'cc-a b');
+});
+
 test('static paths stay inside web/ and only serve known types', () => {
   assert.ok(staticPath('/').endsWith(path.join('web', 'index.html')));
   assert.ok(staticPath('/vendor/xterm.mjs?x=1').endsWith(path.join('web', 'vendor', 'xterm.mjs')));

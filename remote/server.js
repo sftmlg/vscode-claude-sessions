@@ -152,6 +152,11 @@ function minute(iso) {
   return Number.isFinite(t) ? new Date(t - (t % 60000)).toISOString() : iso || null;
 }
 
+function notificationFor(s, item) {
+  const where = item && item.project ? `A session in ${item.project}` : 'A session';
+  return { title: `${where} ${s.status === 'waiting' ? 'needs you' : 'finished'}`, tag: s.sessionId, url: `/#session=${encodeURIComponent(s.sessionId)}` };
+}
+
 const clientItem = ({ transcriptPath, transcriptSize, lastActivity, ...rest }) => ({ ...rest, lastActivity: minute(lastActivity), hasTranscript: Boolean(transcriptPath) });
 
 async function start(config, deps = {}) {
@@ -178,9 +183,7 @@ async function start(config, deps = {}) {
     const prev = lastStatus.get(s.sessionId);
     lastStatus.set(s.sessionId, s.status);
     if (!push || prev !== 'busy' || (s.status !== 'waiting' && s.status !== 'idle')) return;
-    const item = registry.resolve(s.sessionId);
-    const where = item && item.project ? `A session in ${item.project}` : 'A session';
-    push.notify({ title: `${where} ${s.status === 'waiting' ? 'needs you' : 'finished'}`, tag: s.sessionId, url: `./#session=${encodeURIComponent(s.sessionId)}` }).catch((e) => log(`push notify failed ${e.code || e.message}`));
+    push.notify(notificationFor(s, registry.resolve(s.sessionId))).catch((e) => log(`push notify failed ${e.code || e.message}`));
   }
   async function helloPayload(c, device) {
     const hostName = config.displayName || (await tailnet.selfName()) || String(config.publicHost || 'this hub').split('.')[0];
@@ -669,4 +672,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { start, csp, staticPath, rotateLogs, probeFolder, checkFolderAccess };
+module.exports = { start, csp, staticPath, rotateLogs, probeFolder, checkFolderAccess, notificationFor };
