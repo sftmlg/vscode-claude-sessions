@@ -230,7 +230,7 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     for (const who of ['a', 'b']) assert.deepStrictEqual(lines.filter((l) => l.includes(`from-${who}-`)), [0, 1, 2, 3].map((i) => `got:from-${who}-${i}`));
   });
 
-  await t.test('unauthenticated sockets: closed after the hello timeout, at most 8 at once', async () => {
+  await t.test('unauthenticated sockets: closed after the hello timeout, at most 8 at once, the oldest gives way', async () => {
     const idle = await client(port);
     const code = await new Promise((r) => idle.ws.once('close', (c) => r(c)));
     assert.strictEqual(code, 4008);
@@ -240,7 +240,10 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
       x.send({ t: 'ping', ts: i });
       open.push(x);
     }
-    await assert.rejects(client(port), /503/);
+    const oldestClosed = new Promise((r) => open[0].ws.once('close', (c) => r(c)));
+    const newest = await client(port);
+    assert.strictEqual(await oldestClosed, 4009, 'the oldest unauthenticated socket gives way to the newest');
+    open.push(newest);
     for (const x of open) x.ws.terminate();
     await new Promise((r) => setTimeout(r, 100));
   });

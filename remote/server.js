@@ -190,9 +190,11 @@ async function start(config, deps = {}) {
       log(`ws denied reason=${check.reason}`);
       return deny(403, 'Forbidden');
     }
-    if ([...conns].filter((c) => !c.device).length >= maxUnauthed) {
-      log('ws denied reason=too-many-unauthenticated');
-      return deny(503, 'Service Unavailable');
+    const unauthed = [...conns].filter((c) => !c.device);
+    if (unauthed.length >= maxUnauthed) {
+      log('ws evicted oldest unauthenticated socket');
+      unauthed[0].ws.close(4009, 'superseded');
+      conns.delete(unauthed[0]);
     }
     wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));
   });
@@ -335,6 +337,7 @@ async function start(config, deps = {}) {
           (e) => {
             conn.pairing = false;
             send({ t: 'error', code: e.code || 'pair-failed', msg: 'pairing ended', ref: 'pair' });
+            if (!conn.device) ws.close(4008, 'pairing ended');
           },
         );
         return undefined;

@@ -144,6 +144,10 @@ const conn = {
         toast('This device was revoked.');
       }
       setConn('offline');
+      if (e.code === 4009 && document.visibilityState === 'hidden') {
+        this.parked = true;
+        return;
+      }
       this.retry();
     });
   },
