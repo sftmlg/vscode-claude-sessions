@@ -25,3 +25,11 @@ export function parseOptions(lines) {
   if (options.length && visible.some((l) => ESC_RE.test(l))) options.push({ key: 'Escape', label: 'Cancel (Esc)' });
   return options;
 }
+
+const PROMPT_RE = /^\s*[│|]?\s*[❯>]\s+(.+?)\s*[│|]?\s*$/;
+
+export function suggestionFrom(row) {
+  if (!row || !row.dim) return null;
+  const m = PROMPT_RE.exec(String(row.text || ''));
+  return m && m[1].trim().length >= 2 ? m[1].trim() : null;
+}

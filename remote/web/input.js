@@ -142,13 +142,57 @@ export class OutboxSender {
   }
 }
 
-export function setupInput({ form, textarea, badge, keybar, outbox, isTouch, onSubmit, onKey }) {
+const DRAFT_PREFIX = 'claude-remote.draft:';
+export const DRAFT_MAX_BYTES = 20 * 1024;
+
+function capBytes(text, max) {
+  const enc = new TextEncoder();
+  if (enc.encode(text).length <= max) return text;
+  let out = text.slice(0, max);
+  while (enc.encode(out).length > max) out = out.slice(0, -1);
+  return out;
+}
+
+export class DraftStore {
+  constructor(store = storage()) {
+    this.store = store;
+  }
+
+  key(host, session) {
+    return `${DRAFT_PREFIX}${host}:${session}`;
+  }
+
+  load(host, session) {
+    try {
+      return (this.store && this.store.getItem(this.key(host, session))) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  save(host, session, text) {
+    try {
+      if (!this.store) return;
+      if (text) this.store.setItem(this.key(host, session), capBytes(text, DRAFT_MAX_BYTES));
+      else this.store.removeItem(this.key(host, session));
+    } catch {}
+  }
+
+  clear(host, session) {
+    this.save(host, session, '');
+  }
+}
+
+export function setupInput({ form, textarea, badge, keybar, outbox, isTouch, onSubmit, onKey, onChange = () => {} }) {
   const grow = () => {
     textarea.style.height = 'auto';
     const max = Math.max(80, Math.floor(window.innerHeight * 0.4));
     textarea.style.height = `${Math.min(textarea.scrollHeight, max)}px`;
   };
-  textarea.addEventListener('input', grow);
+  textarea.addEventListener('input', () => {
+    grow();
+    onChange(textarea.value);
+  });
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
       e.preventDefault();
@@ -175,7 +219,8 @@ export function setupInput({ form, textarea, badge, keybar, outbox, isTouch, onS
   keybar.addEventListener('mousedown', (e) => e.preventDefault());
   const render = (items) => {
     badge.hidden = !items.length;
-    badge.textContent = items.length ? String(items.length) : '';
+    badge.textContent = items.length ? `${items.length} queued` : '';
+    badge.title = 'Queued messages go out once, in order, as soon as the connection is back';
   };
   outbox.onChange(render);
   render(outbox.pending());
@@ -187,5 +232,16 @@ export function setupInput({ form, textarea, badge, keybar, outbox, isTouch, onS
       }
     },
     focus: () => textarea.focus(),
+    setText(text) {
+      textarea.value = text || '';
+      grow();
+    },
+    fill(text) {
+      textarea.value = text;
+      grow();
+      onChange(textarea.value);
+      textarea.focus();
+    },
+    isEmpty: () => !textarea.value.trim(),
   };
 }

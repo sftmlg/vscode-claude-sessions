@@ -233,7 +233,7 @@ test('list renders the inbox with collapsible project groups and unread dots; op
   assert.match(app, /text: 'Needs you'/);
   assert.match(app, /class: 'unread-dot', title: 'New since you last looked'/);
   assert.match(app, /function markSeen\(s\)[\s\S]{0,200}t: 'markSeen', sessionId: s\.sessionId/);
-  assert.match(app, /function openSession\(key\) \{[\s\S]{0,400}markSeen\(currentItem\(\)\)/);
+  assert.match(app, /function openSession\(key\) \{[\s\S]{0,700}markSeen\(currentItem\(\)\)/);
   assert.match(app, /function closeSession\(\) \{[\s\S]{0,200}markSeen\(s\)/);
 });
 
@@ -286,4 +286,34 @@ test('tabs carry machine names; the machine the viewer sits at is marked and fir
   assert.match(app, /`\$\{c\.label\} \(this device\)`/);
   assert.match(app, /\[\.\.\.hosts\.filter\(isViewerHost\), \.\.\.hosts\.filter\(\(h\) => !isViewerHost\(h\)\)\]/);
   assert.match(app, /if \(m\.hostName\) conn\.label = m\.hostName;/);
+});
+
+test('drafts: one per host and session, capped at 20 KB, cleared on send', async () => {
+  const { DraftStore, DRAFT_MAX_BYTES } = await import(path.join(WEB, 'input.js'));
+  const data = new Map();
+  const store = { getItem: (k) => data.get(k) ?? null, setItem: (k, v) => data.set(k, v), removeItem: (k) => data.delete(k) };
+  const drafts = new DraftStore(store);
+  drafts.save('self', 'cc-a', 'half typed');
+  drafts.save('studio', 'cc-a', 'other mac');
+  assert.strictEqual(new DraftStore(store).load('self', 'cc-a'), 'half typed', 'survives reload');
+  assert.strictEqual(drafts.load('studio', 'cc-a'), 'other mac');
+  drafts.save('self', 'cc-a', '');
+  assert.strictEqual(drafts.load('self', 'cc-a'), '');
+  assert.strictEqual([...data.keys()].some((k) => k.includes('self') && k.includes('cc-a')), false, 'empty draft removed');
+  drafts.save('self', 'cc-b', 'x'.repeat(DRAFT_MAX_BYTES + 10));
+  assert.ok(new TextEncoder().encode(drafts.load('self', 'cc-b')).length <= DRAFT_MAX_BYTES);
+  drafts.clear('studio', 'cc-a');
+  assert.strictEqual(drafts.load('studio', 'cc-a'), '');
+});
+
+test('suggestion chip: only a dimmed prompt line counts as a suggestion', async () => {
+  const { suggestionFrom } = await import(path.join(WEB, 'quick-replies.js'));
+  assert.strictEqual(suggestionFrom({ text: '│ ❯ run the tests again   │', dim: true }), 'run the tests again');
+  assert.strictEqual(suggestionFrom({ text: '> run the tests again', dim: true }), 'run the tests again');
+  assert.strictEqual(suggestionFrom({ text: '❯ typed by the user', dim: false }), null, 'real input is not a suggestion');
+  assert.strictEqual(suggestionFrom({ text: '❯ ', dim: true }), null);
+  assert.strictEqual(suggestionFrom(null), null);
+  const app = read('app.js');
+  assert.match(read('index.html'), /<span class="suggestion-label">Use suggestion<\/span>/);
+  assert.match(app, /input\.fill\(suggestion\)/, 'a tap fills the input, it never sends');
 });

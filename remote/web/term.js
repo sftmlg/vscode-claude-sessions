@@ -151,6 +151,29 @@ export function createTerm(el) {
       return { cols: Math.max(20, Math.min(400, c)), rows: Math.max(5, Math.min(200, r)) };
     },
     rescale: scale,
+    promptRow() {
+      const buf = term.buffer.active;
+      for (let y = buf.viewportY + term.rows - 1; y >= buf.viewportY; y--) {
+        const line = buf.getLine(y);
+        if (!line) continue;
+        const text = line.translateToString(true);
+        const at = text.indexOf('❯');
+        if (at < 0) continue;
+        let dim = false;
+        let any = false;
+        for (let x = at + 1; x < line.length; x++) {
+          const cell = line.getCell(x);
+          const ch = cell && cell.getChars();
+          if (!ch || !ch.trim() || ch === '│') continue;
+          any = true;
+          const grey = cell.isDim() || (cell.isFgPalette() && cell.getFgColor() === 8);
+          if (!grey) return { text, dim: false };
+          dim = true;
+        }
+        return { text, dim: any && dim };
+      }
+      return null;
+    },
     visibleLines() {
       const buf = term.buffer.active;
       const lines = [];

@@ -1,7 +1,7 @@
 import { createTerm } from './term.js';
-import { Outbox, OutboxSender, setupInput, newId, highlightParts } from './input.js';
+import { Outbox, OutboxSender, DraftStore, setupInput, newId, highlightParts } from './input.js';
 import { inboxSections, relativeTime, absoluteTime } from './inbox.js';
-import { parseOptions } from './quick-replies.js';
+import { parseOptions, suggestionFrom } from './quick-replies.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const ACTIVE_HOST_KEY = 'claude-remote.host';
@@ -390,6 +390,27 @@ function setConn(kind) {
 }
 
 const outbox = new Outbox();
+const drafts = new DraftStore();
+let draftTimer = null;
+
+function saveDraft(text) {
+  const s = currentItem();
+  if (!s || !s.managed) return;
+  const host = conn.id;
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => drafts.save(host, s.name, text), 300);
+  renderSuggestion();
+}
+
+function renderSuggestion() {
+  const btn = $('suggestion');
+  const s = currentItem();
+  const row = s && s.managed && s.status === 'idle' && state.tab === 'terminal' && term && input && input.isEmpty() ? term.promptRow() : null;
+  const suggestion = suggestionFrom(row);
+  btn.hidden = !suggestion;
+  $('suggestion-text').textContent = suggestion || '';
+  btn.dataset.text = suggestion || '';
+}
 let term = null;
 let input = null;
 
@@ -611,6 +632,7 @@ function scheduleQuickReplies() {
 }
 
 function renderQuickReplies() {
+  renderSuggestion();
   const bar = $('quick-replies');
   const s = currentItem();
   const options = s && s.managed && s.status === 'waiting' && state.tab === 'terminal' && term ? parseOptions(term.visibleLines()) : [];
@@ -661,6 +683,8 @@ function openSession(key) {
   state.tab = s && s.managed ? state.tab : 'chat';
   if (s && !s.managed) setTab('chat');
   else setTab(state.tab);
+  const opened = currentItem();
+  if (input) input.setText(opened && opened.managed ? drafts.load(conn.id, opened.name) : '');
   renderStatus();
   subscribe();
   markSeen(currentItem());
@@ -921,8 +945,10 @@ function submitText(text) {
     toast('Outbox is full; wait for the connection.');
     return false;
   }
+  clearTimeout(draftTimer);
+  drafts.clear(conn.id, s.name);
   if (conn.authed) conn.sender.pump();
-  else toast('Offline: the message is queued and sent on reconnect.');
+  else toast('Offline: queued, sends when online.');
   return true;
 }
 
@@ -1149,7 +1175,11 @@ function setupViewport() {
 
 function init() {
   setupViewport();
-  input = setupInput({ form: $('input-bar'), textarea: $('input'), badge: $('outbox-badge'), keybar: $('keybar'), outbox, isTouch, onSubmit: submitText, onKey: sendKey });
+  input = setupInput({ form: $('input-bar'), textarea: $('input'), badge: $('outbox-badge'), keybar: $('keybar'), outbox, isTouch, onSubmit: submitText, onKey: sendKey, onChange: saveDraft });
+  $('suggestion').addEventListener('click', () => {
+    const suggestion = $('suggestion').dataset.text;
+    if (suggestion) input.fill(suggestion);
+  });
   $('back').addEventListener('click', () => {
     closeSession();
     show('list');
