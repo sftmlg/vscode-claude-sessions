@@ -411,6 +411,8 @@ module.exports = {
   checkRequest,
   allowedOrigins,
   createAuth,
+  writePrivateFile,
+  ensurePrivateDir,
   idleDays,
   limits,
   Auth,
