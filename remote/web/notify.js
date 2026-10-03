@@ -50,12 +50,24 @@ export async function currentSubscription() {
   return sub ? sub.toJSON() : null;
 }
 
-export function sessionFromUrl(url) {
+export function sessionTarget(url) {
   const m = /#session=([^&]+)$/.exec(String(url || ''));
   if (!m) return null;
   try {
-    return decodeURIComponent(m[1]);
+    const raw = m[1];
+    const slash = raw.indexOf('/');
+    if (slash < 0) return { host: null, key: decodeURIComponent(raw) };
+    return { host: decodeURIComponent(raw.slice(0, slash)).toLowerCase(), key: decodeURIComponent(raw.slice(slash + 1)) };
   } catch {
     return null;
   }
+}
+
+export function sessionFromUrl(url) {
+  const t = sessionTarget(url);
+  return t ? t.key : null;
+}
+
+export function sessionHash(host, key) {
+  return `#session=${encodeURIComponent(host)}/${encodeURIComponent(key)}`;
 }

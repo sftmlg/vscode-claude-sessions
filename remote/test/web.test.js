@@ -238,7 +238,7 @@ test('list renders the inbox with collapsible project groups and unread dots; op
   assert.match(app, /text: 'Needs you'/);
   assert.match(app, /class: 'unread-dot', title: 'New since you last looked'/);
   assert.match(app, /function markSeen\(s\)[\s\S]{0,200}t: 'markSeen', sessionId: s\.sessionId/);
-  assert.match(app, /function openSession\(key\) \{[\s\S]{0,700}markSeen\(currentItem\(\)\)/);
+  assert.match(app, /function openSession\(key[^)]*\) \{[\s\S]{0,1200}markSeen\(currentItem\(\)\)/);
   assert.match(app, /function closeSession\(\) \{[\s\S]{0,200}markSeen\(s\)/);
 });
 
@@ -431,7 +431,7 @@ test('old drafts give way: the newest are kept within about 1 MB, and the outbox
 test('a notification opens its session on a cold start; push never sticks; times stay fresh', () => {
   const app = read('app.js');
   assert.match(app, /!state\.current && !pendingOpen\) switchHost\(target\)/, 'a remembered tab never overrides the link');
-  assert.match(app, /if \(c === hosts\[0\] && pendingOpen\)/, 'the link is honoured even when the first hub answers in the background');
+  assert.match(app, /if \(pendingOpen && hostFor\(pendingOpen\) === c\)/, 'the link is honoured even when its hub answers in the background');
   assert.match(app, /if \(!sent\) \{[\s\S]{0,80}pushSettled\(\)/, 'offline hub: the switch returns at once');
   assert.match(app, /pushTimer = setTimeout\(/, 'no answer: the switch returns after a timeout');
   assert.match(app, /onSubscriptionChange\(/, 'a renewed browser subscription is sent to the hub');
@@ -470,4 +470,16 @@ test('sheets are modal dialogs; take over shows names first and internals on req
   assert.ok(!/SIGTERM/.test(app.slice(app.indexOf('function showTakeoverSheet'), app.indexOf('function showSettings'))), 'no process jargon in the sheet text');
   assert.match(app, /loses access at once and has to be paired again/);
   assert.ok(!/Tap again to revoke/.test(app));
+});
+
+test('the open session lives in the URL: host and key, back returns to the list', async () => {
+  const { sessionTarget, sessionHash } = await import(path.join(WEB, 'notify.js'));
+  assert.deepStrictEqual(sessionTarget('https://hub.example.test/#session=studio.example.test/cc-a%20b'), { host: 'studio.example.test', key: 'cc-a b' });
+  assert.deepStrictEqual(sessionTarget('https://hub.example.test/#session=cc-int'), { host: null, key: 'cc-int' }, 'notification links name only the session');
+  assert.strictEqual(sessionTarget('https://hub.example.test/'), null);
+  assert.strictEqual(sessionHash('studio.example.test', 'cc-a b'), '#session=studio.example.test/cc-a%20b');
+  const app = read('app.js');
+  assert.match(app, /history\[replace \? 'replaceState' : 'pushState'\]\(/);
+  assert.match(app, /addEventListener\('popstate'/);
+  assert.match(app, /if \(history\.state && history\.state\.session\) history\.back\(\);/);
 });

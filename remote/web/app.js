@@ -2,7 +2,7 @@ import { createTerm } from './term.js';
 import { Outbox, OutboxSender, DraftStore, setupInput, newId, highlightParts } from './input.js';
 import { inboxSections, relativeTime, absoluteTime, staleFor } from './inbox.js';
 import { parseOptions, suggestionFrom } from './quick-replies.js';
-import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, onSubscriptionChange, currentSubscription, sessionFromUrl, PUSH_UNAVAILABLE } from './notify.js';
+import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, onSubscriptionChange, currentSubscription, sessionTarget, sessionHash, PUSH_UNAVAILABLE } from './notify.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const ACTIVE_HOST_KEY = 'claude-remote.host';
@@ -309,6 +309,7 @@ function renderHostTabs() {
 function switchHost(c) {
   if (!c || c === conn) return;
   closeSession();
+  if (sessionTarget(location.href)) history.replaceState(null, '', location.pathname + location.search);
   clearSearch();
   conn = c;
   safeStorage((s) => s.setItem(ACTIVE_HOST_KEY, c.id));
@@ -334,11 +335,11 @@ function onBackground(c, data) {
   if (m.t === 'helloOk') {
     if (m.hostName) c.label = m.hostName;
     if (c === hosts[0]) resyncPush();
-    if (c === hosts[0] && pendingOpen) setTimeout(() => {
-      const key = pendingOpen;
+    if (pendingOpen && hostFor(pendingOpen) === c) setTimeout(() => {
+      const target = pendingOpen;
       pendingOpen = null;
       switchHost(c);
-      openSession(key);
+      openSession(target.key, { replace: true });
     }, 0);
     c.authed = true;
     c.needsPair = false;
@@ -717,8 +718,12 @@ function renderSize() {
   $('fit-toggle').setAttribute('aria-pressed', String(state.claim));
 }
 
-function openSession(key) {
+function openSession(key, { fromHistory = false, replace = false } = {}) {
   if (state.current && state.current !== key) closeSession();
+  if (!fromHistory) {
+    const hash = sessionHash(urlHost(conn.url), key);
+    if (location.hash !== hash) history[replace ? 'replaceState' : 'pushState']({ session: key, host: urlHost(conn.url) }, '', hash);
+  }
   state.current = key;
   const s = currentItem();
   show('session');
@@ -877,11 +882,11 @@ function onJson(data) {
       state.defaultDir = m.defaultDir || '';
       conn.setState('online');
       if (conn === hosts[0] && Array.isArray(m.peers)) setPeers(m.peers);
-      if (pendingOpen && conn === hosts[0]) {
-        const key = pendingOpen;
+      if (pendingOpen && hostFor(pendingOpen) === conn) {
+        const target = pendingOpen;
         pendingOpen = null;
         show('list');
-        openSession(key);
+        openSession(target.key, { replace: true });
       } else if (state.current) {
         show('session');
         subscribe();
@@ -1254,12 +1259,26 @@ function pushRow() {
   ]);
 }
 
+function hostFor(target) {
+  if (!target) return null;
+  if (!target.host) return hosts[0];
+  return hosts.find((h) => urlHost(h.url) === target.host) || null;
+}
+
+function goTo(target, options = {}) {
+  const h = hostFor(target);
+  if (!h) {
+    pendingOpen = target;
+    return;
+  }
+  if (h !== conn) switchHost(h);
+  if (conn.authed) openSession(target.key, options);
+  else pendingOpen = target;
+}
+
 function openFromLink(url) {
-  const key = sessionFromUrl(url);
-  if (!key) return;
-  if (conn !== hosts[0]) switchHost(hosts[0]);
-  if (conn.authed) openSession(key);
-  else pendingOpen = key;
+  const target = sessionTarget(url);
+  if (target) goTo(target);
 }
 
 let pendingOpen = null;
@@ -1368,8 +1387,20 @@ function init() {
     if (suggestion) input.fill(suggestion);
   });
   $('back').addEventListener('click', () => {
-    closeSession();
-    show('list');
+    if (history.state && history.state.session) history.back();
+    else {
+      closeSession();
+      show('list');
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  });
+  window.addEventListener('popstate', () => {
+    const target = sessionTarget(location.href);
+    if (target) goTo(target, { fromHistory: true });
+    else {
+      closeSession();
+      show('list');
+    }
   });
   $('open-settings').addEventListener('click', showSettings);
   $('new-session').addEventListener('click', showNewSession);
@@ -1444,7 +1475,7 @@ function init() {
   conn = self;
   show('list');
   self.connect();
-  pendingOpen = sessionFromUrl(location.href);
+  pendingOpen = sessionTarget(location.href);
   onNotificationClick(openFromLink);
   onSubscriptionChange(() => {
     push.want = true;
