@@ -421,6 +421,19 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     assert.strictEqual(listed.items.find((i) => i.name === 'cc-release-notes-draft').title, 'Release notes draft');
   });
 
+  await t.test('a paired device can rename devices; bad names and unknown ids are refused', async () => {
+    const own = (await auth.listDevices()).find((d) => d.name === 'test phone');
+    c.send({ t: 'renameDevice', deviceId: own.id, name: '  Pocket phone ' });
+    const renamed = await c.wait((m) => m.t === 'devices' && m.items.some((d) => d.id === own.id && d.name === 'Pocket phone'), 'renamed');
+    assert.ok(renamed);
+    c.send({ t: 'renameDevice', deviceId: own.id, name: 'x'.repeat(41) });
+    assert.strictEqual((await c.wait((m) => m.t === 'error' && m.ref === 'renameDevice', 'bad name')).code, 'bad-name');
+    c.send({ t: 'renameDevice', deviceId: 'nope', name: 'Other' });
+    await waitFor(() => c.json.filter((m) => m.t === 'error' && m.ref === 'renameDevice').length === 2, { what: 'unknown refused' });
+    assert.strictEqual(c.json.filter((m) => m.t === 'error' && m.ref === 'renameDevice')[1].code, 'unknown-device');
+    auth.rename(own.id, 'test phone');
+  });
+
   await t.test('chat subscriptions never leak tails: duplicate subscribe and close during setup', async () => {
     assert.strictEqual(hub.stats().tails, 1);
     const d = await client(port);

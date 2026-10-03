@@ -972,6 +972,7 @@ function onJson(data) {
         state.awaitingBody = false;
       }
       if (m.code === 'unauthorized') return undefined;
+      if (m.ref === 'renameDevice' && m.code === 'bad-name') return toast('Device names are 1 to 40 characters.');
       return toast(errorText(m.code, m.msg));
     default:
       return undefined;
@@ -1320,6 +1321,22 @@ function showSettings() {
   conn.send({ t: 'devices' });
 }
 
+function showRenameDevice(d) {
+  const name = el('input', { value: d.name, maxlength: '40', autocomplete: 'off', required: true, enterkeyhint: 'done' });
+  const cancel = el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: showSettings });
+  const form = el('form', { class: 'stack' }, [field('Device name', name), el('div', { class: 'row-form' }, [cancel, el('button', { type: 'submit', class: 'primary', text: 'Save' })])]);
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const next = name.value.trim();
+    if (!next) return undefined;
+    if (next !== d.name && !conn.send({ t: 'renameDevice', deviceId: d.id, name: next })) return toast('Offline.');
+    showSettings();
+    return undefined;
+  });
+  openSheet('Rename device', form);
+  name.select();
+}
+
 function renderDevices(items) {
   const list = $('device-list');
   if (!list) return;
@@ -1339,7 +1356,8 @@ function renderDevices(items) {
           onCancel: showSettings,
         }),
       );
-      return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}${d.node ? ` · from ${d.node}` : ''}`, title: absoluteTime(d.lastSeen) || undefined })]), revoke]);
+      const rename = el('button', { type: 'button', class: 'secondary', text: 'Rename', onclick: () => showRenameDevice(d) });
+      return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}${d.node ? ` · from ${d.node}` : ''}`, title: absoluteTime(d.lastSeen) || undefined })]), el('div', { class: 'row-form' }, [rename, revoke])]);
     }),
   );
 }

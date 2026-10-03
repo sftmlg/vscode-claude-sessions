@@ -482,6 +482,13 @@ async function start(config, deps = {}) {
       case 'revoke':
         if (!(await auth.revoke(String(msg.deviceId || ''), conn.device.id))) return send({ t: 'error', code: 'not-found', msg: 'unknown device', ref: 'revoke' });
         return conn.ws.readyState === WebSocket.OPEN && send({ t: 'devices', items: await auth.listDevices() });
+      case 'renameDevice':
+        try {
+          await auth.rename(String(msg.deviceId || ''), msg.name, conn.device);
+        } catch (e) {
+          return send({ t: 'error', code: e.code || 'rename-failed', msg: 'rename refused', ref: 'renameDevice' });
+        }
+        return send({ t: 'devices', items: await auth.listDevices() });
       case 'list':
         return pushSessions(conn, true);
       case 'sub': {

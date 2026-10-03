@@ -506,3 +506,9 @@ test('a deep link opens a steerable session in the terminal before the list arri
   assert.strictEqual(initialTab('cc-shop', { managed: true }, 'terminal'), 'terminal');
   assert.strictEqual(initialTab('x', { managed: false }, 'terminal'), 'chat');
 });
+
+test('every device row offers Rename, which sends renameDevice with the trimmed name', () => {
+  const app = fs.readFileSync(path.join(WEB, 'app.js'), 'utf8');
+  assert.match(app, /text: 'Rename', onclick: \(\) => showRenameDevice\(d\)/);
+  assert.match(app, /conn\.send\(\{ t: 'renameDevice', deviceId: d\.id, name: next \}\)/);
+});
