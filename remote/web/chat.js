@@ -186,6 +186,15 @@
     const queued = new Map();
     const render = {
       prompt(e) {
+        const xml = /^\s*<([a-z][\w-]*)[\s>][\s\S]*<\/\1>\s*$/i.exec(String(e.text || ''));
+        if (xml) {
+          const tag = xml[1].toLowerCase();
+          const inner = ['summary', 'message', 'description', 'status'].map((t) => new RegExp(`<${t}>([\\s\\S]*?)</${t}>`, 'i').exec(e.text)).find(Boolean);
+          const label = oneLine(inner ? inner[1] : e.text.replace(/<[^>]+>/g, ' '), 80);
+          const d = details(doc, 'chat-msg chat-injected', [el(doc, 'span', 'chat-notice-line', `${tag.replace(/[-_]/g, ' ')} · ${label}`)]);
+          d.appendChild(el(doc, 'pre', 'chat-pre chat-pre-plain', e.text));
+          return d;
+        }
         const m = el(doc, 'div', 'chat-msg chat-prompt');
         const bubble = el(doc, 'div', 'chat-bubble');
         bubble.appendChild(renderMarkdown(doc, e.text));
@@ -212,7 +221,10 @@
       assistant(e) {
         const m = el(doc, 'div', 'chat-msg chat-assistant');
         if (e.messageId) m.dataset.messageId = e.messageId;
-        for (const b of e.blocks || []) m.appendChild(render.block(b));
+        for (const b of e.blocks || []) {
+          const node = render.block(b);
+          if (node) m.appendChild(node);
+        }
         return m;
       },
       block(b) {
@@ -221,7 +233,7 @@
           t.appendChild(renderMarkdown(doc, b.text));
           return t;
         }
-        if (b.type === 'thinking') return el(doc, 'div', 'chat-thinking', 'thinking');
+        if (b.type === 'thinking') return b.text ? el(doc, 'div', 'chat-thinking', b.text) : null;
         if (b.type === 'toolUse') return render.tool(b);
         if (b.type === 'fallback') return el(doc, 'div', 'chat-note', `model fallback: ${b.from || '?'} → ${b.to || '?'}`);
         return el(doc, 'div', 'chat-note', `block: ${b.blockType || b.type}`);
@@ -420,7 +432,7 @@
     };
 
     const mergeAssistant = (into, e, prepend) => {
-      const nodes = (e.blocks || []).map((b) => renderer.renderBlock(b));
+      const nodes = (e.blocks || []).map((b) => renderer.renderBlock(b)).filter(Boolean);
       if (prepend) {
         const first = into.element.firstChild;
         for (const n of nodes) into.element.insertBefore(n, first);

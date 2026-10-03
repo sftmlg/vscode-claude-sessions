@@ -195,7 +195,7 @@ test('the synthetic session renders as a readable chat with tool results attache
   assert.match(tools[3].one('chat-tool-result').textContent, /^deniedWrite blocked/);
   assert.strictEqual(root.all('chat-orphan-result').length, 0);
   const assistants = root.all('chat-assistant');
-  assert.strictEqual(assistants[0].all('chat-thinking').length, 1, 'thinking shows as a label only');
+  assert.strictEqual(assistants[0].all('chat-thinking').length, 0, 'empty thinking blocks are not shown');
   assert.strictEqual(assistants.find((a) => a.dataset.messageId === 'msg_01first').all('chat-tool').length, 2, 'parallel tool calls sit in one assistant message');
   const question = root.one('chat-question');
   assert.deepStrictEqual(question.all('chat-option-label').map((o) => o.textContent), ['Keep both', 'Remove the readme']);
@@ -275,7 +275,7 @@ test('scrolling up loads older pages in order and merges an assistant split acro
   assert.strictEqual(chat.state.from, 1000);
   assert.strictEqual(root.all('chat-assistant').filter((a) => a.dataset.messageId === 'msg_01first').length, 1, 'both halves merged into one message');
   const merged = root.all('chat-assistant').find((a) => a.dataset.messageId === 'msg_01first');
-  assert.deepStrictEqual(merged.childNodes.map((c) => [...c.classes][0]), ['chat-thinking', 'chat-text', 'chat-tool', 'chat-tool']);
+  assert.deepStrictEqual(merged.childNodes.map((c) => [...c.classes][0]), ['chat-text', 'chat-tool', 'chat-tool']);
   assert.strictEqual(list.firstChild.one('chat-prompt') || list.firstChild, list.firstChild);
   assert.match(root.all('chat-prompt')[0].textContent, /^Please list/);
   scroll.scrollTop = 0;
@@ -370,5 +370,20 @@ test('live events during the first load are kept, events already in the page are
   assert.strictEqual(chat.state.to, 200);
   api.emitLive({ sessionId: 's1', items: [{ ...prompt, uuid: 'old', text: 'replayed old line', offset: 150 }], from: 150, to: 200 });
   assert.ok(!root.all('chat-prompt').some((n) => n.textContent.includes('replayed old line')));
+  chat.destroy();
+});
+
+test('system and task notices inside prompts collapse to one readable line', async () => {
+  const notice = { kind: 'prompt', uuid: 'n1', text: '<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n<summary>Build finished in 42 s</summary>\n</task-notification>' };
+  const plain = { kind: 'prompt', uuid: 'p1', text: 'Please list the files' };
+  const api = fakeApi(page([notice, plain], 0, 100));
+  const root = host();
+  const chat = mountChat(root, api);
+  await chat.open('s1');
+  const summary = root.one('chat-notice-line');
+  assert.ok(summary, 'notice rendered as a summary line');
+  assert.match(summary.textContent, /^task notification · Build finished in 42 s$/);
+  assert.ok(!root.all('chat-prompt').some((p) => p.textContent.includes('<task-id>')), 'raw XML is not shown as a message');
+  assert.strictEqual(root.all('chat-prompt').length, 1);
   chat.destroy();
 });
