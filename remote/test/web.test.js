@@ -228,7 +228,7 @@ test('attention inbox: waiting, then finished and unread, then busy; the rest gr
 
 test('list renders the inbox with collapsible project groups and unread dots; opening and leaving mark read', () => {
   const app = read('app.js');
-  assert.match(app, /inboxSections\(state\.sessions\)/);
+  assert.match(app, /inboxSections\(visible\)/);
   assert.match(app, /el\('details', \{ class: 'project-group'/);
   assert.match(app, /text: 'Needs you'/);
   assert.match(app, /class: 'unread-dot', title: 'New since you last looked'/);
@@ -316,4 +316,12 @@ test('suggestion chip: only a dimmed prompt line counts as a suggestion', async 
   const app = read('app.js');
   assert.match(read('index.html'), /<span class="suggestion-label">Use suggestion<\/span>/);
   assert.match(app, /input\.fill\(suggestion\)/, 'a tap fills the input, it never sends');
+});
+
+test('stars from the editor show on rows and results; a star filter narrows the list', () => {
+  const app = read('app.js');
+  assert.match(read('index.html'), /<button type="button" id="star-filter" class="chip" aria-pressed="false" title="Show only sessions starred in the editor">★ Starred<\/button>/);
+  assert.match(app, /r\.star\.hidden = !s\.favorite;/);
+  assert.match(app, /const visible = starOnly \? state\.sessions\.filter\(\(s\) => s\.favorite\) : state\.sessions;/);
+  assert.match(app, /hit\.favorite \? el\('span', \{ class: 'star'/);
 });

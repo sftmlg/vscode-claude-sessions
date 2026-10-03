@@ -477,7 +477,7 @@ function renderSearch(items) {
     list.append(
       el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
         el('div', { class: 'row-main' }, [
-          el('div', { class: 'row-title' }, [el('span', { class: 'row-name', text: hit.title || hit.sessionId.slice(0, 8) }), badge(hit.running)]),
+          el('div', { class: 'row-title' }, [hit.favorite ? el('span', { class: 'star', text: '★', title: 'Starred in the editor' }) : null, el('span', { class: 'row-name', text: hit.title || hit.sessionId.slice(0, 8) }), badge(hit.running)]),
           el('div', { class: 'row-meta' }, [el('span', { text: hit.project || basename(hit.cwd) }), when(hit.lastActivity)]),
           hit.snippet ? snippet : null,
         ]),
@@ -542,6 +542,8 @@ function collapsedProjects() {
   return new Set(safeStorage((st) => JSON.parse(st.getItem(COLLAPSED_KEY) || '[]'), []));
 }
 
+const STAR_KEY = 'claude-remote.star-only';
+let starOnly = safeStorage((st) => st.getItem(STAR_KEY) === '1', false);
 const rowNodes = new Map();
 const groupNodes = new Map();
 let needsHead = null;
@@ -553,6 +555,7 @@ function sessionRow(s) {
     r = {};
     const open = () => openSession(keyOf(r.item));
     r.dot = el('span', { class: 'unread-dot', title: 'New since you last looked', 'aria-label': 'unread' });
+    r.star = el('span', { class: 'star', text: '★', title: 'Starred in the editor', 'aria-label': 'starred' });
     r.name = el('span', { class: 'row-name' });
     r.pill = el('span');
     r.project = el('span');
@@ -561,13 +564,14 @@ function sessionRow(s) {
     r.prompt = el('div', { class: 'row-prompt' });
     r.takeover = el('button', { type: 'button', class: 'secondary', text: 'Take over', onclick: (e) => (e.stopPropagation(), prepareTakeover(r.item.pid)) });
     r.li = el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
-      el('div', { class: 'row-main' }, [el('div', { class: 'row-title' }, [r.dot, r.name, r.pill]), el('div', { class: 'row-meta' }, [r.project, r.badge, r.when]), r.prompt]),
+      el('div', { class: 'row-main' }, [el('div', { class: 'row-title' }, [r.dot, r.star, r.name, r.pill]), el('div', { class: 'row-meta' }, [r.project, r.badge, r.when]), r.prompt]),
       el('div', { class: 'row-actions' }, [r.takeover]),
     ]);
     rowNodes.set(key, r);
   }
   r.item = s;
   r.dot.hidden = !s.unread;
+  r.star.hidden = !s.favorite;
   setText(r.name, labelOf(s));
   const p = pill(s.status);
   setAttr(r.pill, 'class', p.className);
@@ -605,9 +609,11 @@ function groupNode(project) {
 
 function renderList() {
   const list = $('session-list');
-  $('session-empty').hidden = state.sessions.length > 0;
+  const visible = starOnly ? state.sessions.filter((s) => s.favorite) : state.sessions;
+  $('session-empty').hidden = visible.length > 0;
+  $('session-empty').textContent = starOnly ? 'No starred session is running. Star sessions in the editor.' : 'No running Claude sessions.';
   for (const r of rowNodes.values()) r.used = false;
-  const { needs, groups } = inboxSections(state.sessions);
+  const { needs, groups } = inboxSections(visible);
   const top = [];
   if (needs.length) {
     if (!needsHead) needsHead = el('li', { class: 'section-head', text: 'Needs you' });
@@ -1187,6 +1193,13 @@ function init() {
   $('open-settings').addEventListener('click', showSettings);
   $('new-session').addEventListener('click', showNewSession);
   $('session-search').addEventListener('input', onSearchInput);
+  $('star-filter').setAttribute('aria-pressed', String(starOnly));
+  $('star-filter').addEventListener('click', () => {
+    starOnly = !starOnly;
+    safeStorage((st) => st.setItem(STAR_KEY, starOnly ? '1' : '0'));
+    $('star-filter').setAttribute('aria-pressed', String(starOnly));
+    renderList();
+  });
   $('session-search').addEventListener('keydown', (e) => e.key === 'Escape' && clearSearch());
   $('sheet-backdrop').addEventListener('click', closeSheet);
   $('tab-terminal').addEventListener('click', () => {

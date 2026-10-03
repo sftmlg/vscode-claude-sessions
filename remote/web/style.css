@@ -285,6 +285,11 @@ h3 {
   font-weight: 400;
 }
 
+.star {
+  flex: none;
+  color: var(--warn);
+}
+
 .unread-dot {
   flex: none;
   width: 8px;
