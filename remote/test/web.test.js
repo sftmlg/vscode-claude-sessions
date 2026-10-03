@@ -262,3 +262,20 @@ test('quick replies render only while waiting and send a key only on tap', () =>
   const { KEYS } = require('../tmux');
   for (const k of ['1', '9', 'Escape']) assert.ok(KEYS.has(k));
 });
+
+test('dates are relative in the text and absolute only in the tooltip', async () => {
+  const { relativeTime } = await import(path.join(WEB, 'inbox.js'));
+  const now = new Date(2026, 9, 3, 15, 0).getTime();
+  const at = (y, mo, d, h, mi, sec = 0) => new Date(y, mo, d, h, mi, sec).toISOString();
+  assert.strictEqual(relativeTime(at(2026, 9, 3, 14, 59, 40), now), 'just now');
+  assert.strictEqual(relativeTime(at(2026, 9, 3, 14, 57), now), '3 min ago');
+  assert.strictEqual(relativeTime(at(2026, 9, 3, 12, 0), now), '3 h ago');
+  assert.strictEqual(relativeTime(at(2026, 9, 2, 23, 0), now), 'yesterday');
+  assert.strictEqual(relativeTime(at(2026, 9, 1, 9, 0), now), '2 days ago');
+  assert.strictEqual(relativeTime(at(2026, 8, 25, 9, 0), now), 'last week');
+  assert.strictEqual(relativeTime(at(2026, 8, 15, 9, 0), now), '2 weeks ago');
+  assert.strictEqual(relativeTime(at(2026, 6, 1, 9, 0), now), '3 months ago');
+  assert.strictEqual(relativeTime(at(2025, 1, 1, 9, 0), now), 'over a year ago');
+  assert.strictEqual(relativeTime(null, now), '');
+  assert.ok(!/toLocaleDateString\(\)/.test(read('app.js').replace(/title: [^,]+toLocale\w+\(\)/g, '')), 'no absolute dates in visible text');
+});

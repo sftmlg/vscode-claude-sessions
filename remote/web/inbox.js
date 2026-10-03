@@ -30,3 +30,26 @@ export function inboxSections(items) {
   groups.sort((a, b) => time(b.items[0]) - time(a.items[0]));
   return { needs, groups };
 }
+
+export function relativeTime(iso, now = Date.now()) {
+  const t = Date.parse(iso || '');
+  if (!Number.isFinite(t)) return '';
+  const min = Math.floor((now - t) / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  if (t >= startOfToday.getTime()) return `${Math.floor(min / 60)} h ago`;
+  const days = Math.ceil((startOfToday.getTime() - t) / 86400000);
+  if (days <= 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  if (days < 14) return 'last week';
+  if (days < 60) return `${Math.floor(days / 7)} weeks ago`;
+  if (days < 365) return `${Math.floor(days / 30)} months ago`;
+  return 'over a year ago';
+}
+
+export function absoluteTime(iso) {
+  const t = Date.parse(iso || '');
+  return Number.isFinite(t) ? new Date(t).toLocaleString() : '';
+}

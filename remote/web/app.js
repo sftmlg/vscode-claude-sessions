@@ -1,6 +1,6 @@
 import { createTerm } from './term.js';
 import { Outbox, OutboxSender, setupInput, newId, highlightParts } from './input.js';
-import { inboxSections } from './inbox.js';
+import { inboxSections, relativeTime, absoluteTime } from './inbox.js';
 import { parseOptions } from './quick-replies.js';
 
 const TOKEN_KEY = 'claude-remote.token';
@@ -421,7 +421,7 @@ function renderSearch(items) {
       el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
         el('div', { class: 'row-main' }, [
           el('div', { class: 'row-title' }, [el('span', { class: 'row-name', text: hit.title || hit.sessionId.slice(0, 8) }), badge(hit.running)]),
-          el('div', { class: 'row-meta' }, [el('span', { text: hit.project || basename(hit.cwd) }), el('span', { text: timeAgo(hit.lastActivity) })]),
+          el('div', { class: 'row-meta' }, [el('span', { text: hit.project || basename(hit.cwd) }), when(hit.lastActivity)]),
           hit.snippet ? snippet : null,
         ]),
         el('div', { class: 'row-actions' }, actions),
@@ -463,14 +463,11 @@ function showResumeSheet(hit) {
 const labelOf = (s) => s.title || s.name || (s.sessionId ? s.sessionId.slice(0, 8) : 'session');
 
 function timeAgo(iso) {
-  if (!iso) return '';
-  const min = Math.floor((Date.now() - Date.parse(iso)) / 60000);
-  if (!Number.isFinite(min)) return '';
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min} min ago`;
-  const h = Math.floor(min / 60);
-  if (h < 48) return `${h} h ago`;
-  return new Date(iso).toLocaleDateString();
+  return relativeTime(iso);
+}
+
+function when(iso) {
+  return el('span', { class: 'when', text: relativeTime(iso), title: absoluteTime(iso) || undefined });
 }
 
 function basename(p) {
@@ -495,7 +492,7 @@ function sessionRow(s) {
   return el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
     el('div', { class: 'row-main' }, [
       el('div', { class: 'row-title' }, [s.unread ? el('span', { class: 'unread-dot', title: 'New since you last looked', 'aria-label': 'unread' }) : null, el('span', { class: 'row-name', text: labelOf(s) }), pill(s.status)]),
-      el('div', { class: 'row-meta' }, [el('span', { text: s.project || basename(s.cwd) }), badge(s.managed ? 'service' : 'terminal'), el('span', { text: timeAgo(s.lastActivity) })]),
+      el('div', { class: 'row-meta' }, [el('span', { text: s.project || basename(s.cwd) }), badge(s.managed ? 'service' : 'terminal'), when(s.lastActivity)]),
       s.lastPrompt ? el('div', { class: 'row-prompt', text: s.lastPrompt }) : null,
     ]),
     el('div', { class: 'row-actions' }, actions),
@@ -1032,7 +1029,7 @@ function renderDevices(items) {
         revoke.textContent = 'Tap again to revoke';
         return undefined;
       });
-      return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}` })]), revoke]);
+      return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}`, title: absoluteTime(d.lastSeen) || undefined })]), revoke]);
     }),
   );
 }
