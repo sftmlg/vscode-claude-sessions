@@ -112,7 +112,7 @@ class Catalog {
     const all = await this.list();
     if (q) for (const m of all) await this.loadText(m);
     const hits = q ? await sessions.searchSessions(all, q) : all;
-    return hits.slice(0, limit).map((m) => {
+    return Promise.all(hits.slice(0, limit).map(async (m) => {
       const run = running.get(m.id);
       const ext = extensionInfo(m.id, m.cwd, this.roots);
       return {
@@ -125,9 +125,9 @@ class Catalog {
         name: run && run.managed ? run.name : null,
         pid: run && !run.managed ? run.pid : null,
         lastActivity: m.lastActivity,
-        snippet: q ? sessions.matchSnippet(m, q) : lastPrompt(m),
+        snippet: q ? sessions.matchSnippet(m, q) || (m.file ? await sessions.deepSnippet(m.file, q).catch(() => '') : '') : lastPrompt(m),
       };
-    });
+    }));
   }
 
   async warm({ pauseMs = 10 } = {}) {

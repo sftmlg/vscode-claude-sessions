@@ -40,6 +40,8 @@ session(B, sub, [user('Add an invoice endpoint for Müller'), said('The endpoint
 session(C, repo, [user('Refactor the checkout tests and the checkout docs, checkout everywhere'), said('ok')], 5);
 session(D, repo, [said('only an answer')], 60);
 session(E, outside, [user('Checkout of a foreign project')], 1);
+const F = 'ffffffff-0000-4000-8000-000000000006';
+session(F, repo, [user('first words'), said('somewhere in the middle the albatross lands'), user('middle words'), said('more words'), user('last words')], 600);
 
 test('titles: custom title, then AI title, then the shortened first prompt, then the automatic name', () => {
   assert.strictEqual(displayTitle({ customTitle: 'Mine', aiTitle: 'AI', firstPrompt: 'p' }, 'auto-1'), 'Mine');
@@ -47,6 +49,11 @@ test('titles: custom title, then AI title, then the shortened first prompt, then
   assert.strictEqual(displayTitle({ firstPrompt: `${'word '.repeat(40)}end` }, 'auto-1').length, 80);
   assert.strictEqual(displayTitle({}, 'project-2b'), 'project-2b');
   assert.strictEqual(displayTitle(null, null), null);
+});
+
+test('a hit deep inside the conversation shows the matching passage', async () => {
+  const hits = await new Catalog({ roots: [root] }).search('albatross');
+  assert.deepStrictEqual(hits.map((h) => [h.sessionId, h.snippet]), [[F, 'somewhere in the middle the albatross lands']]);
 });
 
 test('project is the repository folder that holds the working directory', () => {
@@ -79,7 +86,7 @@ test('search covers names and conversation text of every session under the roots
 test('warming fills the text cache for every listed session', async () => {
   const catalog = new Catalog({ roots: [root] });
   const n = await catalog.warm({ pauseMs: 0 });
-  assert.strictEqual(n, 4);
+  assert.strictEqual(n, 5);
 });
 
 test('a session written after an earlier search is found by the next one', async () => {

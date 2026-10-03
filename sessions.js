@@ -241,15 +241,49 @@ function searchFields(s) {
   ].map(([text, weight]) => [foldText(text), weight]);
 }
 
+function snippetAround(text, terms) {
+  const folded = foldText(text);
+  const found = Math.min(...terms.map((t) => folded.indexOf(t)).filter((i) => i >= 0));
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (foldText(text.slice(0, mid)).length <= found) lo = mid;
+    else hi = mid - 1;
+  }
+  return oneLine(text.slice(Math.max(0, lo - 30)), 120);
+}
+
 function matchSnippet(s, query) {
   const terms = foldText(query).split(/\s+/).filter(Boolean);
   const m = s.meta || s;
   const texts = [m.firstPrompt, m.lastUser && m.lastUser.text, m.lastAssistant && m.lastAssistant.text].filter(Boolean);
   const hit = terms.length ? texts.find((t) => terms.some((term) => foldText(t).includes(term))) : texts[0];
   if (!hit) return '';
-  const folded = foldText(hit);
-  const at = terms.length ? Math.max(0, Math.min(...terms.map((t) => folded.indexOf(t)).filter((i) => i >= 0)) - 30) : 0;
-  return oneLine(hit.slice(at), 120);
+  return terms.length ? snippetAround(hit, terms) : oneLine(hit, 120);
+}
+
+async function deepSnippet(file, query) {
+  const terms = foldText(query).split(/\s+/).filter(Boolean);
+  if (!terms.length) return '';
+  const raw = await fsp.readFile(file, 'utf8');
+  let n = 0;
+  for (const line of raw.split('\n')) {
+    if (++n % 2000 === 0) await sleep(0);
+    if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) continue;
+    let o;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (o.type !== 'user' && o.type !== 'assistant') continue;
+    const text = messageText(o);
+    if (!text || (o.type === 'user' && isSyntheticPrompt(text))) continue;
+    const folded = foldText(text);
+    if (terms.some((t) => folded.includes(t))) return snippetAround(text, terms);
+  }
+  return '';
 }
 
 const RELATIVE_HOURS = 48;
@@ -609,4 +643,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { filesForSession, sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, conversationText, foldText, matchSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { filesForSession, sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, conversationText, foldText, matchSnippet, deepSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

@@ -8,7 +8,7 @@ const path = require('path');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-sessions-test-'));
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
-const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState, timeAgo, readStateFile, writeStatePatch, archiveInState, searchSessions, foldText, sessionPaths } = require('../sessions');
+const { listRepoSessions, sessionSummary, renameSession, archiveDuplicates, readState, timeAgo, readStateFile, writeStatePatch, archiveInState, searchSessions, foldText, sessionPaths, matchSnippet, deepSnippet } = require('../sessions');
 
 const repo = '/work/demo-repo';
 const projectDir = path.join(home, '.claude', 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'));
@@ -153,6 +153,24 @@ test('search: every word must occur, title hits beat body hits, frequency beats 
   ];
   const hits = (await searchSessions(rows, 'Invoice SCHMID')).map((r) => r.id);
   assert.deepStrictEqual(hits, ['title', 'many', 'once']);
+});
+
+test('snippets come from the matching passage, also deep inside the conversation', async () => {
+  const file = path.join(projectDir, 'dddd4444-0000-0000-0000-000000000000.jsonl');
+  const filler = 'x '.repeat(80);
+  fs.writeFileSync(file, [
+    { type: 'user', cwd: repo, timestamp: iso(10), message: { content: 'start here' } },
+    { type: 'assistant', timestamp: iso(9), message: { content: [{ type: 'text', text: `${filler} the Grüße für Müller are in the appendix` }] } },
+    { type: 'user', timestamp: iso(8), message: { content: 'Stop hook feedback: Müller' } },
+    { type: 'user', timestamp: iso(7), message: { content: 'last words' } },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const meta = { file, firstPrompt: 'start here', lastUser: { text: 'last words' } };
+  assert.strictEqual(matchSnippet(meta, 'mueller'), '');
+  const deep = await deepSnippet(file, 'MUELLER appendix');
+  assert.ok(deep.includes('für Müller are in the appendix'), deep);
+  assert.ok(deep.length <= 120);
+  assert.strictEqual(await deepSnippet(file, 'nowhere'), '');
+  assert.strictEqual(matchSnippet({ firstPrompt: `${'ü '.repeat(40)}Größe passt` }, 'groesse'), `${'ü '.repeat(15)}Größe passt`);
 });
 
 test('search folds case and umlauts', () => {
