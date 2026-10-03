@@ -213,7 +213,7 @@ test('one tab per host: own socket, own token per origin, peers from the first h
   assert.match(read('vscode-bridge.js'), /getToken: \(origin\) => request\('getToken', \{ origin/);
 });
 
-test('attention inbox: waiting, then finished and unread, then busy; the rest grouped by project, newest first', async () => {
+test('attention inbox: waiting, then finished and unread; everything else, working included, grouped by project', async () => {
   const { inboxSections } = await import(path.join(WEB, 'inbox.js'));
   const t = (min) => new Date(Date.UTC(2026, 0, 1, 12, min)).toISOString();
   const items = [
@@ -226,8 +226,8 @@ test('attention inbox: waiting, then finished and unread, then busy; the rest gr
     { name: 'g', status: 'idle', unread: true, project: 'shop', lastActivity: t(4) },
   ];
   const { needs, groups } = inboxSections(items);
-  assert.deepStrictEqual(needs.map((i) => i.name), ['d', 'g', 'c', 'b']);
-  assert.deepStrictEqual(groups.map((g) => [g.project, g.items.map((i) => i.name)]), [['api', ['e']], ['docs', ['f']], ['shop', ['a']]]);
+  assert.deepStrictEqual(needs.map((i) => i.name), ['d', 'g', 'c'], 'working sessions do not need you');
+  assert.deepStrictEqual(groups.map((g) => [g.project, g.items.map((i) => i.name)]), [['shop', ['b', 'a']], ['api', ['e']], ['docs', ['f']]]);
   assert.deepStrictEqual(inboxSections([]), { needs: [], groups: [] });
 });
 
@@ -436,4 +436,18 @@ test('a notification opens its session on a cold start; push never sticks; times
   assert.match(app, /pushTimer = setTimeout\(/, 'no answer: the switch returns after a timeout');
   assert.match(app, /onSubscriptionChange\(/, 'a renewed browser subscription is sent to the hub');
   assert.match(app, /setInterval\(\(\) => \{\s*renderList\(\);\s*renderHostTabs\(\);\s*\}, 60000\)/);
+});
+
+test('a long wait reads as stale, and chat never opens blank', async () => {
+  const { staleFor } = await import(path.join(WEB, 'inbox.js'));
+  const now = new Date(2026, 9, 3, 15, 0).getTime();
+  assert.strictEqual(staleFor(new Date(2026, 9, 3, 12, 0).toISOString(), now), '');
+  assert.strictEqual(staleFor(new Date(2026, 8, 30, 12, 0).toISOString(), now), '3 days');
+  assert.strictEqual(staleFor(new Date(2026, 9, 2, 8, 0).toISOString(), now), 'yesterday');
+  const app = read('app.js');
+  assert.match(app, /pill-stale/);
+  assert.match(app, /return inboxSections\(c\.sessions \|\| \[\]\)\.needs\.length/, 'tab badge counts what the Needs you section shows');
+  assert.match(app, /text: 'Loading conversation…'/);
+  assert.match(app, /keyOf\(currentItem\(\) \|\| \{\}\) !== key/, 'compared by key, not by object');
+  assert.match(app, /Could not load the conversation/);
 });

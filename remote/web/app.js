@@ -1,6 +1,6 @@
 import { createTerm } from './term.js';
 import { Outbox, OutboxSender, DraftStore, setupInput, newId, highlightParts } from './input.js';
-import { inboxSections, relativeTime, absoluteTime } from './inbox.js';
+import { inboxSections, relativeTime, absoluteTime, staleFor } from './inbox.js';
 import { parseOptions, suggestionFrom } from './quick-replies.js';
 import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, onSubscriptionChange, currentSubscription, sessionFromUrl, PUSH_UNAVAILABLE } from './notify.js';
 
@@ -258,7 +258,7 @@ function setPeers(peers) {
 }
 
 function waitingCount(c) {
-  return (c.sessions || []).filter((s) => s.status === 'waiting').length;
+  return inboxSections(c.sessions || []).needs.length;
 }
 
 function syncChildren(parent, nodes) {
@@ -585,8 +585,10 @@ function sessionRow(s) {
   r.star.hidden = !s.favorite;
   setText(r.name, labelOf(s));
   const p = pill(s.status);
-  setAttr(r.pill, 'class', p.className);
-  setText(r.pill, p.textContent);
+  const stale = s.status === 'waiting' ? staleFor(s.lastActivity) : '';
+  setAttr(r.pill, 'class', stale ? `${p.className} pill-stale` : p.className);
+  setAttr(r.pill, 'title', stale ? `Waiting since ${absoluteTime(s.lastActivity)}` : null);
+  setText(r.pill, stale ? `waiting · ${stale}` : p.textContent);
   setText(r.project, s.project || basename(s.cwd));
   const b = badge(s.managed ? 'service' : 'terminal');
   setAttr(r.badge, 'class', b.className);
@@ -989,7 +991,9 @@ async function mountChat() {
   const s = currentItem();
   if (!s || !s.sessionId || state.chatUnmount || state.chatMounting) return;
   state.chatMounting = true;
+  const key = keyOf(s);
   const pane = $('chat-pane');
+  pane.replaceChildren(el('p', { class: 'muted pane-pad', text: 'Loading conversation…' }));
   let mod = null;
   try {
     mod = await import('./chat.js');
@@ -998,7 +1002,7 @@ async function mountChat() {
   } finally {
     state.chatMounting = false;
   }
-  if (state.chatUnmount || state.tab !== 'chat' || currentItem() !== s) return;
+  if (state.chatUnmount || state.tab !== 'chat' || keyOf(currentItem() || {}) !== key) return;
   const mountChatFn = (mod && typeof mod.mountChat === 'function' && mod.mountChat) || (window.ClaudeChat && typeof window.ClaudeChat.mountChat === 'function' && window.ClaudeChat.mountChat);
   if (!mountChatFn) {
     pane.replaceChildren(el('p', { class: 'muted pane-pad', text: 'The chat view is not available in this build.' }));
@@ -1048,7 +1052,12 @@ async function mountChat() {
     pane.replaceChildren();
   };
   state.chatUnmount = unmount;
-  if (r && typeof r.open === 'function') r.open(sessionId);
+  if (r && typeof r.open === 'function') {
+    Promise.resolve(r.open(sessionId)).catch(() => {
+      if (state.chatUnmount !== unmount) return;
+      pane.replaceChildren(el('p', { class: 'muted pane-pad', text: 'Could not load the conversation. Switch tabs or reconnect to try again.' }));
+    });
+  }
 }
 
 function unmountChat() {

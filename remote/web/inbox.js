@@ -3,9 +3,16 @@ const newestFirst = (a, b) => time(b) - time(a);
 
 function rank(s) {
   if (s.status === 'waiting') return 0;
-  if (s.status === 'busy') return 2;
-  if (s.unread) return 1;
+  if (s.unread && s.status !== 'busy') return 1;
   return -1;
+}
+
+const STALE_MS = 6 * 3600 * 1000;
+
+export function staleFor(iso, now = Date.now()) {
+  const t = Date.parse(iso || '');
+  if (!Number.isFinite(t) || now - t < STALE_MS) return '';
+  return relativeTime(iso, now).replace(/ ago$/, '');
 }
 
 export function projectOf(s) {

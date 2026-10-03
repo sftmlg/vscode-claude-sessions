@@ -395,6 +395,11 @@ h3 {
   border-color: var(--accent);
 }
 
+.pill-stale {
+  opacity: 0.6;
+  border-style: dashed;
+}
+
 .pill-waiting {
   color: var(--warn);
   border-color: var(--warn);
