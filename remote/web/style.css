@@ -589,6 +589,59 @@ h3 {
   gap: 6px;
 }
 
+.host-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  scrollbar-width: none;
+}
+
+.host-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  min-height: 34px;
+  padding: 4px 12px;
+  border-radius: 99px;
+  background: transparent;
+}
+
+.host-tab[aria-selected="true"] {
+  background: var(--bg-3);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.host-tab .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.host-tab .dot-online {
+  background: var(--ok);
+}
+
+.host-tab .dot-offline {
+  background: var(--danger);
+}
+
+.host-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 99px;
+  background: var(--warn);
+  color: #141413;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
 .health-banner {
   padding: 8px 12px;
   font-size: 13px;

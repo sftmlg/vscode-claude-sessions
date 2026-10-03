@@ -29,7 +29,7 @@
 
   window.claudeRemoteHost = {
     wsUrl: document.documentElement.getAttribute('data-ws-url') || '',
-    getToken: () => request('getToken', {}),
-    setToken: (token) => request('setToken', { token: token == null ? null : String(token) }),
+    getToken: (origin) => request('getToken', { origin: origin == null ? null : String(origin) }),
+    setToken: (token, origin) => request('setToken', { token: token == null ? null : String(token), origin: origin == null ? null : String(origin) }),
   };
 })();

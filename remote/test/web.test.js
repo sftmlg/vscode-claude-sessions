@@ -108,15 +108,15 @@ test('chat and mirror recover after reconnects and recreated sessions', () => {
 
 test('a slow or failing editor bridge never blocks the hello', () => {
   const app = read('app.js');
-  assert.match(app, /async function getToken\(\) \{\s*try \{[\s\S]{0,300}\} catch \{\s*return null;/, 'bridge failures fall back to hello without a token');
+  assert.match(app, /async function getToken\(c\) \{\s*try \{[\s\S]{0,300}\} catch \{\s*return null;/, 'bridge failures fall back to hello without a token');
   assert.match(read('vscode-bridge.js'), /\}, 15000\);/, 'bridge waits 15 s for the editor');
-  assert.match(app, /if \(conn\.sentToken\) setToken\(null\)/, 'a hello without token never deletes the stored token');
+  assert.match(app, /if \(conn\.sentToken\) setToken\(conn, null\)/, 'a hello without token never deletes the stored token');
 });
 
 test('a blocked folder access shows a persistent banner naming the node path', () => {
   const app = read('app.js');
   assert.match(read('index.html'), /id="health-banner"[^>]*role="alert"[^>]*hidden/);
-  assert.match(app, /case 'health':\s*return renderHealth\(m\);/);
+  assert.match(app, /case 'health':\s*conn\.health = m;\s*return renderHealth\(m\);/);
   assert.match(app, /renderHealth\(m\.health\)/);
   assert.match(app, /Full Disk Access › add \$\{health\.nodePath/);
   assert.match(app, /banner\.textContent = text;/);
@@ -195,4 +195,15 @@ test('outbox items belong to one host and each host sends only its own, in order
   studio.onAck({ id: a1.id, ok: true });
   assert.deepStrictEqual(sentStudio, ['to studio 1', 'to studio 2']);
   assert.deepStrictEqual(self.onAck({ id: a1.id, ok: true }), { handled: false }, 'acks of another host are not this sender\'s');
+});
+
+test('one tab per host: own socket, own token per origin, peers from the first hub', () => {
+  const app = read('app.js');
+  assert.match(read('index.html'), /<nav id="host-tabs" class="host-tabs" role="tablist" aria-label="Macs" hidden><\/nav>/);
+  assert.match(app, /`\$\{TOKEN_KEY\}:\$\{c\.origin\}`/, 'tokens stored per hub origin');
+  assert.match(app, /host\.getToken\(c\.origin\)/, 'the editor bridge is asked per origin');
+  assert.match(app, /if \(conn === hosts\[0\] && Array\.isArray\(m\.peers\)\) setPeers\(m\.peers\)/);
+  assert.match(app, /if \(this !== conn\) return onBackground\(this, e\.data\)/, 'inactive hosts only update their list and badges');
+  assert.match(app, /outbox\.add\(s\.name, text, conn\.id\)/, 'queued messages go to the host they were typed for');
+  assert.match(read('vscode-bridge.js'), /getToken: \(origin\) => request\('getToken', \{ origin/);
 });

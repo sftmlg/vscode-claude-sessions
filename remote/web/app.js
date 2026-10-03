@@ -2,6 +2,8 @@ import { createTerm } from './term.js';
 import { Outbox, OutboxSender, setupInput, newId, highlightParts } from './input.js';
 
 const TOKEN_KEY = 'claude-remote.token';
+const ACTIVE_HOST_KEY = 'claude-remote.host';
+const PEERS_KEY = 'claude-remote.peers';
 const BACKOFF = [500, 1000, 2000, 4000, 8000, 10000];
 const PING_MS = 20000;
 const RETRY_MS = 1000;
@@ -38,18 +40,31 @@ function safeStorage(fn, fallback = null) {
   }
 }
 
-async function getToken() {
+function socketOrigin(url) {
   try {
-    if (host && typeof host.getToken === 'function') return (await host.getToken()) || null;
-    return safeStorage((s) => s.getItem(TOKEN_KEY));
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return String(url);
+  }
+}
+
+async function getToken(c) {
+  try {
+    if (host && typeof host.getToken === 'function') return (await host.getToken(c.origin)) || null;
+    const own = safeStorage((s) => s.getItem(`${TOKEN_KEY}:${c.origin}`));
+    return own || (c.id === 'self' ? safeStorage((s) => s.getItem(TOKEN_KEY)) : null);
   } catch {
     return null;
   }
 }
 
-async function setToken(token) {
-  if (host && typeof host.setToken === 'function') return host.setToken(token);
-  return safeStorage((s) => (token ? s.setItem(TOKEN_KEY, token) : s.removeItem(TOKEN_KEY)));
+async function setToken(c, token) {
+  if (host && typeof host.setToken === 'function') return host.setToken(token, c.origin);
+  return safeStorage((s) => {
+    if (c.id === 'self') s.removeItem(TOKEN_KEY);
+    return token ? s.setItem(`${TOKEN_KEY}:${c.origin}`, token) : s.removeItem(`${TOKEN_KEY}:${c.origin}`);
+  });
 }
 
 function wsUrl() {
@@ -101,68 +116,212 @@ const ERROR_TEXT = {
 };
 const errorText = (code, fallback) => ERROR_TEXT[code] || fallback || `Error: ${code}`;
 
-const conn = {
-  ws: null,
-  attempt: 0,
-  timer: null,
-  ping: null,
-  open: false,
-  authed: false,
-  connect() {
-    clearTimeout(this.timer);
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
-    setConn('connecting');
-    let ws;
-    try {
-      ws = new WebSocket(wsUrl());
-    } catch {
-      return this.retry();
+const hosts = [];
+let conn = null;
+
+function makeConn({ id, label, url }) {
+  const c = {
+    id,
+    label,
+    url,
+    origin: socketOrigin(url),
+    ws: null,
+    attempt: 0,
+    timer: null,
+    ping: null,
+    open: false,
+    authed: false,
+    connState: 'connecting',
+    sessions: [],
+    device: null,
+    health: null,
+    needsPair: false,
+    connect() {
+      clearTimeout(this.timer);
+      if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+      this.setState('connecting');
+      let ws;
+      try {
+        ws = new WebSocket(this.url);
+      } catch {
+        return this.retry();
+      }
+      ws.binaryType = 'arraybuffer';
+      this.ws = ws;
+      ws.addEventListener('open', async () => {
+        this.open = true;
+        this.attempt = 0;
+        const token = await getToken(this);
+        this.sentToken = Boolean(token);
+        this.send({ t: 'hello', token: token || undefined, clientId: clientId() });
+        clearInterval(this.ping);
+        this.ping = setInterval(() => this.send({ t: 'ping', ts: Date.now() }), PING_MS);
+      });
+      ws.addEventListener('message', (e) => {
+        if (this !== conn) return onBackground(this, e.data);
+        return typeof e.data === 'string' ? onJson(e.data) : onBinary(e.data);
+      });
+      ws.addEventListener('close', (e) => {
+        if (this.ws !== ws) return;
+        this.open = false;
+        this.authed = false;
+        clearInterval(this.ping);
+        this.sender.reset();
+        if (this === conn) {
+          for (const w of state.eventWaiters.splice(0)) w.reject(new Error('offline'));
+          unmountChat();
+          state.subscribedKey = null;
+        }
+        if (e.code === 4001) {
+          setToken(this, null);
+          if (this === conn) toast('This device was revoked.');
+        }
+        this.setState('offline');
+        if (this.closed) return;
+        if (e.code === 4009 && document.visibilityState === 'hidden') {
+          this.parked = true;
+          return;
+        }
+        this.retry();
+      });
+    },
+    retry() {
+      const base = BACKOFF[Math.min(this.attempt, BACKOFF.length - 1)];
+      this.attempt++;
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.connect(), base + Math.floor(Math.random() * base * 0.3));
+    },
+    send(msg) {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+      this.ws.send(JSON.stringify(msg));
+      return true;
+    },
+    setState(kind) {
+      this.connState = kind;
+      if (this === conn) setConn(kind);
+      renderHostTabs();
+    },
+    close() {
+      this.closed = true;
+      clearTimeout(this.timer);
+      clearInterval(this.ping);
+      if (this.ws) this.ws.close();
+    },
+  };
+  c.sender = new OutboxSender({ outbox, host: id, send: (m) => c.send(m), isReady: () => c.authed, retryMs: RETRY_MS });
+  return c;
+}
+
+function selfLabel() {
+  if (!host) return 'This Mac';
+  try {
+    return new URL(wsUrl()).hostname.split('.')[0] || 'This Mac';
+  } catch {
+    return 'This Mac';
+  }
+}
+
+function setPeers(peers) {
+  const list = (Array.isArray(peers) ? peers : []).filter((p) => p && typeof p.url === 'string' && typeof p.name === 'string' && socketOrigin(p.url) !== hosts[0].origin);
+  safeStorage((s) => s.setItem(PEERS_KEY, JSON.stringify(list)));
+  for (const h of hosts.slice(1)) {
+    if (!list.some((p) => p.url === h.url)) {
+      h.close();
+      hosts.splice(hosts.indexOf(h), 1);
+      if (h === conn) switchHost(hosts[0]);
     }
-    ws.binaryType = 'arraybuffer';
-    this.ws = ws;
-    ws.addEventListener('open', async () => {
-      this.open = true;
-      this.attempt = 0;
-      const token = await getToken();
-      this.sentToken = Boolean(token);
-      this.send({ t: 'hello', token: token || undefined, clientId: clientId() });
-      clearInterval(this.ping);
-      this.ping = setInterval(() => this.send({ t: 'ping', ts: Date.now() }), PING_MS);
-    });
-    ws.addEventListener('message', (e) => (typeof e.data === 'string' ? onJson(e.data) : onBinary(e.data)));
-    ws.addEventListener('close', (e) => {
-      if (this.ws !== ws) return;
-      this.open = false;
-      this.authed = false;
-      clearInterval(this.ping);
-      sender.reset();
-      for (const w of state.eventWaiters.splice(0)) w.reject(new Error('offline'));
-      unmountChat();
-      state.subscribedKey = null;
-      if (e.code === 4001) {
-        setToken(null);
-        toast('This device was revoked.');
-      }
-      setConn('offline');
-      if (e.code === 4009 && document.visibilityState === 'hidden') {
-        this.parked = true;
-        return;
-      }
-      this.retry();
-    });
-  },
-  retry() {
-    const base = BACKOFF[Math.min(this.attempt, BACKOFF.length - 1)];
-    this.attempt++;
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.connect(), base + Math.floor(Math.random() * base * 0.3));
-  },
-  send(msg) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
-    this.ws.send(JSON.stringify(msg));
-    return true;
-  },
-};
+  }
+  for (const p of list) {
+    const known = hosts.find((h) => h.url === p.url);
+    if (known) known.label = p.name;
+    else {
+      const c = makeConn({ id: p.url, label: p.name, url: p.url });
+      hosts.push(c);
+      c.connect();
+    }
+  }
+  renderHostTabs();
+  const wanted = safeStorage((s) => s.getItem(ACTIVE_HOST_KEY));
+  const target = hosts.find((h) => h.id === wanted);
+  if (target && target !== conn && !state.current) switchHost(target);
+}
+
+function waitingCount(c) {
+  return (c.sessions || []).filter((s) => s.status === 'waiting').length;
+}
+
+function renderHostTabs() {
+  const nav = $('host-tabs');
+  if (!nav) return;
+  nav.hidden = hosts.length < 2;
+  nav.replaceChildren(
+    ...hosts.map((c) => {
+      const waiting = waitingCount(c);
+      const title = `${c.label}: ${c.connState === 'online' ? 'connected' : c.connState}${waiting ? `, ${waiting} waiting for you` : ''}`;
+      return el('button', { type: 'button', role: 'tab', class: 'host-tab', 'aria-selected': String(c === conn), title, onclick: () => switchHost(c) }, [
+        el('span', { class: `dot dot-${c.connState}` }),
+        el('span', { text: c.label }),
+        waiting ? el('span', { class: 'host-count', text: String(waiting), 'aria-label': `${waiting} waiting` }) : null,
+      ]);
+    }),
+  );
+}
+
+function switchHost(c) {
+  if (!c || c === conn) return;
+  closeSession();
+  clearSearch();
+  conn = c;
+  safeStorage((s) => s.setItem(ACTIVE_HOST_KEY, c.id));
+  state.sessions = c.sessions || [];
+  state.device = c.device;
+  setConn(c.connState);
+  renderHealth(c.health);
+  c.connect();
+  if (c.needsPair) showPair();
+  else show('list');
+  renderList();
+  renderHostTabs();
+}
+
+function onBackground(c, data) {
+  if (typeof data !== 'string') return;
+  let m;
+  try {
+    m = JSON.parse(data);
+  } catch {
+    return;
+  }
+  if (m.t === 'helloOk') {
+    c.authed = true;
+    c.needsPair = false;
+    c.device = m.device;
+    c.health = m.health || null;
+    c.setState('online');
+    c.sender.reset();
+    c.sender.pump();
+  } else if (m.t === 'pairRequired') {
+    c.authed = false;
+    if (c.sentToken) setToken(c, null);
+    c.needsPair = true;
+    c.setState('online');
+    if (m.autoPair && !c.autoPairTried) {
+      c.autoPairTried = true;
+      c.send({ t: 'pair', deviceName: defaultDeviceName() });
+    }
+  } else if (m.t === 'paired') {
+    setToken(c, m.token);
+  } else if (m.t === 'sessions') {
+    c.sessions = Array.isArray(m.items) ? m.items : [];
+  } else if (m.t === 'status') {
+    for (const s of c.sessions) if (keyOf(s) === m.sessionId || s.sessionId === m.sessionId) Object.assign(s, { status: m.status, waitingFor: m.waitingFor });
+  } else if (m.t === 'health') {
+    c.health = m;
+  } else if (m.t === 'ack') {
+    c.sender.onAck(m);
+  }
+  renderHostTabs();
+}
 
 function clientId() {
   let id = safeStorage((s) => s.getItem('claude-remote.client'));
@@ -193,7 +352,6 @@ function setConn(kind) {
 }
 
 const outbox = new Outbox();
-const sender = new OutboxSender({ outbox, send: (m) => conn.send(m), isReady: () => conn.authed, retryMs: RETRY_MS });
 let term = null;
 let input = null;
 
@@ -481,8 +639,9 @@ function onJson(data) {
   switch (m.t) {
     case 'pairRequired':
       conn.authed = false;
-      if (conn.sentToken) setToken(null);
-      setConn('online');
+      conn.needsPair = true;
+      if (conn.sentToken) setToken(conn, null);
+      conn.setState('online');
       if (m.autoPair && !conn.autoPairTried) {
         conn.autoPairTried = true;
         show('pair');
@@ -499,19 +658,24 @@ function onJson(data) {
       $('pair-code').textContent = m.code;
       return undefined;
     case 'paired':
-      setToken(m.token);
+      setToken(conn, m.token);
       return undefined;
     case 'searchResults':
       if (m.id === search.id) renderSearch(Array.isArray(m.items) ? m.items : []);
       return undefined;
     case 'health':
+      conn.health = m;
       return renderHealth(m);
     case 'helloOk':
       conn.authed = true;
+      conn.needsPair = false;
+      conn.health = m.health || null;
+      conn.device = m.device;
       renderHealth(m.health);
       state.device = m.device;
       state.defaultDir = m.defaultDir || '';
-      setConn('online');
+      conn.setState('online');
+      if (conn === hosts[0] && Array.isArray(m.peers)) setPeers(m.peers);
       if (state.current) {
         show('session');
         subscribe();
@@ -519,7 +683,9 @@ function onJson(data) {
       flushOutbox();
       return undefined;
     case 'sessions':
-      state.sessions = Array.isArray(m.items) ? m.items : [];
+      conn.sessions = Array.isArray(m.items) ? m.items : [];
+      state.sessions = conn.sessions;
+      renderHostTabs();
       renderList();
       if (state.current) renderStatus();
       if (state.current && state.subscribedKey !== state.current && currentItem()) {
@@ -529,6 +695,7 @@ function onJson(data) {
       return undefined;
     case 'status': {
       for (const s of state.sessions) if (keyOf(s) === m.sessionId || s.sessionId === m.sessionId) Object.assign(s, { status: m.status, waitingFor: m.waitingFor });
+      renderHostTabs();
       renderList();
       if (state.current) renderStatus();
       return undefined;
@@ -588,7 +755,7 @@ function onAck(m) {
     waiter(m);
     return;
   }
-  const r = sender.onAck(m);
+  const r = conn.sender.onAck(m);
   if (!r.handled) {
     if (!m.ok) toast(errorText(m.error));
     return;
@@ -599,8 +766,8 @@ function onAck(m) {
 }
 
 function flushOutbox() {
-  sender.reset();
-  sender.pump();
+  conn.sender.reset();
+  conn.sender.pump();
 }
 
 function request(msg) {
@@ -616,12 +783,12 @@ function request(msg) {
 function submitText(text) {
   const s = currentItem();
   if (!s || !s.managed) return false;
-  const item = outbox.add(s.name, text);
+  const item = outbox.add(s.name, text, conn.id);
   if (!item) {
     toast('Outbox is full; wait for the connection.');
     return false;
   }
-  if (conn.authed) sender.pump();
+  if (conn.authed) conn.sender.pump();
   else toast('Offline: the message is queued and sent on reconnect.');
   return true;
 }
@@ -890,10 +1057,10 @@ function init() {
     e.preventDefault();
     conn.send({ t: 'pair', deviceName: $('device-name').value.trim() || 'device' });
   });
-  window.addEventListener('online', () => conn.connect());
+  window.addEventListener('online', () => hosts.forEach((h) => h.connect()));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') return releaseClaim(true);
-    conn.connect();
+    hosts.forEach((h) => h.connect());
     if (state.reclaim && state.current && state.tab === 'terminal' && conn.authed) {
       state.reclaim = false;
       state.claim = true;
@@ -907,8 +1074,12 @@ function init() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => state.claim && claimSize(), 300);
   });
+  const self = makeConn({ id: 'self', label: selfLabel(), url: wsUrl() });
+  hosts.push(self);
+  conn = self;
   show('list');
-  conn.connect();
+  self.connect();
+  setPeers(safeStorage((s) => JSON.parse(s.getItem(PEERS_KEY) || '[]'), []));
 }
 
 init();

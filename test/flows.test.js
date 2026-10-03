@@ -877,6 +877,15 @@ test('Open remote sessions explains the missing address, then loads the local we
     await settle();
     assert.deepStrictEqual(live.posted.slice(-1), [{ t: 'reply', id: 21, value: null }], 'another service never gets this token');
     fake.config['remote.url'] = 'ws://remote.example:39180/ws';
+    live.receive({ t: 'setToken', id: 22, token: 'peer-token', origin: 'wss://studio.tail0.example.test' });
+    await settle();
+    assert.strictEqual(fake.secretStore.get('claudeSessions.remote.token:wss://studio.tail0.example.test'), 'peer-token', 'a peer hub keeps its own token');
+    live.receive({ t: 'getToken', id: 23, origin: 'wss://studio.tail0.example.test' });
+    await settle();
+    assert.deepStrictEqual(live.posted.slice(-1), [{ t: 'reply', id: 23, value: 'peer-token' }]);
+    live.receive({ t: 'getToken', id: 24, origin: 'javascript:alert(1)' });
+    await settle();
+    assert.deepStrictEqual(live.posted.slice(-1), [{ t: 'reply', id: 24, value: 'device-token-1' }], 'an invalid origin falls back to the configured service');
     live.receive({ t: 'setToken', id: 3, token: null });
     await settle();
     assert.strictEqual(fake.secretStore.has(key), false);
@@ -917,6 +926,18 @@ test('Attach to a service session opens a terminal tab attached to that tmux ses
     assert.ok(fake.messages.some((m) => /No service sessions run on this machine/.test(m)));
   } finally {
     try { execFileSync(tmux, ['-L', socket, 'kill-server']); } catch {}
+    api.deactivate();
+  }
+});
+
+test('the remote panel may connect to peer hubs under the same tailnet domain', async () => {
+  const { fake, api } = await setup();
+  try {
+    fake.config['remote.url'] = 'wss://laptop.tail0.example.test/ws';
+    await fake.run('claudeSessions.openRemote');
+    const html = fake.webviewPanels[0].webview.html;
+    assert.match(html, /connect-src wss:\/\/laptop\.tail0\.example\.test wss:\/\/\*\.tail0\.example\.test:\*"/);
+  } finally {
     api.deactivate();
   }
 });

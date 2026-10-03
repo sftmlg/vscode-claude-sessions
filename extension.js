@@ -763,11 +763,22 @@ function remoteSocketOrigin(url) {
   }
 }
 
+function peerSocketSource(url) {
+  try {
+    const u = new URL(String(url || ''));
+    const labels = u.hostname.split('.');
+    if ((u.protocol !== 'ws:' && u.protocol !== 'wss:') || labels.length < 3) return null;
+    return `${u.protocol}//*.${labels.slice(1).join('.')}:*`;
+  } catch {
+    return null;
+  }
+}
+
 const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
 function remotePage(webview, wsUrl) {
   const origin = remoteSocketOrigin(wsUrl);
-  const csp = `default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; connect-src ${origin || "'none'"}`;
+  const csp = `default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; connect-src ${origin ? [origin, peerSocketSource(wsUrl)].filter(Boolean).join(' ') : "'none'"}`;
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
   const plain = (text) => `<!DOCTYPE html><html><head><meta charset="utf-8">${cspMeta}</head><body><p>${text}</p></body></html>`;
   if (!origin) return plain('Set <code>claudeSessions.remote.url</code> to the WebSocket address of your remote service (for example <code>ws://your-machine.example:39180/ws</code>), then open this panel again.');
@@ -1400,12 +1411,9 @@ function activate(context) {
 
   let remotePanel = null;
   const remoteUrl = () => String(settings().get('remote.url') || '').trim();
-  const remoteTokenKey = () => {
-    try {
-      return `${REMOTE_TOKEN_SECRET}:${new URL(remoteUrl()).origin}`;
-    } catch {
-      return null;
-    }
+  const remoteTokenKey = (origin) => {
+    const own = remoteSocketOrigin(origin) || remoteSocketOrigin(remoteUrl());
+    return own ? `${REMOTE_TOKEN_SECRET}:${own}` : null;
   };
   const renderRemote = () => {
     if (remotePanel) remotePanel.webview.html = remotePage(remotePanel.webview, remoteUrl());
@@ -1451,7 +1459,7 @@ function activate(context) {
       if (!m || typeof m !== 'object' || !m.id || !remotePanel) return;
       const reply = (fields) => remotePanel && remotePanel.webview.postMessage({ t: 'reply', id: m.id, ...fields });
       try {
-        const key = remoteTokenKey();
+        const key = remoteTokenKey(m.origin);
         if (m.t === 'getToken') return reply({ value: (key && context.secrets && (await context.secrets.get(key))) || null });
         if (m.t === 'setToken') {
           if (!context.secrets) return reply({ error: 'no secret storage' });
