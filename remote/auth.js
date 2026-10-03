@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
+const { execFile } = require('child_process');
 
 const TOKEN_BYTES = 32;
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
@@ -21,6 +22,10 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const DAY_MS = 86400000;
 const DEFAULT_IDLE_DAYS = 30;
 const limits = Object.freeze({ maxUnauthed: 8, helloTimeoutMs: 30000 });
+const DEFAULT_MAX_DEVICES = 12;
+const DEFAULT_PROXY_PROCESSES = ['io.tailscale.ipn.macsys.network-extension', 'tailscaled'];
+const PEER_PID_CACHE_MS = 60 * 1000;
+const IP_RE = /^[0-9a-fA-F.:]{2,45}$/;
 
 class AuthError extends Error {
   constructor(code) {
@@ -61,7 +66,82 @@ function idleDays(config) {
 }
 
 function publicDevice(d) {
-  return { id: d.id, name: d.name, createdAt: d.createdAt, lastSeen: d.lastSeen };
+  return { id: d.id, name: d.name, createdAt: d.createdAt, lastSeen: d.lastSeen, node: d.node || null };
+}
+
+function cleanSource(source) {
+  const s = source && typeof source === 'object' ? source : {};
+  const n = s.node && typeof s.node === 'object' ? s.node : null;
+  const ip = typeof s.ip === 'string' && IP_RE.test(s.ip) ? s.ip : null;
+  return {
+    via: s.via === 'serve' || s.via === 'loopback' ? s.via : 'unknown',
+    ip,
+    node: n && n.name ? { name: cleanName(n.name), os: n.os ? cleanName(n.os).slice(0, 32) : null } : null,
+  };
+}
+
+const auditSource = (src) => ({ via: src.via, ip: src.ip, node: src.node ? src.node.name : null, os: src.node ? src.node.os : null });
+
+function runFile(file, args) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { timeout: 3000, maxBuffer: 8 * 1024 * 1024 }, (err, out) => (err ? reject(err) : resolve(String(out))));
+  });
+}
+
+function parseNetstatPeer(text, localPort, remotePort) {
+  const client = `127.0.0.1.${remotePort}`;
+  const server = `127.0.0.1.${localPort}`;
+  for (const line of String(text).split('\n')) {
+    const t = line.trim().split(/\s+/);
+    if (t[0] !== 'tcp4' || t[3] !== client || t[4] !== server) continue;
+    for (let i = 6; i < t.length; i++) {
+      const m = /:(\d+)$/.exec(t[i]);
+      if (m) return Number(m[1]);
+    }
+  }
+  return null;
+}
+
+function createPeerCheck(config = {}, { run = runFile, now = Date.now } = {}) {
+  const allowed = Array.isArray(config.proxyProcesses) && config.proxyProcesses.length ? config.proxyProcesses.map(String) : DEFAULT_PROXY_PROCESSES;
+  const uids = Array.isArray(config.proxyUids) && config.proxyUids.length ? config.proxyUids.map(Number) : [0];
+  const bySocket = new WeakMap();
+  const byPid = new Map();
+
+  async function processOf(pid) {
+    const hit = byPid.get(pid);
+    if (hit && now() - hit.at < PEER_PID_CACHE_MS) return hit.proc;
+    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(await run('/bin/ps', ['-o', 'uid=,comm=', '-p', String(pid)]));
+    const proc = m ? { uid: Number(m[1]), path: m[2] } : null;
+    byPid.set(pid, { at: now(), proc });
+    return proc;
+  }
+
+  async function check(socket) {
+    if (!socket || !LOOPBACK.has(socket.remoteAddress)) return { ok: false, reason: 'not-loopback' };
+    let pid;
+    let proc;
+    try {
+      pid = parseNetstatPeer(await run('/usr/sbin/netstat', ['-anv', '-p', 'tcp']), socket.localPort, socket.remotePort);
+      if (!pid) return { ok: false, reason: 'peer-unknown' };
+      proc = await processOf(pid);
+    } catch {
+      return { ok: false, reason: 'peer-unknown' };
+    }
+    if (!proc) return { ok: false, reason: 'peer-unknown', pid };
+    const name = path.basename(proc.path);
+    if (!uids.includes(proc.uid) || !allowed.includes(name)) return { ok: false, reason: 'peer-not-proxy', pid, process: name, uid: proc.uid };
+    return { ok: true, reason: null, pid, process: name };
+  }
+
+  return {
+    verify(socket) {
+      if (socket && typeof socket === 'object' && bySocket.has(socket)) return bySocket.get(socket);
+      const p = check(socket);
+      if (socket && typeof socket === 'object') bySocket.set(socket, p);
+      return p;
+    },
+  };
 }
 
 function header(req, name) {
@@ -133,6 +213,7 @@ class Auth extends EventEmitter {
     this.auditFile = path.join(this.stateDir, 'audit.log');
     this.adminFile = path.join(this.stateDir, 'admin.token');
     this.limits = limits;
+    this.maxDevices = Number(config.maxDevices) > 0 ? Number(config.maxDevices) : DEFAULT_MAX_DEVICES;
     this.log = typeof opts.log === 'function' ? opts.log : () => {};
     this.now = typeof opts.now === 'function' ? opts.now : Date.now;
     this.pending = new Map();
@@ -190,7 +271,7 @@ class Auth extends EventEmitter {
     this.log(`auth pairing-dropped pairing=${p.id} reason=${reason}`);
   }
 
-  createPairing(deviceName) {
+  createPairing(deviceName, { source } = {}) {
     this._purgeExpired();
     if (this.now() < this.lockedUntil) throw new AuthError('locked');
     if (this.pending.size >= MAX_PENDING) throw new AuthError('too-many-pending');
@@ -202,6 +283,7 @@ class Auth extends EventEmitter {
       code,
       waitToken: randomToken(),
       name: cleanName(deviceName),
+      source: cleanSource(source),
       expiresAt: this.now() + PAIRING_TTL_MS,
       state: 'pending',
       rawToken: null,
@@ -212,7 +294,7 @@ class Auth extends EventEmitter {
     entry.timer = setTimeout(() => this._dropPending(code, 'expired'), PAIRING_TTL_MS);
     entry.timer.unref();
     this.pending.set(code, entry);
-    this._audit('pair', { pairing: entry.id, nameLength: entry.name.length });
+    this._audit('pair', { pairing: entry.id, nameLength: entry.name.length, src: auditSource(entry.source) });
     this.log(`auth pairing-created pairing=${entry.id} pending=${this.pending.size}`);
     return { code, waitToken: entry.waitToken, expiresAt: entry.expiresAt };
   }
@@ -248,11 +330,12 @@ class Auth extends EventEmitter {
       createdAt: ts,
       lastSeen: ts,
       tokenHash: sha256(rawToken).toString('hex'),
+      node: entry.source.node,
     };
     this.devices.push(device);
     this._persist();
-    this._audit('approve', { pairing: entry.id, device: device.id, by });
-    this.log(`auth pairing-approved pairing=${entry.id} device=${device.id} by=${by}`);
+    this._audit('approve', { pairing: entry.id, device: device.id, by, src: auditSource(entry.source) });
+    this.log(`auth pairing-approved pairing=${entry.id} device=${device.id} by=${by} via=${entry.source.via}`);
     entry.deviceId = device.id;
     if (entry.resolve) {
       this.pending.delete(code);
@@ -262,7 +345,21 @@ class Auth extends EventEmitter {
       entry.state = 'approved';
       entry.rawToken = rawToken;
     }
+    this.emit('added', publicDevice(device), entry.source);
     return publicDevice(device);
+  }
+
+  autoApprove(code, name) {
+    this._purgeExpired();
+    const entry = typeof code === 'string' && CODE_RE.test(code) ? this.pending.get(code) : null;
+    if (!entry || entry.state !== 'pending') return this.approvePairing(code, { id: 'auto' }, name);
+    const reason = entry.source.via !== 'serve' ? 'not-serve' : this.devices.length >= this.maxDevices ? 'max-devices' : null;
+    if (reason) {
+      this._audit('auto-refused', { pairing: entry.id, reason, src: auditSource(entry.source) });
+      this.log(`auth auto-approve-refused pairing=${entry.id} reason=${reason}`);
+      throw new AuthError('needs-approval');
+    }
+    return this.approvePairing(code, { id: 'auto' }, name);
   }
 
   awaitPairing(waitToken) {
@@ -410,6 +507,9 @@ function createAuth(config, opts) {
 module.exports = {
   checkRequest,
   allowedOrigins,
+  parseNetstatPeer,
+  createPeerCheck,
+  DEFAULT_PROXY_PROCESSES,
   createAuth,
   writePrivateFile,
   ensurePrivateDir,

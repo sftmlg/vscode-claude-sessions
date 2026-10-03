@@ -71,7 +71,7 @@ test('state dir is 0700 and devices.json and audit.log are 0600 with only hashes
   const stored = fs.readFileSync(path.join(c.stateDir, 'devices.json'), 'utf8');
   assert.ok(!stored.includes(token));
   assert.ok(!fs.readFileSync(path.join(c.stateDir, 'audit.log'), 'utf8').includes(token));
-  assert.deepStrictEqual(Object.keys(device).sort(), ['createdAt', 'id', 'lastSeen', 'name']);
+  assert.deepStrictEqual(Object.keys(device).sort(), ['createdAt', 'id', 'lastSeen', 'name', 'node']);
   assert.strictEqual(device.name, 'Phone');
 });
 
@@ -455,4 +455,120 @@ test('publicReachable fetches the app over the configured scheme and requires 20
   } finally {
     await Promise.all([ok, deny].map((srv) => new Promise((r) => srv.close(r))));
   }
+});
+
+const { parseNetstatPeer, createPeerCheck, DEFAULT_PROXY_PROCESSES } = require('../auth');
+const NETSTAT = fs.readFileSync(path.join(__dirname, 'fixtures', 'sec-netstat.txt'), 'utf8');
+const EXT = '/Library/SystemExtensions/0000/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension';
+
+test('parseNetstatPeer finds the pid owning the client end of a loopback connection', () => {
+  assert.strictEqual(parseNetstatPeer(NETSTAT, 39181, 58525), 4242);
+  assert.strictEqual(parseNetstatPeer(NETSTAT, 39181, 60001), 7777);
+  assert.strictEqual(parseNetstatPeer(NETSTAT, 39181, 12345), null);
+  assert.strictEqual(parseNetstatPeer('', 39181, 58525), null);
+});
+
+function fakeRun({ netstat = NETSTAT, ps = { 4242: `    0 ${EXT}`, 7777: '  501 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }, fail = false } = {}) {
+  const calls = [];
+  const run = async (file, args) => {
+    calls.push([file, ...args].join(' '));
+    if (fail) throw new Error('boom');
+    if (file.endsWith('netstat')) return netstat;
+    if (file.endsWith('ps')) return ps[args[args.length - 1]] || '';
+    throw new Error(`unexpected ${file}`);
+  };
+  return { run, calls };
+}
+const sock = (remotePort, extra = {}) => ({ remoteAddress: '127.0.0.1', remotePort, localPort: 39181, ...extra });
+
+test('peer check accepts only a root-owned tailscale proxy process and fails closed otherwise', async () => {
+  assert.deepStrictEqual(DEFAULT_PROXY_PROCESSES, ['io.tailscale.ipn.macsys.network-extension', 'tailscaled']);
+  const f = fakeRun();
+  const check = createPeerCheck({}, { run: f.run });
+  const ok = await check.verify(sock(58525));
+  assert.strictEqual(ok.ok, true);
+  assert.strictEqual(ok.pid, 4242);
+  assert.strictEqual((await check.verify(sock(60001))).reason, 'peer-not-proxy');
+  assert.strictEqual((await check.verify(sock(12345))).reason, 'peer-unknown');
+  assert.strictEqual((await check.verify(sock(58525, { remoteAddress: '100.64.0.9' }))).reason, 'not-loopback');
+  assert.strictEqual((await createPeerCheck({}, { run: fakeRun({ fail: true }).run }).verify(sock(58525))).reason, 'peer-unknown');
+  const sameName = fakeRun({ ps: { 4242: `  501 /tmp/x/io.tailscale.ipn.macsys.network-extension` } });
+  assert.strictEqual((await createPeerCheck({}, { run: sameName.run }).verify(sock(58525))).reason, 'peer-not-proxy', 'a same-name binary of the user is not the proxy');
+  const rootOther = fakeRun({ ps: { 4242: '    0 /usr/sbin/sshd' } });
+  assert.strictEqual((await createPeerCheck({}, { run: rootOther.run }).verify(sock(58525))).reason, 'peer-not-proxy');
+});
+
+test('peer check runs netstat once per socket and ps once per pid', async () => {
+  const f = fakeRun();
+  const check = createPeerCheck({}, { run: f.run });
+  const s1 = sock(58525);
+  await check.verify(s1);
+  await check.verify(s1);
+  await check.verify(sock(58525));
+  assert.strictEqual(f.calls.filter((c) => c.includes('netstat')).length, 2);
+  assert.strictEqual(f.calls.filter((c) => c.includes(' ps') || c.startsWith('/bin/ps')).length, 1);
+});
+
+test('peer check honours configured proxy processes and uids', async () => {
+  const f = fakeRun({ ps: { 4242: '  501 /opt/homebrew/bin/node' } });
+  const check = createPeerCheck({ proxyProcesses: ['node'], proxyUids: [501] }, { run: f.run });
+  assert.strictEqual((await check.verify(sock(58525))).ok, true);
+});
+
+test('peer check on a real loopback connection identifies this test process as no proxy', { skip: process.platform !== 'darwin' && 'macOS only' }, async () => {
+  const server = http.createServer((q, s) => s.end());
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const check = createPeerCheck({});
+  try {
+    const verdict = await new Promise((resolve, reject) => {
+      server.once('request', (q, s) => {
+        check.verify(q.socket).then(resolve, reject);
+        s.end();
+      });
+      http.get(`http://127.0.0.1:${server.address().port}/`, (res) => res.resume()).on('error', reject);
+    });
+    assert.strictEqual(verdict.ok, false);
+    assert.strictEqual(verdict.reason, 'peer-not-proxy');
+    assert.strictEqual(verdict.pid, process.pid);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+const SERVE_SRC = { via: 'serve', ip: '100.64.0.2', node: { name: 'laptop', os: 'macOS' } };
+
+test('pairing records its source in the device and in the audit log', () => {
+  const c = tmpConfig();
+  const a = createAuth(c);
+  const { code } = a.createPairing('Phone', { source: { ...SERVE_SRC, node: { name: 'lap\x1btop', os: 'macOS', extra: 'x' } } });
+  const device = a.approvePairing(code);
+  assert.deepStrictEqual(device.node, { name: 'laptop', os: 'macOS' });
+  assert.deepStrictEqual(createAuth(c).listDevices()[0].node, { name: 'laptop', os: 'macOS' });
+  const audit = fs.readFileSync(path.join(c.stateDir, 'audit.log'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepStrictEqual(audit[0].src, { via: 'serve', ip: '100.64.0.2', node: 'laptop', os: 'macOS' });
+  assert.deepStrictEqual(audit[1].src, { via: 'serve', ip: '100.64.0.2', node: 'laptop', os: 'macOS' });
+  const { code: c2 } = a.createPairing('x', { source: { via: 'evil', ip: 'not an ip; rm', node: null } });
+  const d2 = a.approvePairing(c2);
+  assert.strictEqual(d2.node, null);
+  const last = fs.readFileSync(path.join(c.stateDir, 'audit.log'), 'utf8').trim().split('\n').map(JSON.parse).at(-1);
+  assert.deepStrictEqual(last.src, { via: 'unknown', ip: null, node: null, os: null });
+});
+
+test('autoApprove needs a serve source and stays under maxDevices, then falls back to manual approval', () => {
+  const c = tmpConfig({ maxDevices: 2 });
+  const a = createAuth(c);
+  const added = [];
+  a.on('added', (d) => added.push(d.id));
+  assert.strictEqual(a.autoApprove(a.createPairing('a', { source: SERVE_SRC }).code).name, 'a');
+  const loop = a.createPairing('b', { source: { via: 'loopback' } });
+  assert.throws(() => a.autoApprove(loop.code), { code: 'needs-approval' });
+  assert.strictEqual(a.approvePairing(loop.code).name, 'b');
+  const third = a.createPairing('c', { source: SERVE_SRC });
+  assert.throws(() => a.autoApprove(third.code), { code: 'needs-approval' });
+  assert.strictEqual(a.approvePairing(third.code).name, 'c', 'a person can still approve beyond the cap');
+  assert.strictEqual(added.length, 3);
+  const audit = fs.readFileSync(path.join(c.stateDir, 'audit.log'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepStrictEqual(audit.filter((l) => l.action === 'auto-refused').map((l) => l.reason), ['not-serve', 'max-devices']);
+  assert.ok(audit.filter((l) => l.action === 'approve').some((l) => l.by === 'auto'));
+  assert.strictEqual(createAuth(tmpConfig()).maxDevices, 12);
 });
