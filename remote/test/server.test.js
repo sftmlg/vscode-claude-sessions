@@ -325,6 +325,19 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await c.wait((m) => m.t === 'error' && m.code === 'not-found' && m.ref === 'events', 'traversal refused');
   });
 
+  await t.test('unread per device: transcript growth marks a session unread until the device has seen it', async () => {
+    const item = () => c.json.filter((m) => m.t === 'sessions').map((m) => m.items.find((i) => i.sessionId === SID)).filter(Boolean).pop();
+    await waitFor(() => item() && item().transcriptSize > 0, { what: 'size in list' });
+    c.send({ t: 'markSeen', sessionId: SID });
+    await waitFor(() => item() && item().unread === false, { what: 'read after markSeen' });
+    fs.appendFileSync(transcriptFile, line('new reply while away'));
+    await waitFor(() => item() && item().unread === true, { what: 'unread after growth' });
+    c.send({ t: 'markSeen', sessionId: SID });
+    await waitFor(() => item() && item().unread === false, { what: 'read again' });
+    c.send({ t: 'markSeen', sessionId: '../../etc' });
+    await c.wait((m) => m.t === 'error' && m.ref === 'markSeen', 'bad id refused');
+  });
+
   await t.test('chat subscriptions never leak tails: duplicate subscribe and close during setup', async () => {
     assert.strictEqual(hub.stats().tails, 1);
     const d = await client(port);

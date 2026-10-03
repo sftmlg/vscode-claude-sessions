@@ -224,6 +224,12 @@ class Registry extends EventEmitter {
     const proc = rec ? procs.get(rec.pid) : null;
     const lastActivity = m.lastActivity || (extra.activity ? new Date(extra.activity).toISOString() : null);
     const cwd = (rec && rec.cwd) || extra.cwd || null;
+    let transcriptSize = null;
+    if (m.transcriptPath) {
+      try {
+        transcriptSize = (await fsp.stat(m.transcriptPath)).size;
+      } catch {}
+    }
     return {
       sessionId: rec ? rec.sessionId : null,
       name: extra.name,
@@ -239,6 +245,7 @@ class Registry extends EventEmitter {
       title: rec ? displayTitle(m.meta, rec.name) : null,
       lastPrompt: lastPrompt(m.meta),
       transcriptPath: m.transcriptPath || null,
+      transcriptSize,
       lastActivity,
     };
   }

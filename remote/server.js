@@ -12,6 +12,7 @@ const { Mirror } = require('./mirror');
 const { Queue } = require('./queue');
 const tmux = require('./tmux');
 const { Catalog } = require('./catalog');
+const { SeenStore } = require('./seen');
 const sessions = require('../sessions');
 
 function optional(name) {
@@ -159,6 +160,8 @@ async function start(config, deps = {}) {
   const registry = deps.registry || new Registry(config, { ctx, audit });
   sessions.loadCache(path.join(config.stateDir, 'cache'));
   const catalog = deps.catalog || new Catalog(config);
+  const seen = deps.seen || new SeenStore(config.stateDir);
+  const itemsFor = (c) => registry.listAll().map((i) => ({ ...clientItem(i), unread: c.device ? seen.unread(c.device.id, i) : false }));
   const queue = deps.queue || new Queue(path.join(config.stateDir, 'queue.json'));
   const mirrors = new Map();
   const liveTails = new Set();
@@ -223,7 +226,9 @@ async function start(config, deps = {}) {
     for (const c of conns) if (c.device && c.ws.readyState === WebSocket.OPEN) c.ws.send(data);
   }
 
-  registry.on('sessions', (items) => broadcast({ t: 'sessions', items: items.map(clientItem) }));
+  registry.on('sessions', () => {
+    for (const c of conns) if (c.device && c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify({ t: 'sessions', items: itemsFor(c) }));
+  });
   registry.on('status', (s) => broadcast({ t: 'status', ...s }));
   registry.on('error', (e) => log(`registry error ${e.code || e.message}`));
   auth.on('revoked', (id) => {
@@ -321,7 +326,7 @@ async function start(config, deps = {}) {
         conn.device = device;
         log(`ws hello conn=${conn.id} device=${device.id}`);
         send({ t: 'helloOk', device, defaultDir: config.defaultDir, health, peers: config.peers || [] });
-        return send({ t: 'sessions', items: registry.listAll().map(clientItem) });
+        return send({ t: 'sessions', items: itemsFor(conn) });
       }
       case 'pair': {
         if (conn.device || conn.pairing) return send({ t: 'error', code: 'bad-state', msg: 'pairing not possible now' });
@@ -349,7 +354,7 @@ async function start(config, deps = {}) {
             conn.device = device;
             send({ t: 'paired', token, device });
             send({ t: 'helloOk', device, defaultDir: config.defaultDir, health, peers: config.peers || [] });
-            send({ t: 'sessions', items: registry.listAll().map(clientItem) });
+            send({ t: 'sessions', items: itemsFor(conn) });
           },
           (e) => {
             conn.pairing = false;
@@ -372,7 +377,7 @@ async function start(config, deps = {}) {
         if (!(await auth.revoke(String(msg.deviceId || ''), conn.device.id))) return send({ t: 'error', code: 'not-found', msg: 'unknown device', ref: 'revoke' });
         return conn.ws.readyState === WebSocket.OPEN && send({ t: 'devices', items: await auth.listDevices() });
       case 'list':
-        return send({ t: 'sessions', items: registry.listAll().map(clientItem) });
+        return send({ t: 'sessions', items: itemsFor(conn) });
       case 'sub': {
         const item = sessionFor(msg.sessionId, { managed: true });
         if (!conn.subs.has(item.name) && conn.subs.size >= MAX_SUBS) return send({ t: 'error', code: 'too-many', msg: 'too many subscriptions' });
@@ -433,6 +438,12 @@ async function start(config, deps = {}) {
         const before = Number.isFinite(msg.before) && msg.before >= 0 ? Math.floor(msg.before) : undefined;
         const r = await transcript.readEvents(file, { before, limit });
         return send({ t: 'events', sessionId: msg.sessionId, from: r.from, to: r.to, size: r.size, items: r.events, unknown: r.unknown });
+      }
+      case 'markSeen': {
+        if (typeof msg.sessionId !== 'string' || !UUID_RE.test(msg.sessionId)) return send({ t: 'error', code: 'bad-request', msg: 'markSeen needs a session id', ref: 'markSeen' });
+        const item = registry.listAll().find((i) => i.sessionId === msg.sessionId);
+        if (item) seen.mark(conn.device.id, item);
+        return send({ t: 'sessions', items: itemsFor(conn) });
       }
       case 'search': {
         if (!Queue.validId(msg.id) || typeof msg.query !== 'string' || msg.query.length > 200) return send({ t: 'error', code: 'bad-request', msg: 'search needs an id and a query of at most 200 characters', ref: 'search' });
@@ -578,6 +589,7 @@ async function start(config, deps = {}) {
     stats: () => ({ tails: liveTails.size, mirrors: mirrors.size, connections: conns.size }),
     async close() {
       clearInterval(heartbeat);
+      seen.flush();
       clearTimeout(warmTimer);
       clearInterval(rotation);
       clearInterval(healthTimer);
