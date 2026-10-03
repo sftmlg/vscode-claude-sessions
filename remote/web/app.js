@@ -1,5 +1,6 @@
 import { createTerm } from './term.js';
 import { Outbox, OutboxSender, setupInput, newId, highlightParts } from './input.js';
+import { inboxSections } from './inbox.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const ACTIVE_HOST_KEY = 'claude-remote.host';
@@ -480,25 +481,55 @@ function pill(status) {
   return el('span', { class: `pill pill-${status}`, text });
 }
 
+const COLLAPSED_KEY = 'claude-remote.collapsed';
+
+function collapsedProjects() {
+  return new Set(safeStorage((st) => JSON.parse(st.getItem(COLLAPSED_KEY) || '[]'), []));
+}
+
+function sessionRow(s) {
+  const open = () => openSession(keyOf(s));
+  const actions = [];
+  if (!s.managed && s.pid) actions.push(el('button', { type: 'button', class: 'secondary', text: 'Take over', onclick: (e) => (e.stopPropagation(), prepareTakeover(s.pid)) }));
+  return el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
+    el('div', { class: 'row-main' }, [
+      el('div', { class: 'row-title' }, [s.unread ? el('span', { class: 'unread-dot', title: 'New since you last looked', 'aria-label': 'unread' }) : null, el('span', { class: 'row-name', text: labelOf(s) }), pill(s.status)]),
+      el('div', { class: 'row-meta' }, [el('span', { text: s.project || basename(s.cwd) }), badge(s.managed ? 'service' : 'terminal'), el('span', { text: timeAgo(s.lastActivity) })]),
+      s.lastPrompt ? el('div', { class: 'row-prompt', text: s.lastPrompt }) : null,
+    ]),
+    el('div', { class: 'row-actions' }, actions),
+  ]);
+}
+
 function renderList() {
   const list = $('session-list');
   list.replaceChildren();
-  const items = [...state.sessions].sort((a, b) => Number(b.managed) - Number(a.managed) || String(b.lastActivity || '').localeCompare(String(a.lastActivity || '')));
-  $('session-empty').hidden = items.length > 0;
-  for (const s of items) {
-    const open = () => openSession(keyOf(s));
-    const actions = [];
-    if (!s.managed && s.pid) actions.push(el('button', { type: 'button', class: 'secondary', text: 'Take over', onclick: (e) => (e.stopPropagation(), prepareTakeover(s.pid)) }));
-    const row = el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
-      el('div', { class: 'row-main' }, [
-        el('div', { class: 'row-title' }, [el('span', { class: 'row-name', text: labelOf(s) }), pill(s.status)]),
-        el('div', { class: 'row-meta' }, [el('span', { text: s.project || basename(s.cwd) }), badge(s.managed ? 'service' : 'terminal'), el('span', { text: timeAgo(s.lastActivity) })]),
-        s.lastPrompt ? el('div', { class: 'row-prompt', text: s.lastPrompt }) : null,
-      ]),
-      el('div', { class: 'row-actions' }, actions),
-    ]);
-    list.append(row);
+  $('session-empty').hidden = state.sessions.length > 0;
+  const { needs, groups } = inboxSections(state.sessions);
+  if (needs.length) {
+    list.append(el('li', { class: 'section-head', text: 'Needs you' }));
+    for (const s of needs) list.append(sessionRow(s));
   }
+  const collapsed = collapsedProjects();
+  for (const g of groups) {
+    const details = el('details', { class: 'project-group', open: !collapsed.has(g.project) }, [
+      el('summary', {}, [el('span', { class: 'group-name', text: g.project }), el('span', { class: 'group-count', text: String(g.items.length) })]),
+      el('ul', { class: 'session-list' }, g.items.map(sessionRow)),
+    ]);
+    details.addEventListener('toggle', () => {
+      const set = collapsedProjects();
+      if (details.open) set.delete(g.project);
+      else set.add(g.project);
+      safeStorage((st) => st.setItem(COLLAPSED_KEY, JSON.stringify([...set])));
+    });
+    list.append(el('li', { class: 'group' }, details));
+  }
+}
+
+function markSeen(s) {
+  if (!s || !s.sessionId) return;
+  s.unread = false;
+  conn.send({ t: 'markSeen', sessionId: s.sessionId });
 }
 
 function renderStatus() {
@@ -538,6 +569,7 @@ function openSession(key) {
   else setTab(state.tab);
   renderStatus();
   subscribe();
+  markSeen(currentItem());
 }
 
 function wantsAutoFit() {
@@ -555,6 +587,7 @@ function releaseClaim(reclaimLater) {
 function closeSession() {
   if (!state.current) return;
   const s = currentItem();
+  markSeen(s);
   releaseClaim(false);
   state.reclaim = false;
   state.fitOptOut = false;
@@ -695,6 +728,7 @@ function onJson(data) {
       return undefined;
     case 'status': {
       for (const s of state.sessions) if (keyOf(s) === m.sessionId || s.sessionId === m.sessionId) Object.assign(s, { status: m.status, waitingFor: m.waitingFor });
+      if (m.status === 'idle' && currentItem() && (state.current === m.sessionId || currentItem().sessionId === m.sessionId) && document.visibilityState === 'visible') markSeen(currentItem());
       renderHostTabs();
       renderList();
       if (state.current) renderStatus();

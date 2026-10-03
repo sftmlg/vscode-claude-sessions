@@ -207,3 +207,32 @@ test('one tab per host: own socket, own token per origin, peers from the first h
   assert.match(app, /outbox\.add\(s\.name, text, conn\.id\)/, 'queued messages go to the host they were typed for');
   assert.match(read('vscode-bridge.js'), /getToken: \(origin\) => request\('getToken', \{ origin/);
 });
+
+test('attention inbox: waiting, then finished and unread, then busy; the rest grouped by project, newest first', async () => {
+  const { inboxSections } = await import(path.join(WEB, 'inbox.js'));
+  const t = (min) => new Date(Date.UTC(2026, 0, 1, 12, min)).toISOString();
+  const items = [
+    { name: 'a', status: 'idle', unread: false, project: 'shop', lastActivity: t(1) },
+    { name: 'b', status: 'busy', unread: true, project: 'shop', lastActivity: t(9) },
+    { name: 'c', status: 'idle', unread: true, project: 'api', lastActivity: t(2) },
+    { name: 'd', status: 'waiting', unread: false, project: 'api', lastActivity: t(0) },
+    { name: 'e', status: 'idle', unread: false, project: 'api', lastActivity: t(5) },
+    { name: 'f', status: 'none', unread: false, cwd: '/x/docs', lastActivity: t(3) },
+    { name: 'g', status: 'idle', unread: true, project: 'shop', lastActivity: t(4) },
+  ];
+  const { needs, groups } = inboxSections(items);
+  assert.deepStrictEqual(needs.map((i) => i.name), ['d', 'g', 'c', 'b']);
+  assert.deepStrictEqual(groups.map((g) => [g.project, g.items.map((i) => i.name)]), [['api', ['e']], ['docs', ['f']], ['shop', ['a']]]);
+  assert.deepStrictEqual(inboxSections([]), { needs: [], groups: [] });
+});
+
+test('list renders the inbox with collapsible project groups and unread dots; opening and leaving mark read', () => {
+  const app = read('app.js');
+  assert.match(app, /inboxSections\(state\.sessions\)/);
+  assert.match(app, /el\('details', \{ class: 'project-group'/);
+  assert.match(app, /text: 'Needs you'/);
+  assert.match(app, /class: 'unread-dot', title: 'New since you last looked'/);
+  assert.match(app, /function markSeen\(s\)[\s\S]{0,200}t: 'markSeen', sessionId: s\.sessionId/);
+  assert.match(app, /function openSession\(key\) \{[\s\S]{0,400}markSeen\(currentItem\(\)\)/);
+  assert.match(app, /function closeSession\(\) \{[\s\S]{0,200}markSeen\(s\)/);
+});

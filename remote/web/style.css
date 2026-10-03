@@ -255,6 +255,44 @@ h3 {
   min-width: 0;
 }
 
+.section-head {
+  padding: 10px 14px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.group {
+  list-style: none;
+}
+
+.project-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.group-count {
+  font-weight: 400;
+}
+
+.unread-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 .row-snippet,
 .row-prompt {
   margin-top: 3px;
