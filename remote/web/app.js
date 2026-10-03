@@ -214,14 +214,21 @@ function makeConn({ id, label, url }) {
   return c;
 }
 
-function selfLabel() {
-  if (!host) return 'This Mac';
+let viewerHost = null;
+
+function urlHost(url) {
   try {
-    return new URL(wsUrl()).hostname.split('.')[0] || 'This Mac';
+    return new URL(url).hostname.toLowerCase();
   } catch {
-    return 'This Mac';
+    return '';
   }
 }
+
+function selfLabel() {
+  return urlHost(wsUrl()).split('.')[0] || 'this hub';
+}
+
+const isViewerHost = (c) => Boolean(viewerHost) && urlHost(c.url) === viewerHost;
 
 function setPeers(peers) {
   const list = (Array.isArray(peers) ? peers : []).filter((p) => p && typeof p.url === 'string' && typeof p.name === 'string' && socketOrigin(p.url) !== hosts[0].origin);
@@ -256,13 +263,14 @@ function renderHostTabs() {
   const nav = $('host-tabs');
   if (!nav) return;
   nav.hidden = hosts.length < 2;
+  const ordered = [...hosts.filter(isViewerHost), ...hosts.filter((h) => !isViewerHost(h))];
   nav.replaceChildren(
-    ...hosts.map((c) => {
+    ...ordered.map((c) => {
       const waiting = waitingCount(c);
       const title = `${c.label}: ${c.connState === 'online' ? 'connected' : c.connState}${waiting ? `, ${waiting} waiting for you` : ''}`;
       return el('button', { type: 'button', role: 'tab', class: 'host-tab', 'aria-selected': String(c === conn), title, onclick: () => switchHost(c) }, [
         el('span', { class: `dot dot-${c.connState}` }),
-        el('span', { text: c.label }),
+        el('span', { text: isViewerHost(c) ? `${c.label} (this device)` : c.label }),
         waiting ? el('span', { class: 'host-count', text: String(waiting), 'aria-label': `${waiting} waiting` }) : null,
       ]);
     }),
@@ -295,6 +303,7 @@ function onBackground(c, data) {
     return;
   }
   if (m.t === 'helloOk') {
+    if (m.hostName) c.label = m.hostName;
     c.authed = true;
     c.needsPair = false;
     c.device = m.device;
@@ -717,6 +726,8 @@ function onJson(data) {
       return renderHealth(m);
     case 'helloOk':
       conn.authed = true;
+      if (m.hostName) conn.label = m.hostName;
+      if (conn === hosts[0] && m.viewerHost) viewerHost = String(m.viewerHost).toLowerCase();
       conn.needsPair = false;
       conn.health = m.health || null;
       conn.device = m.device;

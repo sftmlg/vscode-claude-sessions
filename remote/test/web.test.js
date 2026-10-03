@@ -279,3 +279,11 @@ test('dates are relative in the text and absolute only in the tooltip', async ()
   assert.strictEqual(relativeTime(null, now), '');
   assert.ok(!/toLocaleDateString\(\)/.test(read('app.js').replace(/title: [^,]+toLocale\w+\(\)/g, '')), 'no absolute dates in visible text');
 });
+
+test('tabs carry machine names; the machine the viewer sits at is marked and first', () => {
+  const app = read('app.js');
+  assert.ok(!/This Mac/.test(app), 'no guessed "This Mac" label');
+  assert.match(app, /`\$\{c\.label\} \(this device\)`/);
+  assert.match(app, /\[\.\.\.hosts\.filter\(isViewerHost\), \.\.\.hosts\.filter\(\(h\) => !isViewerHost\(h\)\)\]/);
+  assert.match(app, /if \(m\.hostName\) conn\.label = m\.hostName;/);
+});
