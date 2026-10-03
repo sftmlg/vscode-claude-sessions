@@ -5,7 +5,6 @@ const sessions = require('../sessions');
 
 const TITLE_MAX = 80;
 const SNIPPET_MAX = 120;
-const LIST_TTL_MS = 30000;
 const ALL_DAYS = 3650;
 
 function displayTitle(meta, autoName) {
@@ -45,11 +44,9 @@ class Catalog {
   constructor(config, { days = ALL_DAYS } = {}) {
     this.roots = config.roots;
     this.days = days;
-    this.cached = null;
   }
 
   async list() {
-    if (this.cached && Date.now() - this.cached.at < LIST_TTL_MS) return this.cached.items;
     const byId = new Map();
     for (const root of this.roots) {
       for (const m of await sessions.listRepoSessions(root, this.days)) {
@@ -57,9 +54,7 @@ class Catalog {
         if (!prev || Date.parse(m.lastActivity) > Date.parse(prev.lastActivity)) byId.set(m.id, m);
       }
     }
-    const items = [...byId.values()].sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
-    this.cached = { at: Date.now(), items };
-    return items;
+    return [...byId.values()].sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
   }
 
   async search(query, { limit = 20, running = new Map() } = {}) {

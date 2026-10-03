@@ -81,3 +81,10 @@ test('warming fills the text cache for every listed session', async () => {
   const n = await catalog.warm({ pauseMs: 0 });
   assert.strictEqual(n, 4);
 });
+
+test('a session written after an earlier search is found by the next one', async () => {
+  const catalog = new Catalog({ roots: [root] });
+  assert.strictEqual((await catalog.search('pelican')).length, 0);
+  session('ffffffff-0000-4000-8000-000000000006', repo, [user('feed the pelican')], 0);
+  assert.strictEqual((await catalog.search('pelican')).length, 1);
+});
