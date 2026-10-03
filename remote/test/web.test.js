@@ -497,3 +497,12 @@ test('device names carry date and origin, new devices are announced, small scree
   assert.match(app, /e\.key === '\?'/);
   assert.match(html, /<details class="keys-more"><summary>More<\/summary>/);
 });
+
+test('a deep link opens a steerable session in the terminal before the list arrives', async () => {
+  const { initialTab } = await import(path.join(WEB, 'inbox.js'));
+  assert.strictEqual(initialTab('cc-shop', null, 'chat'), 'terminal');
+  assert.strictEqual(initialTab('abcdabcd-1111-4222-8333-444455556666', null, 'terminal'), 'chat');
+  assert.strictEqual(initialTab('cc-shop', { managed: true }, 'chat'), 'chat');
+  assert.strictEqual(initialTab('cc-shop', { managed: true }, 'terminal'), 'terminal');
+  assert.strictEqual(initialTab('x', { managed: false }, 'terminal'), 'chat');
+});

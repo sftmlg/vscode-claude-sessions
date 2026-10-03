@@ -60,3 +60,8 @@ export function absoluteTime(iso) {
   const t = Date.parse(iso || '');
   return Number.isFinite(t) ? new Date(t).toLocaleString() : '';
 }
+
+export function initialTab(key, item, current) {
+  if (item) return item.managed ? current : 'chat';
+  return /^cc-/.test(key) ? 'terminal' : 'chat';
+}

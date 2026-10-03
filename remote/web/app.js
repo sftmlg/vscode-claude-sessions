@@ -1,12 +1,13 @@
 import { createTerm } from './term.js';
 import { Outbox, OutboxSender, DraftStore, setupInput, newId, highlightParts } from './input.js';
-import { inboxSections, relativeTime, absoluteTime, staleFor } from './inbox.js';
+import { inboxSections, relativeTime, absoluteTime, staleFor, initialTab } from './inbox.js';
 import { parseOptions, suggestionFrom } from './quick-replies.js';
 import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, onSubscriptionChange, currentSubscription, sessionTarget, sessionHash, PUSH_UNAVAILABLE } from './notify.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const ACTIVE_HOST_KEY = 'claude-remote.host';
 const PEERS_KEY = 'claude-remote.peers';
+const VIEWER_HOST_KEY = 'claude-remote.viewerHost';
 const BACKOFF = [500, 1000, 2000, 4000, 8000, 10000];
 const PING_MS = 20000;
 const RETRY_MS = 1000;
@@ -216,7 +217,7 @@ function makeConn({ id, label, url }) {
   return c;
 }
 
-let viewerHost = null;
+let viewerHost = safeStorage((s) => s.getItem(VIEWER_HOST_KEY)) || null;
 
 function urlHost(url) {
   try {
@@ -230,6 +231,13 @@ function selfLabel() {
   return urlHost(wsUrl()).split('.')[0] || 'this hub';
 }
 
+function noteViewerHost(value) {
+  const next = value ? String(value).toLowerCase() : null;
+  if (!next || next === viewerHost) return;
+  viewerHost = next;
+  safeStorage((s) => s.setItem(VIEWER_HOST_KEY, next));
+  renderHostTabs();
+}
 const isViewerHost = (c) => Boolean(viewerHost) && urlHost(c.url) === viewerHost;
 
 function setPeers(peers) {
@@ -334,6 +342,7 @@ function onBackground(c, data) {
   }
   if (m.t === 'helloOk') {
     if (m.hostName) c.label = m.hostName;
+    noteViewerHost(m.viewerHost);
     if (c === hosts[0]) resyncPush();
     if (pendingOpen && hostFor(pendingOpen) === c) setTimeout(() => {
       const target = pendingOpen;
@@ -731,9 +740,9 @@ function openSession(key, { fromHistory = false, replace = false } = {}) {
   state.current = key;
   const s = currentItem();
   show('session');
-  state.tab = s && s.managed ? state.tab : 'chat';
-  if (s && !s.managed) setTab('chat');
-  else setTab(state.tab);
+  const tab = initialTab(key, s, state.tab);
+  state.tab = tab === 'terminal' ? state.tab : tab;
+  setTab(tab);
   const opened = currentItem();
   if (input) input.setText(opened && opened.managed ? drafts.load(conn.id, opened.name) : '');
   renderStatus();
@@ -878,7 +887,7 @@ function onJson(data) {
     case 'helloOk':
       conn.authed = true;
       if (m.hostName) conn.label = m.hostName;
-      if (conn === hosts[0] && m.viewerHost) viewerHost = String(m.viewerHost).toLowerCase();
+      noteViewerHost(m.viewerHost);
       if (conn === hosts[0]) resyncPush();
       conn.needsPair = false;
       conn.health = m.health || null;
