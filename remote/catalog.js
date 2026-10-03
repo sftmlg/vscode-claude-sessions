@@ -7,9 +7,10 @@ const TITLE_MAX = 80;
 const SNIPPET_MAX = 120;
 const ALL_DAYS = 3650;
 
-function displayTitle(meta, autoName) {
+function displayTitle(meta, autoName, given) {
   const named = meta ? sessions.sessionName(meta) : '';
   if (named) return named;
+  if (given) return given;
   if (meta && meta.firstPrompt) return sessions.oneLine(meta.firstPrompt, TITLE_MAX);
   return autoName || null;
 }

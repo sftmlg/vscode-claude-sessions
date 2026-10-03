@@ -106,6 +106,7 @@ const ERROR_TEXT = {
   'dir-not-allowed': 'That directory is outside the allowed roots.',
   'name-taken': 'A session with this name exists.',
   'bad-name': 'Name must look like cc-my-task (lowercase letters, digits, dashes).',
+  'bad-title': 'Keep the name under 80 characters.',
   'bad-resume-id': 'Resume id must be a session UUID.',
   'session-running': 'A running process holds this session. Use Take over.',
   busy: 'The session is working right now. Try again when it is idle.',
@@ -1133,8 +1134,7 @@ function field(label, input) {
 }
 
 function showNewSession() {
-  const rand = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, '0')).join('');
-  const name = el('input', { value: `cc-${rand}`, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', pattern: 'cc-[a-z0-9\\-]{1,40}', required: true });
+  const name = el('input', { placeholder: 'What is it about? (optional)', maxlength: '80', autocomplete: 'off', enterkeyhint: 'go' });
   const dir = el('input', { value: state.defaultDir, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
   const start = el('button', { type: 'submit', class: 'primary', text: 'Start' });
   const form = el('form', { class: 'stack' }, [field('Name', name), field('Directory', dir), el('p', { class: 'muted small', text: 'To continue an earlier session, search for it and choose Resume here.' }), start]);
@@ -1142,12 +1142,12 @@ function showNewSession() {
     e.preventDefault();
     if (start.getAttribute('aria-busy') === 'true') return undefined;
     setBusy(start, true);
-    const ack = await request({ t: 'new', id: newId('n'), name: name.value.trim(), dir: dir.value.trim() });
+    const ack = await request({ t: 'new', id: newId('n'), title: name.value.trim(), dir: dir.value.trim() });
     setBusy(start, false);
     if (!ack.ok) return toast(errorText(ack.error));
     closeSheet();
     conn.send({ t: 'list' });
-    openSession(ack.name || name.value.trim());
+    if (ack.name) openSession(ack.name);
     return undefined;
   });
   openSheet('New session', form);

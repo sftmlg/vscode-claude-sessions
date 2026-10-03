@@ -657,7 +657,7 @@ async function start(config, deps = {}) {
         return { ok: true };
       }
       if (msg.t === 'new') {
-        const r = await registry.newSession({ name: msg.name, dir: msg.dir, resumeId: msg.resumeId }, { device });
+        const r = await registry.newSession({ name: msg.name, dir: msg.dir, resumeId: msg.resumeId, title: msg.title }, { device });
         return { ok: true, name: r.name };
       }
       const r = await registry.takeover(msg.token, { device, force: msg.force === true });

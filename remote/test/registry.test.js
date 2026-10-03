@@ -3,13 +3,14 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const { tempHome, testCtx, killServer, capture, waitFor, FAKE_CLAUDE } = require('./fixtures/fs-helpers');
 
 const home = tempHome('remote-registry-');
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
 const { Registry, realUnder, UUID_RE } = require('../registry');
+const { displayTitle } = require('../catalog');
 
 const work = path.join(home, 'work');
 const sessionsDir = path.join(home, '.claude-a', 'sessions');
@@ -93,6 +94,21 @@ test('registry on a throwaway socket', async (t) => {
     assert.strictEqual(item.cwd, path.join(work, 'proj'));
     assert.ok(audits.some((a) => a.action === 'new' && a.name === 'cc-new' && a.device === 'dev-1'));
     await assert.rejects(reg.newSession({ name: 'cc-new', dir: work }), (e) => e.code === 'name-taken');
+  });
+
+  await t.test('a typed title names the tmux session and shows until the transcript has a better one', async () => {
+    const r = await reg.newSession({ title: 'Invoice export: Q3 ü', dir: work });
+    assert.strictEqual(r.name, 'cc-invoice-export-q3');
+    const item = reg.listAll().find((i) => i.name === r.name);
+    assert.strictEqual(item.title, 'Invoice export: Q3 ü');
+    const again = await reg.newSession({ title: 'Invoice export: Q3 ü', dir: work });
+    assert.notStrictEqual(again.name, r.name);
+    await assert.rejects(reg.newSession({ title: 'x'.repeat(200), dir: work }), (e) => e.code === 'bad-title');
+    const blank = await reg.newSession({ title: '', dir: work });
+    assert.match(blank.name, /^cc-[a-z0-9-]+$/);
+    assert.strictEqual(displayTitle({ firstPrompt: 'first words' }, 'auto', 'Typed'), 'Typed');
+    assert.strictEqual(displayTitle({ aiTitle: 'AI title', firstPrompt: 'first words' }, 'auto', 'Typed'), 'AI title');
+    for (const n of [r.name, again.name, blank.name]) execFileSync(ctx.bin || 'tmux', ['-L', ctx.socket, 'kill-session', '-t', `=${n}`]);
   });
 
   await t.test('a pid file under the pane links the managed session and status changes are pushed', async () => {

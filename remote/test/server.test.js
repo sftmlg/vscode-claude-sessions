@@ -413,6 +413,14 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await waitFor(() => hub.stats().tails === 1, { what: 'fresh tail closed' });
   });
 
+  await t.test('a typed title names the new session and is listed as its title', async () => {
+    c.send({ t: 'new', id: 'n-title', title: 'Release notes draft', dir: work });
+    const ack = await c.wait((m) => m.t === 'ack' && m.id === 'n-title', 'titled ack');
+    assert.deepStrictEqual([ack.ok, ack.name], [true, 'cc-release-notes-draft']);
+    const listed = await c.wait((m) => m.t === 'sessions' && m.items.some((i) => i.name === 'cc-release-notes-draft'), 'titled listed');
+    assert.strictEqual(listed.items.find((i) => i.name === 'cc-release-notes-draft').title, 'Release notes draft');
+  });
+
   await t.test('chat subscriptions never leak tails: duplicate subscribe and close during setup', async () => {
     assert.strictEqual(hub.stats().tails, 1);
     const d = await client(port);

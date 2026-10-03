@@ -91,6 +91,8 @@ async function readPidRecords() {
   return records;
 }
 
+const TITLE_MAX = 80;
+
 function slug(text) {
   return String(text || '')
     .toLowerCase()
@@ -136,6 +138,19 @@ class Registry extends EventEmitter {
     this.tokens = new Map();
     this.starting = new Map();
     this.refreshing = null;
+    this.titlesFile = config.stateDir ? path.join(config.stateDir, 'titles.json') : null;
+    this.titles = new Map();
+    this.titledAt = new Map();
+    try {
+      for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(this.titlesFile, 'utf8')))) if (tmux.NAME_RE.test(k) && typeof v === 'string') this.titles.set(k, v);
+    } catch {}
+  }
+
+  saveTitles() {
+    if (!this.titlesFile) return;
+    try {
+      fs.writeFileSync(this.titlesFile, JSON.stringify(Object.fromEntries(this.titles)), { mode: 0o600 });
+    } catch {}
   }
 
   start() {
@@ -189,6 +204,7 @@ class Registry extends EventEmitter {
   }
 
   async doRefresh() {
+    const startedAt = Date.now();
     const [managed, records, { procs, children }] = await Promise.all([tmux.listSessions(this.ctx), readPidRecords(), processTable()]);
     const claimed = new Set();
     const items = [];
@@ -197,6 +213,9 @@ class Registry extends EventEmitter {
       if (rec) claimed.add(rec.pid);
       items.push(await this.item(rec, procs, { managed: true, name: s.name, cwd: s.cwd, tty: s.paneTty ? s.paneTty.replace(/^\/dev\//, '') : null, activity: s.activity, cols: s.cols, rows: s.rows }));
     }
+    const before = this.titles.size;
+    for (const n of [...this.titles.keys()]) if (!managed.some((s) => s.name === n) && (this.titledAt.get(n) || 0) < startedAt) this.titles.delete(n);
+    if (this.titles.size !== before) this.saveTitles();
     for (const rec of records.values()) {
       if (claimed.has(rec.pid)) continue;
       items.push(await this.item(rec, procs, { managed: false, name: null }));
@@ -227,6 +246,7 @@ class Registry extends EventEmitter {
     const proc = rec ? procs.get(rec.pid) : null;
     const lastActivity = m.lastActivity || (extra.activity ? new Date(extra.activity).toISOString() : null);
     const cwd = (rec && rec.cwd) || extra.cwd || null;
+    const given = (extra.managed && this.titles.get(extra.name)) || null;
     const ext = rec ? extensionInfo(rec.sessionId, cwd, this.config.roots) : { favorite: false, name: null };
     let transcriptSize = null;
     if (m.transcriptPath) {
@@ -246,7 +266,7 @@ class Registry extends EventEmitter {
       slot: rec ? rec.slot : null,
       status: rec ? rec.status : 'none',
       waitingFor: rec ? rec.waitingFor : null,
-      title: rec ? ext.name || displayTitle(m.meta, rec.name) : null,
+      title: rec ? ext.name || displayTitle(m.meta, rec.name, given) : given,
       favorite: ext.favorite,
       lastPrompt: lastPrompt(m.meta),
       transcriptPath: m.transcriptPath || null,
@@ -260,7 +280,7 @@ class Registry extends EventEmitter {
     return ['/usr/bin/env', ...c.launcher, ...c.claudeCommand, ...c.claudeArgs, ...(resumeId ? ['--resume', resumeId] : [])];
   }
 
-  async newSession({ name, dir, resumeId } = {}, { device } = {}) {
+  async newSession({ name, dir, resumeId, title } = {}, { device } = {}) {
     const resumeKey = resumeId && UUID_RE.test(String(resumeId)) ? String(resumeId) : null;
     if (resumeKey) {
       const until = this.starting.get(resumeKey);
@@ -268,14 +288,21 @@ class Registry extends EventEmitter {
       this.starting.set(resumeKey, Date.now() + STARTING_MS);
     }
     try {
-      return await this.startSession({ name, dir, resumeId }, { device });
+      return await this.startSession({ name, dir, resumeId, title }, { device });
     } catch (e) {
       if (resumeKey) this.starting.delete(resumeKey);
       throw e;
     }
   }
 
-  async startSession({ name, dir, resumeId } = {}, { device } = {}) {
+  async startSession({ name, dir, resumeId, title } = {}, { device } = {}) {
+    let given = null;
+    if (title !== undefined && title !== null) {
+      if (typeof title !== 'string') throw new RegistryError('bad-title', 'Title must be text');
+      given = tmux.stripControls(title).replace(/\s+/g, ' ').trim() || null;
+      if (given && given.length > TITLE_MAX) throw new RegistryError('bad-title', `Title must be at most ${TITLE_MAX} characters`);
+      if (!name && !resumeId) name = await this.freeName(given && slug(given) ? `cc-${slug(given)}` : `cc-${crypto.randomBytes(3).toString('hex')}`);
+    }
     if (!name && resumeId && UUID_RE.test(String(resumeId))) {
       const meta = await sessions.metaForSession(resumeId).catch(() => null);
       const base = `cc-${slug(displayTitle(meta)) || resumeId.slice(0, 8)}`;
@@ -290,6 +317,11 @@ class Registry extends EventEmitter {
     if (await tmux.hasSession(this.ctx, name)) throw new RegistryError('name-taken', `Session ${name} exists`);
     if (resume && [...(await readPidRecords()).values()].some((r) => r.sessionId === resume)) throw new RegistryError('session-running', 'A running process holds this session; take it over instead');
     await tmux.newSession(this.ctx, { name, dir: real, argv: this.buildArgv(resume) });
+    if (given) {
+      this.titles.set(name, given);
+      this.titledAt.set(name, Date.now());
+      this.saveTitles();
+    }
     this.audit('new', { device: device && device.id, name, resume: resume || undefined });
     await this.refresh();
     return { name };
