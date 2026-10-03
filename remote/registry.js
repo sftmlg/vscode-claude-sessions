@@ -18,6 +18,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TAKEOVER_TTL_MS = 60000;
 const EXIT_WAIT_MS = 10000;
 const META_TTL_MS = 15000;
+const STARTING_MS = 60000;
 
 class RegistryError extends Error {
   constructor(code, msg) {
@@ -133,6 +134,7 @@ class Registry extends EventEmitter {
     this.statuses = new Map();
     this.meta = new Map();
     this.tokens = new Map();
+    this.starting = new Map();
     this.refreshing = null;
   }
 
@@ -200,6 +202,7 @@ class Registry extends EventEmitter {
       items.push(await this.item(rec, procs, { managed: false, name: null }));
     }
     this.items = items;
+    for (const id of [...this.starting.keys()]) if (items.some((i) => i.sessionId === id) || this.starting.get(id) <= Date.now()) this.starting.delete(id);
     const sig = JSON.stringify(items);
     if (sig !== this.signature) {
       this.signature = sig;
@@ -258,6 +261,21 @@ class Registry extends EventEmitter {
   }
 
   async newSession({ name, dir, resumeId } = {}, { device } = {}) {
+    const resumeKey = resumeId && UUID_RE.test(String(resumeId)) ? String(resumeId) : null;
+    if (resumeKey) {
+      const until = this.starting.get(resumeKey);
+      if (until && until > Date.now()) throw new RegistryError('session-starting', 'This session is being started; it appears in the list in a moment');
+      this.starting.set(resumeKey, Date.now() + STARTING_MS);
+    }
+    try {
+      return await this.startSession({ name, dir, resumeId }, { device });
+    } catch (e) {
+      if (resumeKey) this.starting.delete(resumeKey);
+      throw e;
+    }
+  }
+
+  async startSession({ name, dir, resumeId } = {}, { device } = {}) {
     if (!name && resumeId && UUID_RE.test(String(resumeId))) {
       const meta = await sessions.metaForSession(resumeId).catch(() => null);
       const base = `cc-${slug(displayTitle(meta)) || resumeId.slice(0, 8)}`;

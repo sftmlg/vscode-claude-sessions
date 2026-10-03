@@ -197,7 +197,10 @@ test('registry on a throwaway socket', async (t) => {
     assert.strictEqual(starred.favorite, true);
     assert.strictEqual(starred.title, 'Editor tab name');
     fs.rmSync(path.join(proj, '.vscode'), { recursive: true });
-    const r = await reg.newSession({ resumeId: ID4 }, { device: { id: 'dev-1' } });
+    const [r, second] = await Promise.allSettled([reg.newSession({ resumeId: ID4 }, { device: { id: 'dev-1' } }), reg.newSession({ resumeId: ID4 }, { device: { id: 'dev-2' } })]).then((all) => [all[0].value, all[1]]);
+    assert.strictEqual(second.status, 'rejected');
+    assert.strictEqual(second.reason.code, 'session-starting', 'a second resume of the same session waits for the first');
+    await assert.rejects(reg.newSession({ resumeId: ID4, name: 'cc-again' }), (e) => e.code === 'session-starting', 'still starting until its process shows up');
     assert.strictEqual(r.name, 'cc-ship-the-q3-report');
     await waitFor(() => capture(ctx, r.name).includes(`[--resume] [${ID4}]`), { what: 'resumed by id' });
     assert.strictEqual(reg.listAll().find((i) => i.name === r.name).cwd, proj);
