@@ -407,3 +407,33 @@ test('cli status turns blocked folder access into a warning that names the node 
   assert.strictEqual(cli.folderWarning({ folderAccess: { desktop: 'ok', documents: 'ok' } }), null);
   assert.strictEqual(cli.folderWarning({}), null);
 });
+
+test('https mode accepts the own https origin and every peer hub origin, nothing else', () => {
+  const c = tmpConfig({
+    publicScheme: 'https',
+    peers: [
+      { name: 'Laptop', url: 'wss://laptop.example.test:39180/ws' },
+      { name: 'Default port', url: 'wss://other.example.test/ws' },
+      { name: 'Bad scheme', url: 'https://web.example.test:39180/' },
+      { name: 'Broken', url: 'not a url' },
+    ],
+  });
+  const at = (origin) => checkRequest(req({ ...ws, origin }), c);
+  for (const origin of [`https://${HOST}:39180`, 'https://laptop.example.test:39180', 'https://other.example.test', 'vscode-webview://1a2b3c']) {
+    assert.strictEqual(at(origin).ok, true, origin);
+  }
+  for (const origin of [`http://${HOST}:39180`, `https://${HOST}`, 'http://laptop.example.test:39180', 'https://laptop.example.test', 'https://laptop.example.test:39181', 'https://web.example.test:39180', 'https://evil.example', 'null', undefined]) {
+    assert.strictEqual(at(origin).reason, 'bad-origin', String(origin));
+  }
+  assert.strictEqual(checkRequest(req({ ...ws, host: HOST, origin: `https://${HOST}` }), { ...c, publicPort: 443 }).ok, true);
+  assert.strictEqual(checkRequest(req({ ...ws, origin: `https://${HOST}:39180`, 'tailscale-user-login': 'other@example.test' }), c).reason, 'wrong-identity');
+  assert.strictEqual(checkRequest(req({ ...ws, origin: `https://${HOST}:39180`, host: 'laptop.example.test:39180' }), c).reason, 'bad-host');
+});
+
+test('http mode keeps the http origin and ignores peers with another scheme', () => {
+  const c = tmpConfig({ peers: [{ name: 'Laptop', url: 'ws://laptop.example.test:39180/ws' }] });
+  assert.strictEqual(checkRequest(req(ws), c).ok, true);
+  assert.strictEqual(checkRequest(req({ ...ws, origin: 'http://laptop.example.test:39180' }), c).ok, true);
+  assert.strictEqual(checkRequest(req({ ...ws, origin: `https://${HOST}:39180` }), c).reason, 'bad-origin');
+  assert.strictEqual(checkRequest(req(ws), { ...c, peers: 'nonsense' }).ok, true);
+});

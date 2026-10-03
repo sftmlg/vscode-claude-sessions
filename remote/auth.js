@@ -69,6 +69,27 @@ function header(req, name) {
   return Array.isArray(v) ? v.join(', ') : v;
 }
 
+function originOf(scheme, host, port) {
+  const defaultPort = scheme === 'https' ? 443 : 80;
+  return Number(port) === defaultPort || port === '' ? `${scheme}://${host}` : `${scheme}://${host}:${port}`;
+}
+
+function allowedOrigins(config, host, port) {
+  const scheme = config.publicScheme === 'https' ? 'https' : 'http';
+  const socketScheme = scheme === 'https' ? 'wss:' : 'ws:';
+  const origins = new Set([originOf(scheme, host, port)]);
+  for (const peer of Array.isArray(config.peers) ? config.peers : []) {
+    let url;
+    try {
+      url = new URL(String(peer && peer.url));
+    } catch {
+      continue;
+    }
+    if (url.protocol === socketScheme && url.hostname) origins.add(originOf(scheme, url.hostname.toLowerCase(), url.port));
+  }
+  return origins;
+}
+
 function checkRequest(req, config) {
   const host = config && typeof config.publicHost === 'string' ? config.publicHost.toLowerCase() : '';
   const allowedLogin = config && typeof config.allowedLogin === 'string' ? config.allowedLogin : '';
@@ -83,7 +104,7 @@ function checkRequest(req, config) {
   if (upgrade) {
     if (upgrade !== 'websocket' || req.method !== 'GET') return { ok: false, login, reason: 'bad-upgrade' };
     const origin = header(req, 'origin');
-    const okOrigin = origin === `http://${host}:${port}` || (typeof origin === 'string' && /^vscode-webview:\/\/[A-Za-z0-9.-]+$/.test(origin));
+    const okOrigin = (typeof origin === 'string' && allowedOrigins(config, host, port).has(origin)) || (typeof origin === 'string' && /^vscode-webview:\/\/[A-Za-z0-9.-]+$/.test(origin));
     if (!okOrigin) return { ok: false, login, reason: 'bad-origin' };
   } else if (req.method !== 'GET' && req.method !== 'HEAD') {
     return { ok: false, login, reason: 'bad-method' };
@@ -388,6 +409,7 @@ function createAuth(config, opts) {
 
 module.exports = {
   checkRequest,
+  allowedOrigins,
   createAuth,
   idleDays,
   limits,
