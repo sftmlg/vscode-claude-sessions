@@ -486,6 +486,25 @@ h3 {
   border-top: 1px solid var(--line);
 }
 
+.quick-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-2);
+}
+
+.quick-reply {
+  border-color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .keybar {
   display: flex;
   gap: 4px;

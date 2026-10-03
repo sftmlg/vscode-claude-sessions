@@ -236,3 +236,29 @@ test('list renders the inbox with collapsible project groups and unread dots; op
   assert.match(app, /function openSession\(key\) \{[\s\S]{0,400}markSeen\(currentItem\(\)\)/);
   assert.match(app, /function closeSession\(\) \{[\s\S]{0,200}markSeen\(s\)/);
 });
+
+test('quick replies: numbered option lines become labelled keys, nothing else', async () => {
+  const { parseOptions } = await import(path.join(WEB, 'quick-replies.js'));
+  const lines = ['', ' Pick a colour for the chart', ' ❯ 1. Blue', '   2. Green', '   3. Something else (esc)', '', ' Esc to cancel'];
+  assert.deepStrictEqual(parseOptions(lines), [
+    { key: '1', label: 'Blue' },
+    { key: '2', label: 'Green' },
+    { key: '3', label: 'Something else' },
+    { key: 'Escape', label: 'Cancel (Esc)' },
+  ]);
+  assert.deepStrictEqual(parseOptions(['1. only one line']), [], 'a single numbered line is not a dialog');
+  assert.deepStrictEqual(parseOptions(['2. starts at two', '3. then three']), [], 'a list must start at 1');
+  assert.deepStrictEqual(parseOptions(['some prose', 'nothing numbered']), []);
+  assert.deepStrictEqual(parseOptions(null), []);
+  assert.strictEqual(parseOptions([...lines, ...new Array(45).fill('')]).length, 4, 'a prompt near the top of a tall screen is still found');
+  for (const o of parseOptions(lines)) assert.match(o.key, /^([1-9]|Escape)$/);
+});
+
+test('quick replies render only while waiting and send a key only on tap', () => {
+  const app = read('app.js');
+  assert.match(read('index.html'), /<div id="quick-replies" class="quick-replies" aria-label="Answers" hidden><\/div>/);
+  assert.match(app, /s\.status !== 'waiting'/);
+  assert.match(app, /onclick: \(\) => sendKey\(o\.key\)/, 'a tap sends exactly the option key');
+  const { KEYS } = require('../tmux');
+  for (const k of ['1', '9', 'Escape']) assert.ok(KEYS.has(k));
+});

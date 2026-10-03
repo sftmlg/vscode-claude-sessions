@@ -151,6 +151,15 @@ export function createTerm(el) {
       return { cols: Math.max(20, Math.min(400, c)), rows: Math.max(5, Math.min(200, r)) };
     },
     rescale: scale,
+    visibleLines() {
+      const buf = term.buffer.active;
+      const lines = [];
+      for (let y = buf.viewportY; y < buf.viewportY + term.rows; y++) {
+        const line = buf.getLine(y);
+        lines.push(line ? line.translateToString(true) : '');
+      }
+      return lines;
+    },
     dispose() {
       if (ro) ro.disconnect();
       term.dispose();

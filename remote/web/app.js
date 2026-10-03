@@ -1,6 +1,7 @@
 import { createTerm } from './term.js';
 import { Outbox, OutboxSender, setupInput, newId, highlightParts } from './input.js';
 import { inboxSections } from './inbox.js';
+import { parseOptions } from './quick-replies.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const ACTIVE_HOST_KEY = 'claude-remote.host';
@@ -526,6 +527,22 @@ function renderList() {
   }
 }
 
+let quickTimer = null;
+function scheduleQuickReplies() {
+  clearTimeout(quickTimer);
+  quickTimer = setTimeout(renderQuickReplies, 150);
+}
+
+function renderQuickReplies() {
+  const bar = $('quick-replies');
+  const s = currentItem();
+  const options = s && s.managed && s.status === 'waiting' && state.tab === 'terminal' && term ? parseOptions(term.visibleLines()) : [];
+  if (!s || s.status !== 'waiting') bar.replaceChildren();
+  bar.hidden = !options.length;
+  if (!options.length) return;
+  bar.replaceChildren(...options.map((o) => el('button', { type: 'button', class: 'quick-reply', title: `Sends the key ${o.key === 'Escape' ? 'Esc' : o.key}`, text: o.key === 'Escape' ? o.label : `${o.key}  ${o.label}`, onclick: () => sendKey(o.key) })));
+}
+
 function markSeen(s) {
   if (!s || !s.sessionId) return;
   s.unread = false;
@@ -650,6 +667,7 @@ function onBinary(buf) {
     state.awaitingBody = false;
     state.lastSeq = seq;
     term.reset(snap.cols, snap.rows, bytes);
+    scheduleQuickReplies();
     return;
   }
   if (state.lastSeq === null) return;
@@ -660,6 +678,7 @@ function onBinary(buf) {
   }
   state.lastSeq = seq;
   term.write(bytes);
+  scheduleQuickReplies();
 }
 
 function onJson(data) {
@@ -729,6 +748,7 @@ function onJson(data) {
     case 'status': {
       for (const s of state.sessions) if (keyOf(s) === m.sessionId || s.sessionId === m.sessionId) Object.assign(s, { status: m.status, waitingFor: m.waitingFor });
       if (m.status === 'idle' && currentItem() && (state.current === m.sessionId || currentItem().sessionId === m.sessionId) && document.visibilityState === 'visible') markSeen(currentItem());
+      scheduleQuickReplies();
       renderHostTabs();
       renderList();
       if (state.current) renderStatus();
