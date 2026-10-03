@@ -1,5 +1,5 @@
 import { createTerm } from './term.js';
-import { Outbox, OutboxSender, setupInput, newId } from './input.js';
+import { Outbox, OutboxSender, setupInput, newId, highlightParts } from './input.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const BACKOFF = [500, 1000, 2000, 4000, 8000, 10000];
@@ -210,6 +210,96 @@ function currentItem() {
 }
 
 const keyOf = (s) => (s.managed ? s.name : s.sessionId);
+const SEARCH_DEBOUNCE_MS = 250;
+const SEARCH_LIMIT = 30;
+const search = { query: '', id: null, timer: null };
+
+function badge(kind) {
+  if (kind === 'service') return el('span', { class: 'tag tag-managed', text: 'remote', title: 'Runs in the service. Steerable here.' });
+  if (kind === 'terminal') return el('span', { class: 'tag tag-unmanaged', text: 'in a terminal · read-only', title: 'Runs in a terminal tab on the Mac. Take it over to steer it here.' });
+  return el('span', { class: 'tag tag-past', text: 'not running', title: 'A past session. Resume it here to continue.' });
+}
+
+function onSearchInput() {
+  const query = $('session-search').value.trim();
+  clearTimeout(search.timer);
+  search.query = query;
+  if (!query) {
+    search.id = null;
+    $('search-results').hidden = true;
+    $('session-list').hidden = false;
+    renderList();
+    return;
+  }
+  search.timer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS);
+}
+
+function runSearch(query) {
+  const id = newId('q');
+  search.id = id;
+  if (!conn.send({ t: 'search', id, query, limit: SEARCH_LIMIT })) toast('Offline: search needs the connection.');
+}
+
+function clearSearch() {
+  $('session-search').value = '';
+  onSearchInput();
+}
+
+function renderSearch(items) {
+  const list = $('search-results');
+  list.hidden = false;
+  $('session-list').hidden = true;
+  $('session-empty').hidden = true;
+  list.replaceChildren();
+  if (!items.length) list.append(el('li', { class: 'muted pane-pad', text: 'No session matches every word.' }));
+  for (const hit of items) {
+    const actions = [];
+    if (hit.running === 'terminal' && hit.pid) actions.push(el('button', { type: 'button', class: 'secondary', text: 'Take over', onclick: (e) => (e.stopPropagation(), prepareTakeover(hit.pid)) }));
+    const open = () => openHit(hit);
+    const snippet = el('div', { class: 'row-snippet' }, highlightParts(hit.snippet, search.query).map((p) => (p.hit ? el('mark', { class: 'hit', text: p.text }) : document.createTextNode(p.text))));
+    list.append(
+      el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
+        el('div', { class: 'row-main' }, [
+          el('div', { class: 'row-title' }, [el('span', { class: 'row-name', text: hit.title || hit.sessionId.slice(0, 8) }), badge(hit.running)]),
+          el('div', { class: 'row-meta' }, [el('span', { text: hit.project || basename(hit.cwd) }), el('span', { text: timeAgo(hit.lastActivity) })]),
+          hit.snippet ? snippet : null,
+        ]),
+        el('div', { class: 'row-actions' }, actions),
+      ]),
+    );
+  }
+}
+
+function openHit(hit) {
+  if (hit.running === 'service' && hit.name) return openSession(hit.name);
+  if (hit.running === 'terminal') return openSession(hit.sessionId);
+  return showResumeSheet(hit);
+}
+
+function showResumeSheet(hit) {
+  const rows = [
+    ['Session', hit.title || hit.sessionId],
+    ['Project', hit.project || basename(hit.cwd) || '—'],
+    ['Last activity', timeAgo(hit.lastActivity) || '—'],
+  ];
+  const dl = el('dl', { class: 'facts' }, rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]));
+  const go = el('button', { type: 'button', class: 'primary', text: 'Resume here' });
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    const ack = await request({ t: 'new', id: newId('n'), resumeId: hit.sessionId });
+    if (!ack.ok) {
+      go.disabled = false;
+      return toast(errorText(ack.error));
+    }
+    closeSheet();
+    clearSearch();
+    conn.send({ t: 'list' });
+    openSession(ack.name);
+    return undefined;
+  });
+  openSheet('Resume this session?', el('div', { class: 'stack' }, [el('p', { class: 'muted', text: 'Starts it in the service with its full history, so it can be steered from here and from the Mac.' }), dl, go]));
+}
+
 const labelOf = (s) => s.title || s.name || (s.sessionId ? s.sessionId.slice(0, 8) : 'session');
 
 function timeAgo(iso) {
@@ -244,11 +334,8 @@ function renderList() {
     const row = el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
       el('div', { class: 'row-main' }, [
         el('div', { class: 'row-title' }, [el('span', { class: 'row-name', text: labelOf(s) }), pill(s.status)]),
-        el('div', { class: 'row-meta' }, [
-          el('span', { text: basename(s.cwd) }),
-          el('span', { class: s.managed ? 'tag tag-managed' : 'tag tag-unmanaged', text: s.managed ? 'service' : 'outside' }),
-          el('span', { text: timeAgo(s.lastActivity) }),
-        ]),
+        el('div', { class: 'row-meta' }, [el('span', { text: s.project || basename(s.cwd) }), badge(s.managed ? 'service' : 'terminal'), el('span', { text: timeAgo(s.lastActivity) })]),
+        s.lastPrompt ? el('div', { class: 'row-prompt', text: s.lastPrompt }) : null,
       ]),
       el('div', { class: 'row-actions' }, actions),
     ]);
@@ -413,6 +500,9 @@ function onJson(data) {
       return undefined;
     case 'paired':
       setToken(m.token);
+      return undefined;
+    case 'searchResults':
+      if (m.id === search.id) renderSearch(Array.isArray(m.items) ? m.items : []);
       return undefined;
     case 'health':
       return renderHealth(m);
@@ -766,6 +856,8 @@ function init() {
   });
   $('open-settings').addEventListener('click', showSettings);
   $('new-session').addEventListener('click', showNewSession);
+  $('session-search').addEventListener('input', onSearchInput);
+  $('session-search').addEventListener('keydown', (e) => e.key === 'Escape' && clearSearch());
   $('sheet-backdrop').addEventListener('click', closeSheet);
   $('tab-terminal').addEventListener('click', () => {
     unmountChat();

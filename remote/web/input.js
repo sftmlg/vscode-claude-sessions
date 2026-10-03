@@ -68,6 +68,29 @@ export class Outbox {
   }
 }
 
+const foldChar = (c) => {
+  const f = c.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return f.length === 1 ? f : c.toLowerCase().charAt(0) || c;
+};
+const foldSame = (text) => Array.from({ length: text.length }, (_, i) => foldChar(text[i])).join('');
+
+export function highlightParts(text, query) {
+  const src = String(text || '');
+  if (!src) return [];
+  const folded = foldSame(src);
+  const mask = new Array(src.length).fill(false);
+  for (const term of String(query || '').split(/\s+/).filter(Boolean).map(foldSame)) {
+    for (let at = folded.indexOf(term); at >= 0; at = folded.indexOf(term, at + term.length)) mask.fill(true, at, at + term.length);
+  }
+  const parts = [];
+  for (let i = 0; i < src.length; i++) {
+    const last = parts[parts.length - 1];
+    if (last && last.hit === mask[i]) last.text += src[i];
+    else parts.push({ text: src[i], hit: mask[i] });
+  }
+  return parts;
+}
+
 export class OutboxSender {
   constructor({ outbox, send, isReady, retryMs = 1000, setTimer = (fn, ms) => setTimeout(fn, ms) }) {
     Object.assign(this, { outbox, send, isReady, retryMs, setTimer });

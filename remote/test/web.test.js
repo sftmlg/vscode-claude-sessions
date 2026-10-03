@@ -122,6 +122,36 @@ test('a blocked folder access shows a persistent banner naming the node path', (
   assert.match(app, /banner\.textContent = text;/);
 });
 
+test('search highlight splits text into plain and hit parts, case and accents ignored', async () => {
+  const { highlightParts } = await import(path.join(WEB, 'input.js'));
+  assert.deepStrictEqual(highlightParts('Fix für MÜLLER checkout', 'muller CHECKOUT'), [
+    { text: 'Fix für ', hit: false },
+    { text: 'MÜLLER', hit: true },
+    { text: ' ', hit: false },
+    { text: 'checkout', hit: true },
+  ]);
+  assert.deepStrictEqual(highlightParts('nothing here', 'zebra'), [{ text: 'nothing here', hit: false }]);
+  assert.deepStrictEqual(highlightParts('', 'x'), []);
+});
+
+test('session list: sticky search, readable names, clear labels, resume of past sessions', () => {
+  const html = read('index.html');
+  const app = read('app.js');
+  assert.match(html, /<div class="list-toolbar">[\s\S]*<input id="session-search" type="search"/);
+  assert.match(html, /<ul id="search-results" class="session-list" hidden><\/ul>/);
+  assert.match(read('style.css'), /\.list-toolbar \{[^}]*position: sticky/);
+  assert.match(app, /SEARCH_DEBOUNCE_MS = 250/);
+  assert.match(app, /t: 'search', id, query, limit: SEARCH_LIMIT/);
+  assert.match(app, /el\('mark', \{ class: 'hit', text: p\.text \}\)/, 'hits rendered as separate text-only elements');
+  assert.ok(!/'outside'/.test(app), 'the old label is gone');
+  assert.match(app, /text: 'in a terminal · read-only', title: 'Runs in a terminal tab on the Mac\. Take it over to steer it here\.'/);
+  assert.match(app, /text: 'remote', title: 'Runs in the service\. Steerable here\.'/);
+  assert.match(app, /s\.project \|\| basename\(s\.cwd\)/);
+  assert.match(app, /class: 'row-prompt', text: s\.lastPrompt/);
+  assert.match(app, /t: 'new', id: newId\('n'\), resumeId: hit\.sessionId \}/, 'resume sends only the session id; the server names it');
+  assert.match(app, /hit\.running === 'terminal'[\s\S]{0,200}prepareTakeover\(hit\.pid\)/, 'a session in a terminal offers take over, not resume');
+});
+
 test('every key in the key bar is on the server allowlist', () => {
   const { KEYS } = require('../tmux');
   const keys = [...read('index.html').matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);

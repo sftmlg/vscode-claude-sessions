@@ -48,8 +48,10 @@
 
     <section id="view-list" class="view" hidden>
       <div class="list-toolbar">
+        <input id="session-search" type="search" placeholder="Search names and conversations…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search sessions">
         <button type="button" id="new-session" class="primary">New session</button>
       </div>
+      <ul id="search-results" class="session-list" hidden></ul>
       <ul id="session-list" class="session-list"></ul>
       <p id="session-empty" class="muted pane-pad" hidden>No running Claude sessions.</p>
     </section>
