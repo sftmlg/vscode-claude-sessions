@@ -395,3 +395,35 @@ test('quick replies: only the block with the cursor counts; wrapped and descript
   assert.deepStrictEqual(parseOptions(question).map((o) => [o.key, o.label, o.detail || '']), [['1', 'Blue', 'Calm and readable'], ['2', 'Green', 'Matches the brand'], ['3', 'Type something.', '']]);
   assert.deepStrictEqual(parseOptions(planAndDialog.slice(0, 4)), [], 'a numbered list without the cursor is not a dialog');
 });
+
+test('old drafts give way: the newest are kept within about 1 MB, and the outbox can always save', async () => {
+  const { DraftStore, Outbox, DRAFTS_MAX_TOTAL } = await import(path.join(WEB, 'input.js'));
+  const data = new Map();
+  let quota = Infinity;
+  const used = () => [...data.values()].reduce((n, v) => n + v.length, 0);
+  const store = {
+    getItem: (k) => data.get(k) ?? null,
+    setItem: (k, v) => {
+      const before = data.get(k);
+      data.set(k, v);
+      if (used() > quota) {
+        if (before === undefined) data.delete(k);
+        else data.set(k, before);
+        throw new Error('QuotaExceededError');
+      }
+    },
+    removeItem: (k) => data.delete(k),
+    key: (i) => [...data.keys()][i] ?? null,
+    get length() { return data.size; },
+  };
+  const drafts = new DraftStore(store);
+  for (let i = 0; i < 80; i++) drafts.save('self', `cc-${i}`, 'x'.repeat(19 * 1024));
+  const kept = [...data.keys()].filter((k) => k.startsWith('claude-remote.draft:'));
+  assert.ok(kept.length * 19 * 1024 <= DRAFTS_MAX_TOTAL, `kept ${kept.length}`);
+  assert.strictEqual(drafts.load('self', 'cc-79').length, 19 * 1024, 'the newest draft stays');
+  assert.strictEqual(drafts.load('self', 'cc-0'), '', 'the oldest went first');
+  quota = used() + 100;
+  const box = new Outbox(store);
+  assert.ok(box.add('cc-x', 'y'.repeat(4000)), 'drafts make room for a queued message');
+  assert.strictEqual(JSON.parse(data.get('claude-remote.outbox')).length, 1);
+});

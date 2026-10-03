@@ -33,12 +33,17 @@ export class Outbox {
   }
 
   save() {
-    try {
-      if (this.store) {
-        if (this.items.length) this.store.setItem(OUTBOX_KEY, JSON.stringify(this.items));
-        else this.store.removeItem(OUTBOX_KEY);
+    if (this.store) {
+      for (;;) {
+        try {
+          if (this.items.length) this.store.setItem(OUTBOX_KEY, JSON.stringify(this.items));
+          else this.store.removeItem(OUTBOX_KEY);
+          break;
+        } catch {
+          if (!evictOldestDraft(this.store)) break;
+        }
       }
-    } catch {}
+    }
     for (const fn of this.listeners) fn(this.items);
   }
 
@@ -153,6 +158,35 @@ function capBytes(text, max) {
   return out;
 }
 
+export const DRAFTS_MAX_TOTAL = 1024 * 1024;
+const DRAFT_INDEX = 'claude-remote.drafts';
+
+function readIndex(store) {
+  try {
+    const list = JSON.parse((store && store.getItem(DRAFT_INDEX)) || '[]');
+    return Array.isArray(list) ? list.filter((e) => Array.isArray(e) && typeof e[0] === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeIndex(store, list) {
+  try {
+    store.setItem(DRAFT_INDEX, JSON.stringify(list));
+  } catch {}
+}
+
+export function evictOldestDraft(store) {
+  const list = readIndex(store);
+  const oldest = list.shift();
+  if (!oldest) return false;
+  try {
+    store.removeItem(oldest[0]);
+  } catch {}
+  writeIndex(store, list);
+  return true;
+}
+
 export class DraftStore {
   constructor(store = storage()) {
     this.store = store;
@@ -171,11 +205,35 @@ export class DraftStore {
   }
 
   save(host, session, text) {
-    try {
-      if (!this.store) return;
-      if (text) this.store.setItem(this.key(host, session), capBytes(text, DRAFT_MAX_BYTES));
-      else this.store.removeItem(this.key(host, session));
-    } catch {}
+    if (!this.store) return;
+    const key = this.key(host, session);
+    const list = readIndex(this.store).filter((e) => e[0] !== key);
+    if (!text) {
+      try {
+        this.store.removeItem(key);
+      } catch {}
+      writeIndex(this.store, list);
+      return;
+    }
+    const value = capBytes(text, DRAFT_MAX_BYTES);
+    list.push([key, new TextEncoder().encode(value).length]);
+    let total = list.reduce((n, e) => n + e[1], 0);
+    while (total > DRAFTS_MAX_TOTAL && list.length > 1) {
+      const old = list.shift();
+      total -= old[1];
+      try {
+        this.store.removeItem(old[0]);
+      } catch {}
+    }
+    writeIndex(this.store, list);
+    for (;;) {
+      try {
+        this.store.setItem(key, value);
+        return;
+      } catch {
+        if (!evictOldestDraft(this.store)) return;
+      }
+    }
   }
 
   clear(host, session) {
