@@ -219,3 +219,16 @@ test('without tailnet certificates the default is http with a warning, with them
   assert.ok(!/WARNING: HTTPS/.test(r.stdout));
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(withCerts.home, '.config', 'claude-remote', 'config.json'), 'utf8')).publicScheme, 'https');
 });
+
+test('the agent is kickstarted right after bootstrap, before serve is configured', () => {
+  const s = sandbox();
+  assert.strictEqual(s.install('--no-check').status, 0);
+  const calls = s.calls();
+  const target = `gui/${process.getuid()}/${LABEL}`;
+  const boot = calls.findIndex((c) => c.startsWith('launchctl bootstrap '));
+  const kick = calls.indexOf(`launchctl kickstart -k ${target}`);
+  assert.ok(boot >= 0 && kick > boot, calls.join('\n'));
+  assert.ok(kick < calls.findIndex((c) => / serve --bg /.test(c)));
+  const dry = sandbox().install('--dry-run');
+  assert.match(dry.stdout, new RegExp(`\\+ \\S*launchctl kickstart -k ${target.replace(/\./g, '\\.')}`));
+});

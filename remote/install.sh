@@ -234,6 +234,7 @@ if ! act "$LAUNCHCTL" bootstrap "$GUI" "$PLIST"; then
   sleep 2
   act "$LAUNCHCTL" bootstrap "$GUI" "$PLIST"
 fi
+act "$LAUNCHCTL" kickstart -k "$GUI/$LABEL"
 act "$TAILSCALE" serve "--$OTHER_SCHEME=$PUBLIC_PORT" off 2>/dev/null || true
 act "$TAILSCALE" serve --bg "--$SCHEME=$PUBLIC_PORT" "http://127.0.0.1:$PORT"
 
@@ -244,6 +245,10 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 if [ "$CHECK" = 1 ]; then
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$STATE_DIR/admin.token" ] && break
+    /bin/sleep 0.5
+  done
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if CLAUDE_REMOTE_CONFIG="$CONFIG_FILE" "$NODE" "$REPO_DIR/remote/cli.js" status >/dev/null 2>&1; then
       say "Self-check passed."
