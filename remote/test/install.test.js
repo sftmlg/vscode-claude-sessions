@@ -24,7 +24,7 @@ function sandbox() {
   fs.mkdirSync(bin);
   fs.mkdirSync(path.join(home, 'work'));
   fakeBin(bin, 'tailscale', `echo "tailscale $*" >> "${log}"\nif [ "$1" = status ]; then cat "${STATUS_FIXTURE}"; fi`);
-  fakeBin(bin, 'launchctl', `echo "launchctl $*" >> "${log}"`);
+  fakeBin(bin, 'launchctl', `[ "$1" = print ] && exit 113\necho "launchctl $*" >> "${log}"`);
   fakeBin(bin, 'tmux', 'exit 0');
   fakeBin(bin, 'npm', `echo "npm $* cwd=$(pwd -P)" >> "${log}"`);
   const repo = path.join(base, 'repo');
@@ -54,7 +54,8 @@ test('dry run prints every action, renders the plist and changes nothing', () =>
   assert.deepStrictEqual(listTree(s.home), before);
   assert.deepStrictEqual(s.calls(), ['tailscale status --json']);
   assert.match(r.stdout, /\+ \S*launchctl bootstrap gui\/\d+ \S+com\.claude-remote\.hub\.plist/);
-  assert.match(r.stdout, /\+ \S*tailscale serve --bg --http=39180 http:\/\/127\.0\.0\.1:39181/);
+  assert.match(r.stdout, /\+ \S*tailscale serve --bg --https=39180 http:\/\/127\.0\.0\.1:39181/);
+  assert.match(r.stdout, /\+ \S*tailscale serve --http=39180 off/);
   assert.match(r.stdout, /\+ npm ci --ignore-scripts/);
   assert.ok(!/--omit=dev/.test(r.stdout), 'devDependencies are never removed');
   assert.match(r.stdout, /<string>com\.claude-remote\.hub<\/string>/);
@@ -80,6 +81,8 @@ test('install writes a private merged config and a valid LaunchAgent, and is re-
     port: 40001, publicPort: 40000, claudeArgs: ['--keep'], custom: 'x',
     publicHost: 'hub.example.test', allowedLogin: 'owner@example.test', tmuxPath: path.join(s.bin, 'tmux'),
     roots: [work], defaultDir: work, launcher: ['/opt/x/wrapper', 'exec', 'auto'],
+    publicScheme: 'https',
+    peers: [{ name: 'laptop', url: 'wss://laptop.example.test:40000/ws' }, { name: 'mini', url: 'wss://mini.example.test:40000/ws' }],
   });
   assert.strictEqual(fs.statSync(cfgFile).mode & 0o777, 0o600);
   assert.strictEqual(fs.statSync(cfgDir).mode & 0o777, 0o700);
@@ -107,7 +110,8 @@ test('install writes a private merged config and a valid LaunchAgent, and is re-
   const uid = String(process.getuid());
   assert.ok(calls.includes(`launchctl bootout gui/${uid}/${LABEL}`));
   assert.ok(calls.includes(`launchctl bootstrap gui/${uid} ${plist}`));
-  assert.ok(calls.includes('tailscale serve --bg --http=40000 http://127.0.0.1:40001'));
+  assert.ok(calls.includes('tailscale serve --bg --https=40000 http://127.0.0.1:40001'));
+  assert.ok(calls.indexOf('tailscale serve --http=40000 off') < calls.indexOf('tailscale serve --bg --https=40000 http://127.0.0.1:40001'), 'a previous http entry on the port is removed first');
   const npmRuns = calls.filter((c) => /^npm /.test(c));
   assert.deepStrictEqual(npmRuns, [`npm ci --ignore-scripts cwd=${s.repo}`], 'npm ci runs once; the second install sees node_modules in sync with the lockfile');
   assert.ok(calls.indexOf(`launchctl bootout gui/${uid}/${LABEL}`) < calls.indexOf(npmRuns[0]), 'the service is stopped before node_modules changes');
@@ -125,7 +129,10 @@ test('uninstall removes the agent and only its own serve port, keeping config an
   assert.ok(!fs.existsSync(path.join(s.home, 'Library', 'LaunchAgents', `${LABEL}.plist`)));
   assert.ok(fs.existsSync(path.join(s.home, '.config', 'claude-remote', 'config.json')));
   const calls = s.calls();
-  assert.strictEqual(calls[calls.length - 1], 'tailscale serve --http=39180 off');
+  const offs = calls.slice(calls.lastIndexOf(`launchctl bootout gui/${process.getuid()}/${LABEL}`));
+  assert.ok(offs.includes('tailscale serve --https=39180 off'));
+  assert.ok(offs.includes('tailscale serve --http=39180 off'));
+  assert.ok(!offs.some((c) => /serve reset|--https=443|funnel/.test(c)));
   assert.ok(calls.includes(`launchctl bootout gui/${process.getuid()}/${LABEL}`));
 });
 
@@ -157,4 +164,32 @@ test('--auto-approve-pairing writes autoApprovePairing into the config', () => {
   assert.strictEqual(r.status, 0, r.stderr + r.stdout);
   const cfg = JSON.parse(fs.readFileSync(path.join(s.home, '.config', 'claude-remote', 'config.json'), 'utf8'));
   assert.strictEqual(cfg.autoApprovePairing, true);
+});
+
+test('--http keeps plain http serve, an http scheme and ws peer urls', () => {
+  const s = sandbox();
+  const r = s.install('--no-check', '--http');
+  assert.strictEqual(r.status, 0, r.stderr + r.stdout);
+  const cfg = JSON.parse(fs.readFileSync(path.join(s.home, '.config', 'claude-remote', 'config.json'), 'utf8'));
+  assert.strictEqual(cfg.publicScheme, 'http');
+  assert.deepStrictEqual(cfg.peers.map((p) => p.url), ['ws://laptop.example.test:39180/ws', 'ws://mini.example.test:39180/ws']);
+  const calls = s.calls();
+  assert.ok(calls.includes('tailscale serve --bg --http=39180 http://127.0.0.1:39181'));
+  assert.ok(calls.indexOf('tailscale serve --https=39180 off') < calls.indexOf('tailscale serve --bg --http=39180 http://127.0.0.1:39181'));
+  assert.ok(!calls.some((c) => /--bg --https/.test(c)));
+});
+
+test('peers are measured on every run and replace the stored list', () => {
+  const s = sandbox();
+  const cfgDir = path.join(s.home, '.config', 'claude-remote');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ peers: [{ name: 'gone', url: 'wss://gone.example.test:39180/ws' }] }));
+  assert.strictEqual(s.install('--no-check').status, 0);
+  const cfg = JSON.parse(fs.readFileSync(path.join(cfgDir, 'config.json'), 'utf8'));
+  assert.deepStrictEqual(cfg.peers.map((p) => p.name), ['laptop', 'mini']);
+});
+
+test('--http and --https together are refused', () => {
+  const s = sandbox();
+  assert.strictEqual(s.install('--http', '--https').status, 2);
 });

@@ -4,9 +4,11 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: remote/install.sh [--root <dir>]... [--default-dir <dir>] [--launcher <path> [--launcher-arg <arg>]...]
-                         [--claude-arg <arg>]... [--auto-approve-pairing] [--dry-run] [--no-check] [--uninstall]
-Installs the claude-remote LaunchAgent for the current user, writes the config, exposes the
-loopback port with `tailscale serve --http` (never Funnel) and runs a self-check.
+                         [--claude-arg <arg>]... [--auto-approve-pairing] [--https | --http]
+                         [--dry-run] [--no-check] [--uninstall]
+Installs the claude-remote LaunchAgent for the current user, writes the config (incl. the other
+own Macs of this tailnet user as peers), exposes the loopback port with `tailscale serve --https`
+(default; `--http` as fallback; never Funnel) and runs a self-check.
 --uninstall removes the LaunchAgent and this service's serve port; config and state stay.
 EOF
 }
@@ -26,6 +28,7 @@ DEFAULT_DIR=""
 LAUNCHER_SET=0
 CLAUDE_ARGS_SET=0
 AUTO_PAIR=0
+SCHEME=""
 DRY_RUN=0
 CHECK=1
 UNINSTALL=0
@@ -42,6 +45,9 @@ while [ $# -gt 0 ]; do
     --launcher-arg) need_value "$@"; [ "$LAUNCHER_SET" = 1 ] || { echo "--launcher-arg needs --launcher first" >&2; exit 2; }; LAUNCHER+=("$2"); shift 2 ;;
     --claude-arg) need_value "$@"; CLAUDE_ARGS+=("$2"); CLAUDE_ARGS_SET=1; shift 2 ;;
     --auto-approve-pairing) AUTO_PAIR=1; shift ;;
+    --https|--http)
+      [ -z "$SCHEME" ] || [ "$SCHEME" = "${1#--}" ] || { echo "Pass either --https or --http." >&2; exit 2; }
+      SCHEME="${1#--}"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --no-check) CHECK=0; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
@@ -59,6 +65,9 @@ act() {
 }
 
 say() { printf '%s\n' "$*"; }
+SCHEME="${SCHEME:-https}"
+OTHER_SCHEME="http"
+[ "$SCHEME" = https ] || OTHER_SCHEME="https"
 
 if [ "$(uname -s)" != "Darwin" ]; then echo "macOS only." >&2; exit 1; fi
 
@@ -94,6 +103,7 @@ if [ "$UNINSTALL" = 1 ]; then
   PUBLIC_PORT="$(resolve "$CONFIG_FILE" "$(mktemp -d)" | sed -n 2p)"
   act "$LAUNCHCTL" bootout "$GUI/$LABEL" || true
   act rm -f "$PLIST"
+  act "$TAILSCALE" serve --https="$PUBLIC_PORT" off || true
   act "$TAILSCALE" serve --http="$PUBLIC_PORT" off || true
   say "Removed the LaunchAgent and serve port $PUBLIC_PORT. Config ($CONFIG_FILE) and state stay."
   exit 0
@@ -107,12 +117,17 @@ MEASURED="$(printf '%s' "$STATUS_JSON" | "$NODE" -e '
     const host = String(self.DNSName || "").replace(/\.$/, "");
     const user = (j.User || {})[String(self.UserID)] || {};
     if (!host || !user.LoginName) { console.error("tailscale status has no DNS name or login for this node"); process.exit(1); }
-    console.log(host + "\n" + user.LoginName);
+    const peers = Object.values(j.Peer || {})
+      .filter((p) => p && p.UserID === self.UserID && p.OS === "macOS" && !(p.Tags && p.Tags.length) && p.DNSName)
+      .map((p) => ({ name: String(p.HostName || p.DNSName.split(".")[0]), dns: String(p.DNSName).replace(/\.$/, "") }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    console.log(host + "\n" + user.LoginName + "\n" + JSON.stringify(peers));
   });
 ')"
 PUBLIC_HOST="$(printf '%s\n' "$MEASURED" | sed -n 1p)"
 ALLOWED_LOGIN="$(printf '%s\n' "$MEASURED" | sed -n 2p)"
-say "Measured public host (${#PUBLIC_HOST} chars) and allowed login (${#ALLOWED_LOGIN} chars)."
+PEERS_JSON="$(printf '%s\n' "$MEASURED" | sed -n 3p)"
+say "Measured public host (${#PUBLIC_HOST} chars), allowed login (${#ALLOWED_LOGIN} chars) and $(printf '%s' "$PEERS_JSON" | grep -o '"dns"' | wc -l | tr -d ' ') peer Macs."
 
 MERGED="$(mktemp)"
 trap 'rm -f "$MERGED"' EXIT
@@ -148,6 +163,17 @@ else
 fi
 PORT="$(printf '%s\n' "$RESOLVED" | sed -n 1p)"
 PUBLIC_PORT="$(printf '%s\n' "$RESOLVED" | sed -n 2p)"
+
+# shellcheck disable=SC2016
+"$NODE" -e '
+  const fs = require("fs");
+  const [file, scheme, publicPort, peersJson] = process.argv.slice(1);
+  const c = JSON.parse(fs.readFileSync(file, "utf8"));
+  const ws = scheme === "https" ? "wss" : "ws";
+  c.publicScheme = scheme;
+  c.peers = JSON.parse(peersJson).map((p) => ({ name: p.name, url: `${ws}://${p.dns}:${publicPort}/ws` }));
+  fs.writeFileSync(file, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+' "$MERGED" "$SCHEME" "$PUBLIC_PORT" "$PEERS_JSON"
 
 act mkdir -p "$(dirname "$CONFIG_FILE")"
 act chmod 700 "$(dirname "$CONFIG_FILE")"
@@ -198,7 +224,8 @@ if ! act "$LAUNCHCTL" bootstrap "$GUI" "$PLIST"; then
   sleep 2
   act "$LAUNCHCTL" bootstrap "$GUI" "$PLIST"
 fi
-act "$TAILSCALE" serve --bg --http="$PUBLIC_PORT" "http://127.0.0.1:$PORT"
+act "$TAILSCALE" serve "--$OTHER_SCHEME=$PUBLIC_PORT" off 2>/dev/null || true
+act "$TAILSCALE" serve --bg "--$SCHEME=$PUBLIC_PORT" "http://127.0.0.1:$PORT"
 
 if [ "$DRY_RUN" = 1 ]; then
   say "Dry run: nothing was changed. Rendered LaunchAgent:"

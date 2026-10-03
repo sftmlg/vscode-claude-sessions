@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const { execFile } = require('child_process');
 const { createAuth, expandHome, idleDays, DEVICE_ID_RE } = require('./auth');
 
@@ -91,7 +92,20 @@ function serveEntry(serve, config) {
   const proxy = web && web.Handlers && web.Handlers['/'] && web.Handlers['/'].Proxy;
   const tcp = serve && serve.TCP && serve.TCP[String(config.publicPort)];
   const funnel = Boolean(serve && serve.AllowFunnel && Object.values(serve.AllowFunnel).some(Boolean));
-  return { proxy: proxy || null, http: Boolean(tcp && tcp.HTTP && !tcp.HTTPS), funnel };
+  return { proxy: proxy || null, http: Boolean(tcp && tcp.HTTP && !tcp.HTTPS), https: Boolean(tcp && tcp.HTTPS), funnel };
+}
+
+function publicReachable(config) {
+  const scheme = config.publicScheme === 'https' ? 'https' : 'http';
+  const lib = scheme === 'https' ? https : http;
+  return new Promise((resolve) => {
+    const req = lib.get(`${scheme}://${config.publicHost}:${config.publicPort}/`, { timeout: 8000 }, (res) => {
+      res.resume();
+      resolve({ ok: res.statusCode === 200, detail: res.statusCode });
+    });
+    req.on('timeout', () => req.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })));
+    req.on('error', (e) => resolve({ ok: false, detail: e.code || 'error' }));
+  });
 }
 
 function folderWarning(body) {
@@ -120,7 +134,7 @@ async function status(config) {
     serve = JSON.parse(s.stdout || '{}');
   } catch {}
   const entry = serveEntry(serve, config);
-  checks.serve = { ok: entry.proxy === `http://127.0.0.1:${config.port}` && entry.http, detail: entry };
+  checks.serve = { ok: entry.proxy === `http://127.0.0.1:${config.port}` && (config.publicScheme === 'https' ? entry.https : entry.http), detail: entry };
   checks.noFunnel = { ok: serve !== null && !entry.funnel, detail: serve === null ? 'serve status unreadable' : entry.funnel };
   try {
     const r = await request(config, { url: '/', headers: { host: `${config.publicHost}:${config.publicPort}` } });
@@ -128,6 +142,7 @@ async function status(config) {
   } catch (e) {
     checks.rejectsAnonymous = { ok: false, detail: e.code || 'error' };
   }
+  checks.publicReachable = await publicReachable(config);
   return { ok: Object.values(checks).every((c) => c.ok), checks, warnings };
 }
 
@@ -241,4 +256,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { main, status, folderWarning, serveEntry, admin, TAILSCALE_APP };
+module.exports = { main, status, folderWarning, serveEntry, publicReachable, admin, TAILSCALE_APP };

@@ -348,9 +348,10 @@ test('serveEntry reads the proxy target and funnel state of the configured port 
     TCP: { 39180: { HTTP: true }, 443: { HTTPS: true } },
     Web: { [`${HOST}:39180`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:39181' } } }, [`${HOST}:443`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } } },
   };
-  assert.deepStrictEqual(cli.serveEntry(serve, c), { proxy: 'http://127.0.0.1:39181', http: true, funnel: false });
+  assert.deepStrictEqual(cli.serveEntry(serve, c), { proxy: 'http://127.0.0.1:39181', http: true, https: false, funnel: false });
+  assert.deepStrictEqual(cli.serveEntry({ ...serve, TCP: { 39180: { HTTPS: true } } }, c), { proxy: 'http://127.0.0.1:39181', http: false, https: true, funnel: false });
   assert.strictEqual(cli.serveEntry({ ...serve, AllowFunnel: { [`${HOST}:443`]: true } }, c).funnel, true);
-  assert.deepStrictEqual(cli.serveEntry({}, c), { proxy: null, http: false, funnel: false });
+  assert.deepStrictEqual(cli.serveEntry({}, c), { proxy: null, http: false, https: false, funnel: false });
 });
 
 test('a token idle longer than tokenIdleDays is rejected and its device removed with an audit line', async () => {
@@ -436,4 +437,22 @@ test('http mode keeps the http origin and ignores peers with another scheme', ()
   assert.strictEqual(checkRequest(req({ ...ws, origin: 'http://laptop.example.test:39180' }), c).ok, true);
   assert.strictEqual(checkRequest(req({ ...ws, origin: `https://${HOST}:39180` }), c).reason, 'bad-origin');
   assert.strictEqual(checkRequest(req(ws), { ...c, peers: 'nonsense' }).ok, true);
+});
+
+test('publicReachable fetches the app over the configured scheme and requires 200', async () => {
+  const ok = http.createServer((q, s) => s.end('app'));
+  const deny = http.createServer((q, s) => {
+    s.statusCode = 403;
+    s.end();
+  });
+  await Promise.all([ok, deny].map((srv) => new Promise((r) => srv.listen(0, '127.0.0.1', r))));
+  try {
+    const base = { publicScheme: 'http', publicHost: '127.0.0.1' };
+    assert.deepStrictEqual(await cli.publicReachable({ ...base, publicPort: ok.address().port }), { ok: true, detail: 200 });
+    assert.deepStrictEqual(await cli.publicReachable({ ...base, publicPort: deny.address().port }), { ok: false, detail: 403 });
+    const tls = await cli.publicReachable({ ...base, publicScheme: 'https', publicPort: ok.address().port });
+    assert.strictEqual(tls.ok, false, 'https against a plain listener fails');
+  } finally {
+    await Promise.all([ok, deny].map((srv) => new Promise((r) => srv.close(r))));
+  }
 });
