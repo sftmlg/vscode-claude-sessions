@@ -15,7 +15,7 @@ function fakeBin(dir, name, body) {
   fs.writeFileSync(file, `#!/bin/bash\n${body}\n`, { mode: 0o755 });
 }
 
-function sandbox() {
+function sandbox(statusFixture = STATUS_FIXTURE) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-install-')));
   const home = path.join(base, 'home');
   const bin = path.join(base, 'bin');
@@ -23,7 +23,7 @@ function sandbox() {
   fs.mkdirSync(home);
   fs.mkdirSync(bin);
   fs.mkdirSync(path.join(home, 'work'));
-  fakeBin(bin, 'tailscale', `echo "tailscale $*" >> "${log}"\nif [ "$1" = status ]; then cat "${STATUS_FIXTURE}"; fi`);
+  fakeBin(bin, 'tailscale', `echo "tailscale $*" >> "${log}"\nif [ "$1" = status ]; then cat "${statusFixture}"; fi`);
   fakeBin(bin, 'launchctl', `[ "$1" = print ] && exit 113\necho "launchctl $*" >> "${log}"`);
   fakeBin(bin, 'tmux', 'exit 0');
   fakeBin(bin, 'npm', `echo "npm $* cwd=$(pwd -P)" >> "${log}"`);
@@ -192,4 +192,30 @@ test('peers are measured on every run and replace the stored list', () => {
 test('--http and --https together are refused', () => {
   const s = sandbox();
   assert.strictEqual(s.install('--http', '--https').status, 2);
+});
+
+test('without tailnet certificates the default is http with a warning, with them https', () => {
+  const noCerts = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-fixture-')), 'status.json');
+  const status = JSON.parse(fs.readFileSync(STATUS_FIXTURE, 'utf8'));
+  for (const certs of [undefined, null, []]) {
+    if (certs === undefined) delete status.CertDomains;
+    else status.CertDomains = certs;
+    fs.writeFileSync(noCerts, JSON.stringify(status));
+    const s = sandbox(noCerts);
+    const r = s.install('--no-check');
+    assert.strictEqual(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /WARNING: HTTPS certificates are off in the tailnet .*https:\/\/login\.tailscale\.com\/admin\/dns/);
+    const cfg = JSON.parse(fs.readFileSync(path.join(s.home, '.config', 'claude-remote', 'config.json'), 'utf8'));
+    assert.strictEqual(cfg.publicScheme, 'http', String(certs));
+    assert.ok(cfg.peers.every((p) => p.url.startsWith('ws://')));
+    assert.ok(s.calls().includes('tailscale serve --bg --http=39180 http://127.0.0.1:39181'));
+    const forced = s.install('--no-check', '--https');
+    assert.strictEqual(forced.status, 0);
+    assert.ok(!/WARNING: HTTPS/.test(forced.stdout), 'an explicit scheme is not second-guessed');
+    assert.ok(s.calls().includes('tailscale serve --bg --https=39180 http://127.0.0.1:39181'));
+  }
+  const withCerts = sandbox();
+  const r = withCerts.install('--no-check');
+  assert.ok(!/WARNING: HTTPS/.test(r.stdout));
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(withCerts.home, '.config', 'claude-remote', 'config.json'), 'utf8')).publicScheme, 'https');
 });

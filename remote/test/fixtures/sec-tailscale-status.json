@@ -1,14 +1,64 @@
 {
-  "Self": { "DNSName": "hub.example.test.", "HostName": "hub", "UserID": 1001, "OS": "macOS", "Online": true },
+  "CertDomains": [
+    "hub.example.test"
+  ],
+  "Self": {
+    "DNSName": "hub.example.test.",
+    "HostName": "hub",
+    "UserID": 1001,
+    "OS": "macOS",
+    "Online": true
+  },
   "User": {
-    "1001": { "ID": 1001, "LoginName": "owner@example.test", "DisplayName": "Owner" },
-    "2002": { "ID": 2002, "LoginName": "other@example.test", "DisplayName": "Other" }
+    "1001": {
+      "ID": 1001,
+      "LoginName": "owner@example.test",
+      "DisplayName": "Owner"
+    },
+    "2002": {
+      "ID": 2002,
+      "LoginName": "other@example.test",
+      "DisplayName": "Other"
+    }
   },
   "Peer": {
-    "nodekey:a": { "DNSName": "laptop.example.test.", "HostName": "laptop", "UserID": 1001, "OS": "macOS", "Online": false },
-    "nodekey:b": { "DNSName": "phone.example.test.", "HostName": "phone", "UserID": 1001, "OS": "iOS", "Online": true },
-    "nodekey:c": { "DNSName": "foreign.example.test.", "HostName": "foreign", "UserID": 2002, "OS": "macOS", "Online": true },
-    "nodekey:d": { "DNSName": "tagged.example.test.", "HostName": "tagged", "UserID": 1001, "OS": "macOS", "Online": true, "Tags": ["tag:server"] },
-    "nodekey:e": { "DNSName": "mini.example.test.", "HostName": "mini", "UserID": 1001, "OS": "macOS", "Online": true }
+    "nodekey:a": {
+      "DNSName": "laptop.example.test.",
+      "HostName": "laptop",
+      "UserID": 1001,
+      "OS": "macOS",
+      "Online": false
+    },
+    "nodekey:b": {
+      "DNSName": "phone.example.test.",
+      "HostName": "phone",
+      "UserID": 1001,
+      "OS": "iOS",
+      "Online": true
+    },
+    "nodekey:c": {
+      "DNSName": "foreign.example.test.",
+      "HostName": "foreign",
+      "UserID": 2002,
+      "OS": "macOS",
+      "Online": true
+    },
+    "nodekey:d": {
+      "DNSName": "tagged.example.test.",
+      "HostName": "tagged",
+      "UserID": 1001,
+      "OS": "macOS",
+      "Online": true,
+      "Tags": [
+        "tag:server"
+      ]
+    },
+    "nodekey:e": {
+      "DNSName": "mini.example.test.",
+      "HostName": "mini",
+      "UserID": 1001,
+      "OS": "macOS",
+      "Online": true
+    }
   }
 }

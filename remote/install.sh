@@ -8,7 +8,8 @@ Usage: remote/install.sh [--root <dir>]... [--default-dir <dir>] [--launcher <pa
                          [--dry-run] [--no-check] [--uninstall]
 Installs the claude-remote LaunchAgent for the current user, writes the config (incl. the other
 own Macs of this tailnet user as peers), exposes the loopback port with `tailscale serve --https`
-(default; `--http` as fallback; never Funnel) and runs a self-check.
+when the tailnet has HTTPS certificates, else `--http` with a warning (`--https`/`--http` force a
+scheme; never Funnel) and runs a self-check.
 --uninstall removes the LaunchAgent and this service's serve port; config and state stay.
 EOF
 }
@@ -65,9 +66,6 @@ act() {
 }
 
 say() { printf '%s\n' "$*"; }
-SCHEME="${SCHEME:-https}"
-OTHER_SCHEME="http"
-[ "$SCHEME" = https ] || OTHER_SCHEME="https"
 
 if [ "$(uname -s)" != "Darwin" ]; then echo "macOS only." >&2; exit 1; fi
 
@@ -121,12 +119,24 @@ MEASURED="$(printf '%s' "$STATUS_JSON" | "$NODE" -e '
       .filter((p) => p && p.UserID === self.UserID && p.OS === "macOS" && !(p.Tags && p.Tags.length) && p.DNSName)
       .map((p) => ({ name: String(p.HostName || p.DNSName.split(".")[0]), dns: String(p.DNSName).replace(/\.$/, "") }))
       .sort((a, b) => a.name.localeCompare(b.name));
-    console.log(host + "\n" + user.LoginName + "\n" + JSON.stringify(peers));
+    const certs = Array.isArray(j.CertDomains) ? j.CertDomains.filter(Boolean).length : 0;
+    console.log(host + "\n" + user.LoginName + "\n" + JSON.stringify(peers) + "\n" + certs);
   });
 ')"
 PUBLIC_HOST="$(printf '%s\n' "$MEASURED" | sed -n 1p)"
 ALLOWED_LOGIN="$(printf '%s\n' "$MEASURED" | sed -n 2p)"
 PEERS_JSON="$(printf '%s\n' "$MEASURED" | sed -n 3p)"
+CERT_DOMAINS="$(printf '%s\n' "$MEASURED" | sed -n 4p)"
+if [ -z "$SCHEME" ]; then
+  if [ "${CERT_DOMAINS:-0}" -gt 0 ]; then
+    SCHEME=https
+  else
+    SCHEME=http
+    say "WARNING: HTTPS certificates are off in the tailnet — enable them at https://login.tailscale.com/admin/dns, then re-run. Serving over http for now."
+  fi
+fi
+OTHER_SCHEME="http"
+[ "$SCHEME" = https ] || OTHER_SCHEME="https"
 say "Measured public host (${#PUBLIC_HOST} chars), allowed login (${#ALLOWED_LOGIN} chars) and $(printf '%s' "$PEERS_JSON" | grep -o '"dns"' | wc -l | tr -d ' ') peer Macs."
 
 MERGED="$(mktemp)"
