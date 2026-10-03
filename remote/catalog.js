@@ -72,6 +72,24 @@ class Catalog {
   constructor(config, { days = ALL_DAYS } = {}) {
     this.roots = config.roots;
     this.days = days;
+    this.textRead = new Map();
+    this.textInflight = new Map();
+  }
+
+  loadText(m) {
+    if (!m.file || this.textRead.get(m.file) === m.mtimeMs) return Promise.resolve();
+    let p = this.textInflight.get(m.file);
+    if (!p) {
+      p = sessions
+        .conversationText(m.file)
+        .catch(() => '')
+        .then(() => {
+          this.textRead.set(m.file, m.mtimeMs);
+          this.textInflight.delete(m.file);
+        });
+      this.textInflight.set(m.file, p);
+    }
+    return p;
   }
 
   async list() {
@@ -88,6 +106,7 @@ class Catalog {
   async search(query, { limit = 20, running = new Map() } = {}) {
     const q = String(query || '').trim();
     const all = await this.list();
+    if (q) for (const m of all) await this.loadText(m);
     const hits = q ? await sessions.searchSessions(all, q) : all;
     return hits.slice(0, limit).map((m) => {
       const run = running.get(m.id);
@@ -111,7 +130,7 @@ class Catalog {
     await sessions.loadTextCache();
     const all = await this.list();
     for (const m of all) {
-      if (m.file) await sessions.conversationText(m.file).catch(() => '');
+      await this.loadText(m);
       await sessions.sleep(pauseMs);
     }
     return all.length;

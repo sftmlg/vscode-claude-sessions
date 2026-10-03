@@ -107,3 +107,19 @@ test('stars and tab names set in the editor extension show up, read-only', async
   fs.writeFileSync(stateFile, '{broken');
   assert.deepStrictEqual(extensionInfo(A, repo, [root]), { favorite: false, name: null });
 });
+
+test('concurrent searches read each uncached transcript once', async () => {
+  const sessions = require('../../sessions');
+  const original = sessions.conversationText;
+  const reads = new Map();
+  sessions.conversationText = (file) => (reads.set(file, (reads.get(file) || 0) + 1), original(file));
+  try {
+    session('ffffffff-0000-4000-8000-0000000000a7', repo, [user('concurrency check for the search cache')], 0);
+    const catalog = new Catalog({ roots: [root] });
+    await Promise.all([catalog.search('concurrency cache'), catalog.search('concurrency check'), catalog.search('cache')]);
+    assert.ok(reads.size > 0);
+    for (const [file, n] of reads) assert.strictEqual(n, 1, file);
+  } finally {
+    sessions.conversationText = original;
+  }
+});
