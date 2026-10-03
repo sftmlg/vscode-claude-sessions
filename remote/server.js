@@ -172,7 +172,7 @@ async function start(config, deps = {}) {
   const ctx = { socket: config.tmuxSocket, bin: config.tmuxPath, childPath: config.childPath };
   const registry = deps.registry || new Registry(config, { ctx, audit });
   sessions.loadCache(path.join(config.stateDir, 'cache'));
-  const catalog = deps.catalog || new Catalog(config);
+  const catalog = deps.catalog || new Catalog(config, { titleFor: (id) => (registry.titleFor ? registry.titleFor(id) : null) });
   const seen = deps.seen || new SeenStore(config.stateDir);
   const tailnet = deps.tailnet || new Tailnet();
   let push = deps.push;

@@ -8,9 +8,10 @@ const SNIPPET_MAX = 120;
 const ALL_DAYS = 3650;
 
 function displayTitle(meta, autoName, given) {
+  if (meta && meta.customTitle) return meta.customTitle;
+  if (given) return given;
   const named = meta ? sessions.sessionName(meta) : '';
   if (named) return named;
-  if (given) return given;
   if (meta && meta.firstPrompt) return sessions.oneLine(meta.firstPrompt, TITLE_MAX);
   return autoName || null;
 }
@@ -70,8 +71,9 @@ function extensionInfo(sessionId, cwd, roots = []) {
 }
 
 class Catalog {
-  constructor(config, { days = ALL_DAYS } = {}) {
+  constructor(config, { days = ALL_DAYS, titleFor = () => null } = {}) {
     this.roots = config.roots;
+    this.titleFor = titleFor;
     this.days = days;
     this.textRead = new Map();
     this.textInflight = new Map();
@@ -117,7 +119,7 @@ class Catalog {
       const ext = extensionInfo(m.id, m.cwd, this.roots);
       return {
         sessionId: m.id,
-        title: ext.name || displayTitle(m),
+        title: ext.name || displayTitle(m, null, this.titleFor(m.id)),
         favorite: ext.favorite,
         cwd: m.cwd,
         project: repoName(m.cwd, this.roots),

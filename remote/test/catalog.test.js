@@ -56,6 +56,13 @@ test('a hit deep inside the conversation shows the matching passage', async () =
   assert.deepStrictEqual(hits.map((h) => [h.sessionId, h.snippet]), [[F, 'somewhere in the middle the albatross lands']]);
 });
 
+test('a name given at session start beats the AI title in search, a custom title beats both', async () => {
+  const titleFor = (id) => ({ [B]: 'Given B', [A]: 'Given A' })[id] || null;
+  const catalog = new Catalog({ roots: [root] }, { titleFor });
+  assert.strictEqual((await catalog.search('endpoint'))[0].title, 'Given B');
+  assert.strictEqual((await catalog.search('checkout')).find((h) => h.sessionId === A).title, 'Checkout fix');
+});
+
 test('project is the repository folder that holds the working directory', () => {
   assert.strictEqual(repoName(sub, [root]), 'shop-site');
   assert.strictEqual(repoName(outside, [root]), 'elsewhere');

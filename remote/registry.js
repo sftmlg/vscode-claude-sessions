@@ -95,10 +95,11 @@ async function readPidRecords() {
 }
 
 const TITLE_MAX = 80;
+const SESSION_TITLES_MAX = 2000;
 
 function slug(text) {
-  return String(text || '')
-    .toLowerCase()
+  return sessions
+    .foldText(text)
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 30)
@@ -144,15 +145,30 @@ class Registry extends EventEmitter {
     this.titlesFile = config.stateDir ? path.join(config.stateDir, 'titles.json') : null;
     this.titles = new Map();
     this.titledAt = new Map();
+    this.sessionTitles = new Map();
     try {
-      for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(this.titlesFile, 'utf8')))) if (tmux.NAME_RE.test(k) && typeof v === 'string') this.titles.set(k, v);
+      const stored = JSON.parse(fs.readFileSync(this.titlesFile, 'utf8'));
+      for (const [k, v] of Object.entries(stored.names || {})) if (tmux.NAME_RE.test(k) && typeof v === 'string') this.titles.set(k, v);
+      for (const [k, v] of Object.entries(stored.sessions || {})) if (UUID_RE.test(k) && typeof v === 'string') this.sessionTitles.set(k, v);
     } catch {}
+  }
+
+  titleFor(sessionId) {
+    return this.sessionTitles.get(sessionId) || null;
+  }
+
+  linkTitle(sessionId, title) {
+    if (this.sessionTitles.get(sessionId) === title) return;
+    this.sessionTitles.delete(sessionId);
+    this.sessionTitles.set(sessionId, title);
+    while (this.sessionTitles.size > SESSION_TITLES_MAX) this.sessionTitles.delete(this.sessionTitles.keys().next().value);
+    this.saveTitles();
   }
 
   saveTitles() {
     if (!this.titlesFile) return;
     try {
-      fs.writeFileSync(this.titlesFile, JSON.stringify(Object.fromEntries(this.titles)), { mode: 0o600 });
+      fs.writeFileSync(this.titlesFile, JSON.stringify({ names: Object.fromEntries(this.titles), sessions: Object.fromEntries(this.sessionTitles) }), { mode: 0o600 });
     } catch {}
   }
 
@@ -248,7 +264,9 @@ class Registry extends EventEmitter {
     const m = rec ? await this.metaFor(rec.sessionId) : {};
     const proc = rec ? procs.get(rec.pid) : null;
     const cwd = (rec && rec.cwd) || extra.cwd || null;
-    const given = (extra.managed && this.titles.get(extra.name)) || null;
+    const named = (extra.managed && this.titles.get(extra.name)) || null;
+    if (named && rec) this.linkTitle(rec.sessionId, named);
+    const given = named || (rec && this.titleFor(rec.sessionId)) || null;
     const ext = rec ? extensionInfo(rec.sessionId, cwd, this.config.roots) : { favorite: false, name: null };
     let transcriptSize = null;
     let written = null;
@@ -312,7 +330,7 @@ class Registry extends EventEmitter {
     }
     if (!name && resumeId && UUID_RE.test(String(resumeId))) {
       const meta = await sessions.metaForSession(resumeId).catch(() => null);
-      const base = `cc-${slug(displayTitle(meta)) || resumeId.slice(0, 8)}`;
+      const base = `cc-${slug(displayTitle(meta, null, this.titleFor(resumeId))) || resumeId.slice(0, 8)}`;
       name = await this.freeName(tmux.NAME_RE.test(base) ? base : `cc-${resumeId.slice(0, 8)}`);
       dir = dir || (meta && meta.cwd) || undefined;
     }

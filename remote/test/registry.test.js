@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn, execFileSync } = require('child_process');
 const { tempHome, testCtx, killServer, capture, waitFor, FAKE_CLAUDE } = require('./fixtures/fs-helpers');
 
@@ -42,7 +43,7 @@ test('realUnder accepts only real directories inside a root', async () => {
 test('registry on a throwaway socket', async (t) => {
   const ctx = testCtx();
   const audits = [];
-  const config = { roots: [work], defaultDir: work, launcher: [], claudeCommand: ['/bin/sh', FAKE_CLAUDE], claudeArgs: ['--flag'] };
+  const config = { stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'reg-state-')), roots: [work], defaultDir: work, launcher: [], claudeCommand: ['/bin/sh', FAKE_CLAUDE], claudeArgs: ['--flag'] };
   const reg = new Registry(config, { ctx, audit: (action, f) => audits.push({ action, ...f }), exitWaitMs: 500 });
   const procs = [];
   t.after(() => {
@@ -99,7 +100,7 @@ test('registry on a throwaway socket', async (t) => {
 
   await t.test('a typed title names the tmux session and shows until the transcript has a better one', async () => {
     const r = await reg.newSession({ title: 'Invoice export: Q3 ü', dir: work });
-    assert.strictEqual(r.name, 'cc-invoice-export-q3');
+    assert.strictEqual(r.name, 'cc-invoice-export-q3-ue');
     const item = reg.listAll().find((i) => i.name === r.name);
     assert.strictEqual(item.title, 'Invoice export: Q3 ü');
     const again = await reg.newSession({ title: 'Invoice export: Q3 ü', dir: work });
@@ -108,8 +109,24 @@ test('registry on a throwaway socket', async (t) => {
     const blank = await reg.newSession({ title: '', dir: work });
     assert.match(blank.name, /^cc-[a-z0-9-]+$/);
     assert.strictEqual(displayTitle({ firstPrompt: 'first words' }, 'auto', 'Typed'), 'Typed');
-    assert.strictEqual(displayTitle({ aiTitle: 'AI title', firstPrompt: 'first words' }, 'auto', 'Typed'), 'AI title');
-    for (const n of [r.name, again.name, blank.name]) execFileSync(ctx.bin || 'tmux', ['-L', ctx.socket, 'kill-session', '-t', `=${n}`]);
+    assert.strictEqual(displayTitle({ aiTitle: 'AI title', firstPrompt: 'first words' }, 'auto', 'Typed'), 'Typed');
+    assert.strictEqual(displayTitle({ customTitle: 'Renamed', aiTitle: 'AI title' }, 'auto', 'Typed'), 'Renamed');
+    const umlaut = await reg.newSession({ title: 'E2E Rückkehr Test: Straße', dir: work });
+    assert.strictEqual(umlaut.name, 'cc-e2e-rueckkehr-test-strasse');
+    const SID = 'abababab-0000-4000-8000-0000000000ab';
+    const pdir = path.join(home, '.claude', 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(pdir, { recursive: true });
+    fs.writeFileSync(path.join(pdir, `${SID}.jsonl`), [{ type: 'user', cwd: work, timestamp: new Date().toISOString(), message: { content: 'hello' } }, { type: 'ai-title', aiTitle: 'Machine title' }].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    const { listSessions } = require('../tmux');
+    const pane = (await listSessions(ctx)).find((x) => x.name === r.name);
+    writePid(pane.panePid, { sessionId: SID });
+    await reg.refresh();
+    assert.strictEqual(reg.resolve(SID).title, 'Invoice export: Q3 ü', 'the given name beats the AI title');
+    assert.strictEqual(reg.titleFor(SID), 'Invoice export: Q3 ü');
+    for (const n of [r.name, again.name, blank.name, umlaut.name]) execFileSync(ctx.bin || 'tmux', ['-L', ctx.socket, 'kill-session', '-t', `=${n}`]);
+    fs.rmSync(path.join(sessionsDir, `${pane.panePid}.json`));
+    await reg.refresh();
+    assert.strictEqual(new Registry(config, { ctx }).titleFor(SID), 'Invoice export: Q3 ü', 'kept by session id after the tmux session ended');
   });
 
   await t.test('a pid file under the pane links the managed session and status changes are pushed', async () => {
