@@ -60,7 +60,7 @@ test('search covers names and conversation text of every session under the roots
   const running = new Map([[A, { managed: true, name: 'cc-checkout-fix' }], [B, { managed: false, pid: 4242 }]]);
   const hits = await catalog.search('CHECKOUT', { running });
   assert.deepStrictEqual(hits.map((h) => h.sessionId), [A, C], 'name hit first, then frequency; nothing outside the roots');
-  assert.deepStrictEqual(hits[0], { sessionId: A, title: 'Checkout fix', cwd: repo, project: 'shop-site', running: 'service', name: 'cc-checkout-fix', pid: null, lastActivity: hits[0].lastActivity, snippet: hits[0].snippet });
+  assert.deepStrictEqual(hits[0], { sessionId: A, title: 'Checkout fix', favorite: false, cwd: repo, project: 'shop-site', running: 'service', name: 'cc-checkout-fix', pid: null, lastActivity: hits[0].lastActivity, snippet: hits[0].snippet });
   assert.match(hits[0].snippet, /checkout/i);
   assert.strictEqual(hits[1].running, null);
   assert.strictEqual(hits[1].title, 'Refactor the checkout tests and the checkout docs, checkout everywhere');
@@ -87,4 +87,23 @@ test('a session written after an earlier search is found by the next one', async
   assert.strictEqual((await catalog.search('pelican')).length, 0);
   session('ffffffff-0000-4000-8000-000000000006', repo, [user('feed the pelican')], 0);
   assert.strictEqual((await catalog.search('pelican')).length, 1);
+});
+
+test('stars and tab names set in the editor extension show up, read-only', async () => {
+  const { extensionInfo } = require('../catalog');
+  const stateFile = path.join(repo, '.vscode', 'claude-sessions.json');
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(stateFile, JSON.stringify({ favorites: { [A]: true }, tabs: [{ name: 'Named in the editor', sessionId: C, cwd: repo }] }));
+  const before = fs.readFileSync(stateFile, 'utf8');
+  const catalog = new Catalog({ roots: [root] });
+  const hits = await catalog.search('checkout');
+  const a = hits.find((h) => h.sessionId === A);
+  const c = hits.find((h) => h.sessionId === C);
+  assert.strictEqual(a.favorite, true);
+  assert.strictEqual(c.favorite, false);
+  assert.strictEqual(c.title, 'Named in the editor', 'the editor tab name wins');
+  assert.deepStrictEqual(extensionInfo(B, sub, [root]), { favorite: false, name: null }, 'a sub folder reads its repository state');
+  assert.strictEqual(fs.readFileSync(stateFile, 'utf8'), before, 'never written');
+  fs.writeFileSync(stateFile, '{broken');
+  assert.deepStrictEqual(extensionInfo(A, repo, [root]), { favorite: false, name: null });
 });

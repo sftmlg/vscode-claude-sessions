@@ -190,6 +190,13 @@ test('registry on a throwaway socket', async (t) => {
     assert.strictEqual(item.title, 'Readable title');
     assert.strictEqual(item.project, 'proj');
     assert.strictEqual(item.lastPrompt, 'first prompt of five');
+    fs.mkdirSync(path.join(proj, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.vscode', 'claude-sessions.json'), JSON.stringify({ favorites: { [ID5]: true }, tabs: [{ name: 'Editor tab name', sessionId: ID5 }] }));
+    await reg.refresh();
+    const starred = reg.listAll().find((i) => i.sessionId === ID5);
+    assert.strictEqual(starred.favorite, true);
+    assert.strictEqual(starred.title, 'Editor tab name');
+    fs.rmSync(path.join(proj, '.vscode'), { recursive: true });
     const r = await reg.newSession({ resumeId: ID4 }, { device: { id: 'dev-1' } });
     assert.strictEqual(r.name, 'cc-ship-the-q3-report');
     await waitFor(() => capture(ctx, r.name).includes(`[--resume] [${ID4}]`), { what: 'resumed by id' });

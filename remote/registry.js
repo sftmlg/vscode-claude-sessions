@@ -7,7 +7,7 @@ const { execFile } = require('child_process');
 const { EventEmitter } = require('events');
 const sessions = require('../sessions');
 const tmux = require('./tmux');
-const { displayTitle, lastPrompt, repoName } = require('./catalog');
+const { displayTitle, lastPrompt, repoName, extensionInfo } = require('./catalog');
 
 let transcript = null;
 try {
@@ -224,6 +224,7 @@ class Registry extends EventEmitter {
     const proc = rec ? procs.get(rec.pid) : null;
     const lastActivity = m.lastActivity || (extra.activity ? new Date(extra.activity).toISOString() : null);
     const cwd = (rec && rec.cwd) || extra.cwd || null;
+    const ext = rec ? extensionInfo(rec.sessionId, cwd, this.config.roots) : { favorite: false, name: null };
     let transcriptSize = null;
     if (m.transcriptPath) {
       try {
@@ -242,7 +243,8 @@ class Registry extends EventEmitter {
       slot: rec ? rec.slot : null,
       status: rec ? rec.status : 'none',
       waitingFor: rec ? rec.waitingFor : null,
-      title: rec ? displayTitle(m.meta, rec.name) : null,
+      title: rec ? ext.name || displayTitle(m.meta, rec.name) : null,
+      favorite: ext.favorite,
       lastPrompt: lastPrompt(m.meta),
       transcriptPath: m.transcriptPath || null,
       transcriptSize,

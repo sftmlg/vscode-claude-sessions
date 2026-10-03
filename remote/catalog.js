@@ -18,26 +18,54 @@ function lastPrompt(meta) {
   return meta && meta.lastUser && meta.lastUser.text ? sessions.oneLine(meta.lastUser.text, SNIPPET_MAX) : null;
 }
 
-const repoNames = new Map();
+const repoRoots = new Map();
 
-function repoName(cwd, roots = []) {
+function repoRoot(cwd, roots = []) {
   if (!cwd) return null;
-  if (repoNames.has(cwd)) return repoNames.get(cwd);
+  if (repoRoots.has(cwd)) return repoRoots.get(cwd);
   const stops = new Set(roots.map((r) => path.resolve(r)));
   let dir = path.resolve(cwd);
   let found = null;
   for (;;) {
     if (fs.existsSync(path.join(dir, '.git'))) {
-      found = path.basename(dir);
+      found = dir;
       break;
     }
     const parent = path.dirname(dir);
     if (stops.has(dir) || parent === dir) break;
     dir = parent;
   }
-  const name = found || path.basename(cwd);
-  repoNames.set(cwd, name);
-  return name;
+  repoRoots.set(cwd, found);
+  return found;
+}
+
+function repoName(cwd, roots = []) {
+  if (!cwd) return null;
+  return path.basename(repoRoot(cwd, roots) || cwd);
+}
+
+const states = new Map();
+
+function extensionState(dir) {
+  let mtimeMs;
+  try {
+    mtimeMs = fs.statSync(path.join(dir, '.vscode', 'claude-sessions.json')).mtimeMs;
+  } catch {
+    return {};
+  }
+  const cached = states.get(dir);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.state;
+  const state = sessions.readState(dir) || {};
+  states.set(dir, { mtimeMs, state });
+  return state;
+}
+
+function extensionInfo(sessionId, cwd, roots = []) {
+  const dir = repoRoot(cwd, roots) || cwd;
+  const state = dir ? extensionState(dir) : {};
+  const favorite = Boolean(sessionId && state.favorites && state.favorites[sessionId] === true);
+  const tab = Array.isArray(state.tabs) ? state.tabs.find((t) => t && t.sessionId === sessionId && typeof t.name === 'string' && t.name.trim()) : null;
+  return { favorite, name: tab ? tab.name.trim() : null };
 }
 
 class Catalog {
@@ -63,9 +91,11 @@ class Catalog {
     const hits = q ? await sessions.searchSessions(all, q) : all;
     return hits.slice(0, limit).map((m) => {
       const run = running.get(m.id);
+      const ext = extensionInfo(m.id, m.cwd, this.roots);
       return {
         sessionId: m.id,
-        title: displayTitle(m),
+        title: ext.name || displayTitle(m),
+        favorite: ext.favorite,
         cwd: m.cwd,
         project: repoName(m.cwd, this.roots),
         running: run ? (run.managed ? 'service' : 'terminal') : null,
@@ -88,4 +118,4 @@ class Catalog {
   }
 }
 
-module.exports = { Catalog, displayTitle, lastPrompt, repoName };
+module.exports = { Catalog, displayTitle, lastPrompt, repoName, repoRoot, extensionInfo };
