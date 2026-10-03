@@ -175,3 +175,24 @@ test('outbox: capped by items and bytes, persisted, cleared on ack', async () =>
   assert.strictEqual(box.add('cc-a', 'x'.repeat(OUTBOX_MAX_BYTES)), null);
   assert.strictEqual(new Outbox({ getItem: () => '{broken', setItem() {}, removeItem() {} }).pending().length, 0);
 });
+
+test('outbox items belong to one host and each host sends only its own, in order', async () => {
+  const { Outbox, OutboxSender } = await import(path.join(WEB, 'input.js'));
+  const data = new Map();
+  const box = new Outbox({ getItem: (k) => data.get(k) ?? null, setItem: (k, v) => data.set(k, v), removeItem: (k) => data.delete(k) });
+  const a1 = box.add('cc-a', 'to studio 1', 'studio');
+  box.add('cc-b', 'to laptop', 'self');
+  box.add('cc-a', 'to studio 2', 'studio');
+  assert.strictEqual(a1.host, 'studio');
+  assert.strictEqual(box.add('cc-x', 'legacy').host, 'self', 'items without a host belong to this Mac');
+  const sentStudio = [];
+  const sentSelf = [];
+  const studio = new OutboxSender({ outbox: box, host: 'studio', send: (m) => (sentStudio.push(m.text), true), isReady: () => true });
+  const self = new OutboxSender({ outbox: box, host: 'self', send: (m) => (sentSelf.push(m.text), true), isReady: () => true });
+  studio.pump();
+  self.pump();
+  assert.deepStrictEqual([sentStudio, sentSelf], [['to studio 1'], ['to laptop']]);
+  studio.onAck({ id: a1.id, ok: true });
+  assert.deepStrictEqual(sentStudio, ['to studio 1', 'to studio 2']);
+  assert.deepStrictEqual(self.onAck({ id: a1.id, ok: true }), { handled: false }, 'acks of another host are not this sender\'s');
+});

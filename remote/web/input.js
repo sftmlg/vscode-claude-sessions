@@ -46,8 +46,8 @@ export class Outbox {
     this.listeners.add(fn);
   }
 
-  add(sessionId, text) {
-    const item = { id: newId('m'), sessionId, text, at: Date.now() };
+  add(sessionId, text, host = 'self') {
+    const item = { id: newId('m'), sessionId, text, host, at: Date.now() };
     const next = [...this.items, item];
     if (next.length > OUTBOX_MAX_ITEMS || this.bytes(next) > OUTBOX_MAX_BYTES) return null;
     this.items = next;
@@ -63,8 +63,8 @@ export class Outbox {
     return item;
   }
 
-  pending() {
-    return this.items.slice();
+  pending(host) {
+    return host === undefined ? this.items.slice() : this.items.filter((i) => (i.host || 'self') === host);
   }
 }
 
@@ -106,8 +106,8 @@ export function highlightParts(text, query) {
 }
 
 export class OutboxSender {
-  constructor({ outbox, send, isReady, retryMs = 1000, setTimer = (fn, ms) => setTimeout(fn, ms) }) {
-    Object.assign(this, { outbox, send, isReady, retryMs, setTimer });
+  constructor({ outbox, send, isReady, host = 'self', retryMs = 1000, setTimer = (fn, ms) => setTimeout(fn, ms) }) {
+    Object.assign(this, { outbox, send, isReady, host, retryMs, setTimer });
     this.inflight = null;
     this.waiting = false;
   }
@@ -119,13 +119,13 @@ export class OutboxSender {
 
   pump() {
     if (this.inflight || this.waiting || !this.isReady()) return;
-    const next = this.outbox.pending()[0];
+    const next = this.outbox.pending(this.host)[0];
     if (!next) return;
     if (this.send({ t: 'send', id: next.id, sessionId: next.sessionId, text: next.text })) this.inflight = next.id;
   }
 
   onAck(m) {
-    const item = this.outbox.pending().find((i) => i.id === m.id);
+    const item = this.outbox.pending(this.host).find((i) => i.id === m.id);
     if (!item) return { handled: false };
     if (this.inflight === m.id) this.inflight = null;
     if (!m.ok && m.error === 'rate-limited') {
