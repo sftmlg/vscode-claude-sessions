@@ -64,6 +64,7 @@ test('registry on a throwaway socket', async (t) => {
     assert.strictEqual(item.slot, '.claude-a');
     assert.strictEqual(item.title, 'Demo task');
     assert.strictEqual(item.status, 'idle');
+    assert.ok(Math.abs(Date.parse(item.lastActivity) - Date.now()) < 60000, 'without a transcript the pid file dates the session');
     assert.strictEqual(reg.resolve(ID1), item);
   });
 

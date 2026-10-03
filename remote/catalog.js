@@ -124,7 +124,7 @@ class Catalog {
         running: run ? (run.managed ? 'service' : 'terminal') : null,
         name: run && run.managed ? run.name : null,
         pid: run && !run.managed ? run.pid : null,
-        lastActivity: m.lastActivity,
+        lastActivity: m.lastActivity || (m.mtimeMs ? new Date(m.mtimeMs).toISOString() : null),
         snippet: q ? sessions.matchSnippet(m, q) || (m.file ? await sessions.deepSnippet(m.file, q).catch(() => '') : '') : lastPrompt(m),
       };
     }));

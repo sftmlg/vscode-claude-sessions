@@ -68,8 +68,10 @@ async function readPidRecords() {
     for (const f of files) {
       if (!/^\d+\.json$/.test(f)) continue;
       let j;
+      let touched = null;
       try {
         j = JSON.parse(await fsp.readFile(path.join(sdir, f), 'utf8'));
+        touched = (await fsp.stat(path.join(sdir, f))).mtimeMs;
       } catch {
         continue;
       }
@@ -85,6 +87,7 @@ async function readPidRecords() {
         tmux: j.tmux || null,
         procStart: j.procStart === undefined ? null : j.procStart,
         slot: path.basename(dir),
+        touched,
       });
     }
   }
@@ -244,16 +247,20 @@ class Registry extends EventEmitter {
   async item(rec, procs, extra) {
     const m = rec ? await this.metaFor(rec.sessionId) : {};
     const proc = rec ? procs.get(rec.pid) : null;
-    const lastActivity = m.lastActivity || (extra.activity ? new Date(extra.activity).toISOString() : null);
     const cwd = (rec && rec.cwd) || extra.cwd || null;
     const given = (extra.managed && this.titles.get(extra.name)) || null;
     const ext = rec ? extensionInfo(rec.sessionId, cwd, this.config.roots) : { favorite: false, name: null };
     let transcriptSize = null;
+    let written = null;
     if (m.transcriptPath) {
       try {
-        transcriptSize = (await fsp.stat(m.transcriptPath)).size;
+        const st = await fsp.stat(m.transcriptPath);
+        transcriptSize = st.size;
+        written = st.mtimeMs;
       } catch {}
     }
+    const fallback = written || extra.activity || (rec && rec.touched);
+    const lastActivity = m.lastActivity || (fallback ? new Date(fallback).toISOString() : null);
     return {
       sessionId: rec ? rec.sessionId : null,
       name: extra.name,
