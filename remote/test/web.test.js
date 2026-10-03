@@ -344,3 +344,23 @@ test('notifications: one switch per device, disabled with a reason over plain ht
   assert.match(app, /disabled: !supported/);
   assert.match(app, /text: supported \? `Get a notification when a session on [^`]*` : PUSH_UNAVAILABLE/);
 });
+
+test('home-screen app and fullscreen: PNG icons, standalone manifest, an immersive toggle with a way back', () => {
+  const manifest = JSON.parse(read('manifest.webmanifest'));
+  assert.strictEqual(manifest.display, 'standalone');
+  assert.strictEqual(manifest.id, './');
+  for (const size of ['192x192', '512x512']) {
+    const icon = manifest.icons.find((i) => i.sizes === size && i.type === 'image/png');
+    assert.ok(icon && fs.existsSync(path.join(WEB, icon.src)), size);
+  }
+  const html = read('index.html');
+  assert.match(html, /<link rel="apple-touch-icon" href="icon-180\.png">/);
+  assert.ok(fs.existsSync(path.join(WEB, 'icon-180.png')));
+  assert.match(html, /id="immersive-toggle"[^>]*aria-label="Fullscreen"/);
+  assert.match(html, /id="immersive-exit"[^>]*aria-label="Leave fullscreen"[^>]*hidden/);
+  assert.match(read('style.css'), /body\.immersive \.topbar,[\s\S]*?display: none !important;/);
+  const app = read('app.js');
+  assert.match(app, /requestFullscreen/);
+  assert.match(app, /addEventListener\('fullscreenchange'/, 'leaving browser fullscreen leaves immersive mode too');
+  assert.match(app, /display-mode: standalone/);
+});

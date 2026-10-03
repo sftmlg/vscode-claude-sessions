@@ -13,7 +13,7 @@
 <title>Claude Remote</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="vendor/xterm.css">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="chat.css">
@@ -26,6 +26,7 @@
     <button type="button" id="back" class="icon-btn" aria-label="Back to sessions" hidden>‹</button>
     <h1 id="title">Claude Remote</h1>
     <span id="conn" class="conn conn-connecting" role="status"><span class="dot"></span><span id="conn-text">connecting</span></span>
+    <button type="button" id="immersive-toggle" class="icon-btn" aria-label="Fullscreen" title="Fullscreen: hide everything but the session">⤢</button>
     <button type="button" id="open-settings" class="icon-btn" aria-label="Settings" hidden>⚙</button>
   </header>
 
@@ -105,6 +106,7 @@
   <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
   <div id="sheet" class="sheet" role="dialog" aria-modal="true" hidden></div>
   <div id="toast" class="toast" role="alert" hidden></div>
+  <button type="button" id="immersive-exit" class="immersive-exit" aria-label="Leave fullscreen" title="Leave fullscreen" hidden>⤡</button>
 </div>
 </body>
 </html>

@@ -771,3 +771,23 @@ h3 {
   left: -10000px;
   top: 0;
 }
+
+body.immersive .topbar,
+body.immersive .host-tabs,
+body.immersive .health-banner,
+body.immersive .term-tools,
+body.immersive .list-toolbar {
+  display: none !important;
+}
+
+.immersive-exit {
+  position: fixed;
+  top: calc(6px + env(safe-area-inset-top));
+  right: calc(6px + env(safe-area-inset-right));
+  z-index: 15;
+  min-width: 36px;
+  padding: 4px 8px;
+  font-size: 18px;
+  opacity: 0.75;
+  background: var(--bg-3);
+}

@@ -1240,6 +1240,25 @@ function defaultDeviceName() {
   return 'Browser';
 }
 
+function setImmersive(on) {
+  document.body.classList.toggle('immersive', on);
+  $('immersive-exit').hidden = !on;
+  const root = document.documentElement;
+  if (on && root.requestFullscreen && !document.fullscreenElement) root.requestFullscreen().catch(() => {});
+  if (!on && document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  if (term) requestAnimationFrame(() => term.rescale());
+}
+
+function setupImmersive() {
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  document.body.classList.toggle('standalone', standalone);
+  $('immersive-toggle').addEventListener('click', () => setImmersive(!document.body.classList.contains('immersive')));
+  $('immersive-exit').addEventListener('click', () => setImmersive(false));
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && document.body.classList.contains('immersive')) setImmersive(false);
+  });
+}
+
 function setupViewport() {
   const root = document.documentElement;
   const vv = window.visualViewport;
@@ -1255,6 +1274,7 @@ function setupViewport() {
 
 function init() {
   setupViewport();
+  setupImmersive();
   input = setupInput({ form: $('input-bar'), textarea: $('input'), badge: $('outbox-badge'), keybar: $('keybar'), outbox, isTouch, onSubmit: submitText, onKey: sendKey, onChange: saveDraft });
   $('suggestion').addEventListener('click', () => {
     const suggestion = $('suggestion').dataset.text;
