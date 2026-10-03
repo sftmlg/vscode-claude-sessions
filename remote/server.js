@@ -11,6 +11,8 @@ const { Registry, UUID_RE } = require('./registry');
 const { Mirror } = require('./mirror');
 const { Queue } = require('./queue');
 const tmux = require('./tmux');
+const { Catalog } = require('./catalog');
+const sessions = require('../sessions');
 
 function optional(name) {
   try {
@@ -142,6 +144,8 @@ async function start(config, deps = {}) {
   const audit = deps.audit || auditWriter(config.stateDir);
   const ctx = { socket: config.tmuxSocket, bin: config.tmuxPath, childPath: config.childPath };
   const registry = deps.registry || new Registry(config, { ctx, audit });
+  sessions.loadCache(path.join(config.stateDir, 'cache'));
+  const catalog = deps.catalog || new Catalog(config);
   const queue = deps.queue || new Queue(path.join(config.stateDir, 'queue.json'));
   const mirrors = new Map();
   const liveTails = new Set();
@@ -417,6 +421,13 @@ async function start(config, deps = {}) {
         const r = await transcript.readEvents(file, { before, limit });
         return send({ t: 'events', sessionId: msg.sessionId, from: r.from, to: r.to, size: r.size, items: r.events, unknown: r.unknown });
       }
+      case 'search': {
+        if (!Queue.validId(msg.id) || typeof msg.query !== 'string' || msg.query.length > 200) return send({ t: 'error', code: 'bad-request', msg: 'search needs an id and a query of at most 200 characters', ref: 'search' });
+        const limit = Math.max(1, Math.min(50, Number(msg.limit) || 20));
+        const running = new Map(registry.listAll().filter((i) => i.sessionId).map((i) => [i.sessionId, { managed: i.managed, name: i.name, pid: i.pid }]));
+        const items = await catalog.search(msg.query, { limit, running });
+        return send({ t: 'searchResults', id: msg.id, items });
+      }
       case 'agentEvents': {
         if (typeof msg.toolUseId !== 'string' || !TOOL_USE_RE.test(msg.toolUseId)) return send({ t: 'error', code: 'bad-request', msg: 'invalid toolUseId', ref: 'agentEvents' });
         const { item, file } = await transcriptFor(msg.sessionId);
@@ -534,6 +545,11 @@ async function start(config, deps = {}) {
   healthTimer.unref();
 
   await registry.start();
+  const warmTimer = setTimeout(() => {
+    const began = Date.now();
+    catalog.warm().then((n) => log(`search cache warm sessions=${n} ms=${Date.now() - began}`), (e) => log(`search cache warm failed ${e.code || e.message}`));
+  }, deps.warmDelayMs === undefined ? 5000 : deps.warmDelayMs);
+  warmTimer.unref();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(config.port, '127.0.0.1', resolve);
@@ -549,6 +565,7 @@ async function start(config, deps = {}) {
     stats: () => ({ tails: liveTails.size, mirrors: mirrors.size, connections: conns.size }),
     async close() {
       clearInterval(heartbeat);
+      clearTimeout(warmTimer);
       clearInterval(rotation);
       clearInterval(healthTimer);
       registry.stop();

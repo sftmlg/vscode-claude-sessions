@@ -275,6 +275,27 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     assert.strictEqual((await c.wait((m) => m.t === 'ack' && m.id === 'm-3')).ok, true);
   });
 
+  await t.test('search over names and contents of past sessions; resume one by id alone', async () => {
+    const PAST = 'f0f0f0f0-0000-4000-8000-0000000000f0';
+    const dir = path.join(home, '.claude', 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString();
+    fs.writeFileSync(path.join(dir, `${PAST}.jsonl`), [{ type: 'user', cwd: work, timestamp: ts, message: { content: 'count the quantum zebras' } }, { type: 'assistant', timestamp: ts, message: { content: [{ type: 'text', text: 'Zebras counted.' }] } }, { type: 'custom-title', customTitle: 'Zebra notes' }].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    c.send({ t: 'search', id: 'q-1', query: 'QUANTUM zebras', limit: 5 });
+    const res = await c.wait((m) => m.t === 'searchResults' && m.id === 'q-1', 'searchResults');
+    assert.strictEqual(res.items.length, 1);
+    assert.strictEqual(res.items[0].sessionId, PAST);
+    assert.strictEqual(res.items[0].title, 'Zebra notes');
+    assert.strictEqual(res.items[0].running, null);
+    assert.match(res.items[0].snippet, /quantum zebras/);
+    c.send({ t: 'search', id: 'q-2', query: 'x'.repeat(300) });
+    await c.wait((m) => m.t === 'error' && m.ref === 'search' && m.code === 'bad-request', 'long query refused');
+    c.send({ t: 'new', id: 'n-past', resumeId: PAST });
+    const ack = await c.wait((m) => m.t === 'ack' && m.id === 'n-past', 'resume ack');
+    assert.strictEqual(ack.ok, true);
+    assert.strictEqual(ack.name, 'cc-zebra-notes');
+  });
+
   await t.test('chat: events by session id and live tail', async () => {
     await waitFor(() => registry.resolve(SID) && registry.resolve(SID).transcriptPath, { what: 'transcript path' });
     c.send({ t: 'events', sessionId: SID, limit: 10 });
