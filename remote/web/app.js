@@ -2,7 +2,7 @@ import { createTerm } from './term.js';
 import { Outbox, OutboxSender, DraftStore, setupInput, newId, highlightParts } from './input.js';
 import { inboxSections, relativeTime, absoluteTime } from './inbox.js';
 import { parseOptions, suggestionFrom } from './quick-replies.js';
-import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, sessionFromUrl, PUSH_UNAVAILABLE } from './notify.js';
+import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, onSubscriptionChange, currentSubscription, sessionFromUrl, PUSH_UNAVAILABLE } from './notify.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const ACTIVE_HOST_KEY = 'claude-remote.host';
@@ -111,6 +111,7 @@ const ERROR_TEXT = {
   changed: 'The process changed since you confirmed. Nothing was stopped.',
   'token-expired': 'Confirmation expired. Start again.',
   'still-running': 'The process did not exit. Nothing was started.',
+  'session-starting': 'This session is starting already; it appears in the list in a moment.',
   'force-not-allowed': 'Force is only possible after the process ignored the stop request.',
   'unknown-code': 'Unknown pairing code.',
   locked: 'Too many wrong codes. Pairing is locked for a while.',
@@ -253,7 +254,7 @@ function setPeers(peers) {
   renderHostTabs();
   const wanted = safeStorage((s) => s.getItem(ACTIVE_HOST_KEY));
   const target = hosts.find((h) => h.id === wanted);
-  if (target && target !== conn && !state.current) switchHost(target);
+  if (target && target !== conn && !state.current && !pendingOpen) switchHost(target);
 }
 
 function waitingCount(c) {
@@ -332,6 +333,13 @@ function onBackground(c, data) {
   }
   if (m.t === 'helloOk') {
     if (m.hostName) c.label = m.hostName;
+    if (c === hosts[0]) resyncPush();
+    if (c === hosts[0] && pendingOpen) setTimeout(() => {
+      const key = pendingOpen;
+      pendingOpen = null;
+      switchHost(c);
+      openSession(key);
+    }, 0);
     c.authed = true;
     c.needsPair = false;
     c.device = m.device;
@@ -835,6 +843,7 @@ function onJson(data) {
       conn.authed = true;
       if (m.hostName) conn.label = m.hostName;
       if (conn === hosts[0] && m.viewerHost) viewerHost = String(m.viewerHost).toLowerCase();
+      if (conn === hosts[0]) resyncPush();
       conn.needsPair = false;
       conn.health = m.health || null;
       conn.device = m.device;
@@ -1134,10 +1143,11 @@ function renderPushSwitch() {
 async function onPushMessage(m) {
   if (m.t === 'pushState') {
     push.subscribed = m.subscribed;
+    clearTimeout(pushTimer);
     push.busy = false;
   } else if (m.t === 'pushKey') {
     push.subscribed = m.subscribed;
-    if (push.want === true && !m.subscribed) {
+    if (push.want === true) {
       push.want = null;
       try {
         hosts[0].send({ t: 'pushSubscribe', subscription: await subscribePush(m.key) });
@@ -1151,16 +1161,42 @@ async function onPushMessage(m) {
   return renderPushSwitch();
 }
 
+let pushTimer = null;
+
+function pushSettled() {
+  clearTimeout(pushTimer);
+  push.busy = false;
+  renderPushSwitch();
+}
+
 async function togglePush() {
   push.busy = true;
   renderPushSwitch();
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    if (!push.busy) return;
+    push.want = null;
+    pushSettled();
+    toast(`${hosts[0].label} did not answer; try again when it is online.`);
+  }, 10000);
+  let sent;
   if (push.subscribed) {
     await unsubscribePush().catch(() => {});
-    hosts[0].send({ t: 'pushUnsubscribe' });
+    sent = hosts[0].send({ t: 'pushUnsubscribe' });
   } else {
     push.want = true;
-    hosts[0].send({ t: 'pushKey' });
+    sent = hosts[0].send({ t: 'pushKey' });
   }
+  if (!sent) {
+    push.want = null;
+    pushSettled();
+    toast(`${hosts[0].label} is offline; notifications can be changed when it is back.`);
+  }
+}
+
+async function resyncPush() {
+  const sub = await currentSubscription().catch(() => null);
+  if (sub) hosts[0].send({ t: 'pushSubscribe', subscription: sub });
 }
 
 function pushRow() {
@@ -1351,6 +1387,14 @@ function init() {
   self.connect();
   pendingOpen = sessionFromUrl(location.href);
   onNotificationClick(openFromLink);
+  onSubscriptionChange(() => {
+    push.want = true;
+    hosts[0].send({ t: 'pushKey' });
+  });
+  setInterval(() => {
+    renderList();
+    renderHostTabs();
+  }, 60000);
   setPeers(safeStorage((s) => JSON.parse(s.getItem(PEERS_KEY) || '[]'), []));
 }
 

@@ -36,6 +36,20 @@ export function onNotificationClick(cb) {
   });
 }
 
+export function onSubscriptionChange(cb) {
+  if (!pushSupported()) return;
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data && e.data.t === 'pushSubscriptionChange') cb();
+  });
+}
+
+export async function currentSubscription() {
+  if (!pushSupported() || Notification.permission !== 'granted') return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = reg && (await reg.pushManager.getSubscription());
+  return sub ? sub.toJSON() : null;
+}
+
 export function sessionFromUrl(url) {
   const m = /#session=([^&]+)$/.exec(String(url || ''));
   if (!m) return null;

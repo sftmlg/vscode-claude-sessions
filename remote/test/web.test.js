@@ -427,3 +427,13 @@ test('old drafts give way: the newest are kept within about 1 MB, and the outbox
   assert.ok(box.add('cc-x', 'y'.repeat(4000)), 'drafts make room for a queued message');
   assert.strictEqual(JSON.parse(data.get('claude-remote.outbox')).length, 1);
 });
+
+test('a notification opens its session on a cold start; push never sticks; times stay fresh', () => {
+  const app = read('app.js');
+  assert.match(app, /!state\.current && !pendingOpen\) switchHost\(target\)/, 'a remembered tab never overrides the link');
+  assert.match(app, /if \(c === hosts\[0\] && pendingOpen\)/, 'the link is honoured even when the first hub answers in the background');
+  assert.match(app, /if \(!sent\) \{[\s\S]{0,80}pushSettled\(\)/, 'offline hub: the switch returns at once');
+  assert.match(app, /pushTimer = setTimeout\(/, 'no answer: the switch returns after a timeout');
+  assert.match(app, /onSubscriptionChange\(/, 'a renewed browser subscription is sent to the hub');
+  assert.match(app, /setInterval\(\(\) => \{\s*renderList\(\);\s*renderHostTabs\(\);\s*\}, 60000\)/);
+});
