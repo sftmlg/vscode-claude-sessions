@@ -122,9 +122,10 @@ test('a blocked folder access shows a persistent banner naming the node path', (
   assert.match(app, /banner\.textContent = text;/);
 });
 
-test('search highlight splits text into plain and hit parts, case and accents ignored', async () => {
+test('search highlight folds like the plugin search (case, umlauts as ae/oe/ue/ss, accents)', async () => {
   const { highlightParts } = await import(path.join(WEB, 'input.js'));
-  assert.deepStrictEqual(highlightParts('Fix für MÜLLER checkout', 'muller CHECKOUT'), [
+  assert.deepStrictEqual(highlightParts('Fix für MÜLLER checkout', 'mueller CHECKOUT'), highlightParts('Fix für MÜLLER checkout', 'müller checkout'));
+  assert.deepStrictEqual(highlightParts('Fix für MÜLLER checkout', 'mueller CHECKOUT'), [
     { text: 'Fix für ', hit: false },
     { text: 'MÜLLER', hit: true },
     { text: ' ', hit: false },

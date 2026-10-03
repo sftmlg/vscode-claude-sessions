@@ -68,19 +68,33 @@ export class Outbox {
   }
 }
 
+const FOLD = { ä: 'ae', ö: 'oe', ü: 'ue', ß: 'ss' };
 const foldChar = (c) => {
-  const f = c.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  return f.length === 1 ? f : c.toLowerCase().charAt(0) || c;
+  const lower = c.toLowerCase();
+  return FOLD[lower] || lower.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
 };
-const foldSame = (text) => Array.from({ length: text.length }, (_, i) => foldChar(text[i])).join('');
+
+function foldWithMap(text) {
+  let folded = '';
+  const origin = [];
+  for (let i = 0; i < text.length; i++) {
+    const f = foldChar(text[i]);
+    folded += f;
+    for (let k = 0; k < f.length; k++) origin.push(i);
+  }
+  return { folded, origin };
+}
 
 export function highlightParts(text, query) {
   const src = String(text || '');
   if (!src) return [];
-  const folded = foldSame(src);
+  const { folded, origin } = foldWithMap(src);
   const mask = new Array(src.length).fill(false);
-  for (const term of String(query || '').split(/\s+/).filter(Boolean).map(foldSame)) {
-    for (let at = folded.indexOf(term); at >= 0; at = folded.indexOf(term, at + term.length)) mask.fill(true, at, at + term.length);
+  for (const term of String(query || '').split(/\s+/).filter(Boolean).map((t) => foldWithMap(t).folded)) {
+    if (!term) continue;
+    for (let at = folded.indexOf(term); at >= 0; at = folded.indexOf(term, at + term.length)) {
+      for (let k = at; k < at + term.length; k++) mask[origin[k]] = true;
+    }
   }
   const parts = [];
   for (let i = 0; i < src.length; i++) {
