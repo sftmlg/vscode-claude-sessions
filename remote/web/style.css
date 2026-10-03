@@ -256,6 +256,21 @@ h3 {
   min-width: 0;
 }
 
+.list-toolbar button {
+  flex: none;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .list-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .list-toolbar input[type="search"] {
+    flex-basis: 100%;
+  }
+}
+
 .section-head {
   padding: 10px 14px 4px;
   font-size: 12px;
@@ -501,6 +516,20 @@ h3 {
   overflow: auto;
 }
 
+.chat-pane .chat-root {
+  --chat-fg: var(--fg);
+  --chat-muted: var(--muted);
+  --chat-bg: var(--bg);
+  --chat-prompt-bg: #3a2a22;
+  --chat-assistant-bg: var(--bg-2);
+  --chat-border: var(--line);
+  --chat-code-bg: var(--bg-3);
+  --chat-ok: var(--ok);
+  --chat-error: var(--danger);
+  --chat-denied: var(--warn);
+  --chat-accent: var(--accent);
+}
+
 .readonly-note {
   display: flex;
   align-items: center;
@@ -713,6 +742,7 @@ h3 {
   align-items: center;
   gap: 6px;
   flex: none;
+  white-space: nowrap;
   min-height: 34px;
   padding: 4px 12px;
   border-radius: 99px;
