@@ -168,6 +168,20 @@ async function start(config, deps = {}) {
   const catalog = deps.catalog || new Catalog(config);
   const seen = deps.seen || new SeenStore(config.stateDir);
   const tailnet = deps.tailnet || new Tailnet();
+  let push = deps.push;
+  if (push === undefined) {
+    const pushModule = optional('./push');
+    push = pushModule ? pushModule.createPush(config, { log }) : null;
+  }
+  const lastStatus = new Map();
+  function notifyTransition(s) {
+    const prev = lastStatus.get(s.sessionId);
+    lastStatus.set(s.sessionId, s.status);
+    if (!push || prev !== 'busy' || (s.status !== 'waiting' && s.status !== 'idle')) return;
+    const item = registry.resolve(s.sessionId);
+    const where = item && item.project ? `A session in ${item.project}` : 'A session';
+    push.notify({ title: `${where} ${s.status === 'waiting' ? 'needs you' : 'finished'}`, tag: s.sessionId, url: `./#session=${encodeURIComponent(s.sessionId)}` }).catch((e) => log(`push notify failed ${e.code || e.message}`));
+  }
   async function helloPayload(c, device) {
     const hostName = config.displayName || (await tailnet.selfName()) || String(config.publicHost || 'this hub').split('.')[0];
     const viewerHost = await tailnet.viewerHost(c.forwardedFor);
@@ -248,7 +262,10 @@ async function start(config, deps = {}) {
   registry.on('sessions', () => {
     for (const c of conns) pushSessions(c);
   });
-  registry.on('status', (s) => broadcast({ t: 'status', ...s }));
+  registry.on('status', (s) => {
+    broadcast({ t: 'status', ...s });
+    notifyTransition(s);
+  });
   registry.on('error', (e) => log(`registry error ${e.code || e.message}`));
   auth.on('revoked', (id) => {
     for (const c of conns) if (c.device && c.device.id === id) c.ws.close(4001, 'revoked');
@@ -458,6 +475,20 @@ async function start(config, deps = {}) {
         const r = await transcript.readEvents(file, { before, limit });
         return send({ t: 'events', sessionId: msg.sessionId, from: r.from, to: r.to, size: r.size, items: r.events, unknown: r.unknown });
       }
+      case 'pushKey':
+        if (!push) return send({ t: 'error', code: 'unavailable', msg: 'notifications are not available on this hub', ref: 'push' });
+        return send({ t: 'pushKey', key: push.publicKey(), subscribed: push.devices().includes(conn.device.id) });
+      case 'pushSubscribe':
+        if (!push) return send({ t: 'error', code: 'unavailable', msg: 'notifications are not available on this hub', ref: 'push' });
+        try {
+          push.subscribe(conn.device.id, msg.subscription);
+        } catch (e) {
+          return send({ t: 'error', code: e.code || 'bad-request', msg: 'subscription refused', ref: 'push' });
+        }
+        return send({ t: 'pushState', subscribed: true });
+      case 'pushUnsubscribe':
+        if (push) push.unsubscribe(conn.device.id);
+        return send({ t: 'pushState', subscribed: false });
       case 'markSeen': {
         if (typeof msg.sessionId !== 'string' || !UUID_RE.test(msg.sessionId)) return send({ t: 'error', code: 'bad-request', msg: 'markSeen needs a session id', ref: 'markSeen' });
         const item = registry.listAll().find((i) => i.sessionId === msg.sessionId);

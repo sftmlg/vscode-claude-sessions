@@ -103,7 +103,16 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
   const logs = [];
   const registry = new Registry(config, { ctx, pollMs: 150 });
   let folderState = 'blocked';
-  const hub = await start(config, { auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400, probeFolder: async () => folderState, tailnet: { viewerHost: async (ip) => (ip === '100.64.0.9' ? 'laptop.example.test' : null), selfName: async () => 'studio' } });
+  const pushed = [];
+  const subscribed = new Map();
+  const push = {
+    publicKey: () => 'BPUBLICKEY',
+    devices: () => [...subscribed.keys()],
+    subscribe: (id, sub) => (subscribed.set(id, sub), true),
+    unsubscribe: (id) => subscribed.delete(id),
+    notify: async (n) => (pushed.push(n), { sent: 1 }),
+  };
+  const hub = await start(config, { auth, registry, log: (m) => logs.push(m), helloTimeoutMs: 400, push, probeFolder: async () => folderState, tailnet: { viewerHost: async (ip) => (ip === '100.64.0.9' ? 'laptop.example.test' : null), selfName: async () => 'studio' } });
   t.after(async () => {
     await hub.close();
     killServer(ctx);
@@ -270,6 +279,30 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
 
   const pane = (await listSessions(ctx)).find((s) => s.name === 'cc-int');
   fs.writeFileSync(path.join(sessionsDir, `${pane.panePid}.json`), JSON.stringify({ pid: pane.panePid, sessionId: SID, status: 'waiting', waitingFor: 'permission', cwd: work, procStart: 'p1' }));
+
+  await t.test('push: key, subscribe, unsubscribe per device; busy to waiting notifies without message text', async () => {
+    c.send({ t: 'pushKey' });
+    assert.deepStrictEqual(await c.wait((m) => m.t === 'pushKey'), { t: 'pushKey', key: 'BPUBLICKEY', subscribed: false });
+    c.send({ t: 'pushSubscribe', subscription: { endpoint: 'https://push.example.test/x', keys: { p256dh: 'a', auth: 'b' } } });
+    await c.wait((m) => m.t === 'pushState' && m.subscribed === true, 'subscribed');
+    assert.strictEqual(subscribed.size, 1);
+    c.send({ t: 'pushUnsubscribe' });
+    await c.wait((m) => m.t === 'pushState' && m.subscribed === false, 'unsubscribed');
+    assert.strictEqual(subscribed.size, 0);
+    c.send({ t: 'pushSubscribe', subscription: { endpoint: 'https://push.example.test/x', keys: { p256dh: 'a', auth: 'b' } } });
+    await c.wait((m) => m.t === 'pushState' && m.subscribed === true && c.json.filter((x) => x.t === 'pushState').length === 3, 'subscribed again');
+    const pidFile = path.join(sessionsDir, `${pane.panePid}.json`);
+    const write = (status) => fs.writeFileSync(pidFile, JSON.stringify({ pid: pane.panePid, sessionId: SID, status, waitingFor: status === 'waiting' ? 'permission' : undefined, cwd: work, procStart: 'p1' }));
+    write('busy');
+    await c.wait((m) => m.t === 'status' && m.sessionId === 'cc-int' && m.status === 'busy', 'busy');
+    assert.strictEqual(pushed.length, 0, 'no notification for starting work');
+    write('waiting');
+    await waitFor(() => pushed.length === 1, { what: 'notification' });
+    assert.strictEqual(pushed[0].tag, 'cc-int');
+    assert.match(pushed[0].title, /needs you$/);
+    assert.match(pushed[0].url, /#session=cc-int$/);
+    assert.ok(!JSON.stringify(pushed[0]).includes('synthetic prompt'), 'no transcript text in the payload');
+  });
 
   await t.test('status push and multi-line refusal while a dialog waits', async () => {
     await c.wait((m) => m.t === 'status' && m.sessionId === 'cc-int' && m.status === 'waiting', 'status waiting');
