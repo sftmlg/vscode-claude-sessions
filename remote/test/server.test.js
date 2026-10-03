@@ -394,6 +394,25 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await c.wait((m) => m.t === 'error' && m.ref === 'markSeen', 'bad id refused');
   });
 
+  await t.test('chat opened before the first message fills in once the transcript appears', async () => {
+    const { startPane } = require('./fixtures/fs-helpers');
+    const FRESH = 'abcdabcd-1111-4222-8333-444455556666';
+    startPane(ctx, 'cc-fresh');
+    const fresh = (await listSessions(ctx)).find((x) => x.name === 'cc-fresh');
+    fs.writeFileSync(path.join(sessionsDir, `${fresh.panePid}.json`), JSON.stringify({ pid: fresh.panePid, sessionId: FRESH, status: 'idle', cwd: work, procStart: 'p3' }));
+    await waitFor(() => registry.resolve(FRESH), { what: 'fresh session listed' });
+    c.send({ t: 'events', sessionId: FRESH, limit: 10 });
+    const empty = await c.wait((m) => m.t === 'events' && m.sessionId === FRESH, 'empty events');
+    assert.deepStrictEqual([empty.items, empty.to], [[], 0]);
+    c.send({ t: 'subEvents', sessionId: FRESH, from: 0 });
+    await new Promise((r) => setTimeout(r, 300));
+    fs.writeFileSync(path.join(projectDir, `${FRESH}.jsonl`), line('the very first message'));
+    const live = await c.wait((m) => m.t === 'eventsLive' && m.sessionId === FRESH, 'first message live');
+    assert.ok(live.items.some((e) => e.text === 'the very first message'));
+    c.send({ t: 'unsub', sessionId: FRESH });
+    await waitFor(() => hub.stats().tails === 1, { what: 'fresh tail closed' });
+  });
+
   await t.test('chat subscriptions never leak tails: duplicate subscribe and close during setup', async () => {
     assert.strictEqual(hub.stats().tails, 1);
     const d = await client(port);

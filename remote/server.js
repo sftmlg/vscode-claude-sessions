@@ -385,13 +385,40 @@ async function start(config, deps = {}) {
     return item;
   }
 
-  async function transcriptFor(key) {
+  async function transcriptFor(key, { allowMissing = false } = {}) {
     if (!transcript) throw Object.assign(new Error('Chat view is not available'), { code: 'unavailable' });
     const item = sessionFor(key);
     if (!item.sessionId || !UUID_RE.test(item.sessionId)) throw Object.assign(new Error('No transcript yet'), { code: 'not-found' });
-    const file = item.transcriptPath && (await transcript.safeTranscriptPath(item.transcriptPath));
-    if (!file) throw Object.assign(new Error('No transcript yet'), { code: 'not-found' });
-    return { item, file };
+    let file = item.transcriptPath && (await transcript.safeTranscriptPath(item.transcriptPath));
+    if (!file) file = await transcript.resolveTranscript(item.sessionId);
+    if (!file && !allowMissing) throw Object.assign(new Error('No transcript yet'), { code: 'not-found' });
+    return { item, file: file || null };
+  }
+
+  function waitForTranscript(conn, key, onFile) {
+    const waiter = {
+      closed: false,
+      timer: setInterval(async () => {
+        if (waiter.closed || conn.closed || conn.tails.get(key) !== waiter) return waiter.close();
+        let found = null;
+        try {
+          found = (await transcriptFor(key, { allowMissing: true })).file;
+        } catch {
+          return waiter.close();
+        }
+        if (found && !waiter.closed && conn.tails.get(key) === waiter) {
+          waiter.close();
+          onFile(found);
+        }
+        return undefined;
+      }, deps.transcriptPollMs || 1000),
+      close() {
+        waiter.closed = true;
+        clearInterval(waiter.timer);
+      },
+    };
+    waiter.timer.unref();
+    return waiter;
   }
 
   async function handle(conn, msg, send, viewer) {
@@ -512,7 +539,8 @@ async function start(config, deps = {}) {
         return send({ t: 'takeoverInfo', ...info });
       }
       case 'events': {
-        const { file } = await transcriptFor(msg.sessionId);
+        const { file } = await transcriptFor(msg.sessionId, { allowMissing: true });
+        if (!file) return send({ t: 'events', sessionId: msg.sessionId, from: 0, to: 0, size: 0, items: [], unknown: 0 });
         const limit = Math.max(1, Math.min(MAX_EVENTS, Number(msg.limit) || 100));
         const before = Number.isFinite(msg.before) && msg.before >= 0 ? Math.floor(msg.before) : undefined;
         const r = await transcript.readEvents(file, { before, limit });
@@ -562,24 +590,34 @@ async function start(config, deps = {}) {
         if (typeof key !== 'string' || conn.tails.has(key)) return undefined;
         if (conn.tails.size >= MAX_TAILS) return send({ t: 'error', code: 'too-many', msg: 'too many chat subscriptions' });
         conn.tails.set(key, null);
-        let tail = null;
-        try {
-          const { file } = await transcriptFor(key);
-          if (conn.closed || conn.tails.get(key) !== null) return undefined;
-          const from = Number.isFinite(msg.from) && msg.from >= 0 ? Math.floor(msg.from) : undefined;
-          tail = new transcript.Tail(file, { from });
+        const from = Number.isFinite(msg.from) && msg.from >= 0 ? Math.floor(msg.from) : undefined;
+        const startTail = async (file, start) => {
+          const tail = new transcript.Tail(file, { from: start });
           conn.tails.set(key, tail);
           liveTails.add(tail);
           tail.on('events', (e) => send({ t: 'eventsLive', sessionId: key, items: e.events, from: e.from, to: e.to, size: e.size }));
           tail.on('reset', () => send({ t: 'reset', sessionId: key }));
           tail.on('error', (e) => log(`tail error conn=${conn.id} ${e.code || e.message}`));
-          await tail.start();
+          try {
+            await tail.start();
+          } catch (e) {
+            if (conn.tails.get(key) === tail) conn.tails.delete(key);
+            closeTail(tail);
+            throw e;
+          }
           if (conn.closed || conn.tails.get(key) !== tail) closeTail(tail);
+        };
+        let file;
+        try {
+          ({ file } = await transcriptFor(key, { allowMissing: true }));
         } catch (e) {
-          if (conn.tails.get(key) === tail) conn.tails.delete(key);
-          if (tail) closeTail(tail);
+          if (conn.tails.get(key) === null) conn.tails.delete(key);
           throw e;
         }
+        if (conn.closed || conn.tails.get(key) !== null) return undefined;
+        if (file) return startTail(file, from);
+        const waiter = waitForTranscript(conn, key, (found) => startTail(found, 0).catch((e) => log(`tail start failed ${e.code || e.message}`)));
+        conn.tails.set(key, waiter);
         return undefined;
       }
       default:
