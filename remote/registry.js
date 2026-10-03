@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 const { EventEmitter } = require('events');
 const sessions = require('../sessions');
 const tmux = require('./tmux');
+const { displayTitle, lastPrompt, repoName } = require('./catalog');
 
 let transcript = null;
 try {
@@ -156,11 +157,11 @@ class Registry extends EventEmitter {
   async metaFor(sessionId) {
     const cached = this.meta.get(sessionId);
     if (cached && Date.now() - cached.at < META_TTL_MS) return cached;
-    const entry = { at: Date.now(), title: null, lastActivity: null, transcriptPath: null };
+    const entry = { at: Date.now(), meta: null, lastActivity: null, transcriptPath: null };
     try {
       const m = await sessions.metaForSession(sessionId);
       if (m) {
-        entry.title = m.customTitle || m.aiTitle || null;
+        entry.meta = m;
         entry.lastActivity = m.lastActivity || null;
       }
     } catch {}
@@ -222,6 +223,7 @@ class Registry extends EventEmitter {
     const m = rec ? await this.metaFor(rec.sessionId) : {};
     const proc = rec ? procs.get(rec.pid) : null;
     const lastActivity = m.lastActivity || (extra.activity ? new Date(extra.activity).toISOString() : null);
+    const cwd = (rec && rec.cwd) || extra.cwd || null;
     return {
       sessionId: rec ? rec.sessionId : null,
       name: extra.name,
@@ -229,11 +231,13 @@ class Registry extends EventEmitter {
       pid: rec ? rec.pid : null,
       procStart: rec ? rec.procStart : null,
       tty: (proc && proc.tty) || extra.tty || null,
-      cwd: (rec && rec.cwd) || extra.cwd || null,
+      cwd,
+      project: repoName(cwd, this.config.roots),
       slot: rec ? rec.slot : null,
       status: rec ? rec.status : 'none',
       waitingFor: rec ? rec.waitingFor : null,
-      title: (rec && rec.name) || m.title || null,
+      title: rec ? displayTitle(m.meta, rec.name) : null,
+      lastPrompt: lastPrompt(m.meta),
       transcriptPath: m.transcriptPath || null,
       lastActivity,
     };
@@ -245,6 +249,12 @@ class Registry extends EventEmitter {
   }
 
   async newSession({ name, dir, resumeId } = {}, { device } = {}) {
+    if (!name && resumeId && UUID_RE.test(String(resumeId))) {
+      const meta = await sessions.metaForSession(resumeId).catch(() => null);
+      const base = `cc-${slug(displayTitle(meta)) || resumeId.slice(0, 8)}`;
+      name = await this.freeName(tmux.NAME_RE.test(base) ? base : `cc-${resumeId.slice(0, 8)}`);
+      dir = dir || (meta && meta.cwd) || undefined;
+    }
     if (!tmux.NAME_RE.test(String(name))) throw new RegistryError('bad-name', 'Name must match cc-[a-z0-9-]{1,40}');
     if (resumeId !== undefined && resumeId !== null && resumeId !== '' && !UUID_RE.test(String(resumeId))) throw new RegistryError('bad-resume-id', 'Resume id must be a session UUID');
     const resume = resumeId || null;

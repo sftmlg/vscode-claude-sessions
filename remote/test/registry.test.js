@@ -172,6 +172,31 @@ test('registry on a throwaway socket', async (t) => {
     await assert.rejects(reg.takeover(again.token, { force: true }), (e) => e.code === 'token-expired');
   });
 
+  await t.test('titles prefer the transcript over the automatic name; resume derives name and directory', async () => {
+    const enc = (p) => p.replace(/[^a-zA-Z0-9]/g, '-');
+    const ID4 = '44444444-0000-4000-8000-000000000004';
+    const ID5 = '55555555-0000-4000-8000-000000000005';
+    const proj = path.join(work, 'proj');
+    const dir = path.join(home, '.claude', 'projects', enc(proj));
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString();
+    fs.writeFileSync(path.join(dir, `${ID5}.jsonl`), [{ type: 'user', cwd: proj, timestamp: ts, message: { content: 'first prompt of five' } }, { type: 'ai-title', aiTitle: 'Readable title' }].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    fs.writeFileSync(path.join(dir, `${ID4}.jsonl`), [{ type: 'user', cwd: proj, timestamp: ts, message: { content: 'please ship it' } }, { type: 'custom-title', customTitle: 'Ship the Q3 report!' }].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    const p5 = sleeper();
+    procs.push(p5);
+    writePid(p5.pid, { sessionId: ID5, name: 'proj-2b', cwd: proj });
+    await reg.refresh();
+    const item = reg.listAll().find((i) => i.sessionId === ID5);
+    assert.strictEqual(item.title, 'Readable title');
+    assert.strictEqual(item.project, 'proj');
+    assert.strictEqual(item.lastPrompt, 'first prompt of five');
+    const r = await reg.newSession({ resumeId: ID4 }, { device: { id: 'dev-1' } });
+    assert.strictEqual(r.name, 'cc-ship-the-q3-report');
+    await waitFor(() => capture(ctx, r.name).includes(`[--resume] [${ID4}]`), { what: 'resumed by id' });
+    assert.strictEqual(reg.listAll().find((i) => i.name === r.name).cwd, proj);
+    await assert.rejects(reg.newSession({ resumeId: ID5 }), (e) => e.code === 'session-running');
+  });
+
   await t.test('takeover tokens expire', async () => {
     const quick = new Registry(config, { ctx, takeoverTtlMs: 30 });
     const other = sleeper();
