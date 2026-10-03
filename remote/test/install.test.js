@@ -232,3 +232,15 @@ test('the agent is kickstarted right after bootstrap, before serve is configured
   const dry = sandbox().install('--dry-run');
   assert.match(dry.stdout, new RegExp(`\\+ \\S*launchctl kickstart -k ${target.replace(/\./g, '\\.')}`));
 });
+
+test('uninstall deletes the search caches derived from transcripts', () => {
+  const s = sandbox();
+  assert.strictEqual(s.install('--no-check').status, 0);
+  const cache = path.join(s.home, '.local', 'state', 'claude-remote', 'cache');
+  fs.mkdirSync(cache, { recursive: true });
+  fs.writeFileSync(path.join(cache, 'text-cache.json'), '{}');
+  fs.writeFileSync(path.join(cache, 'meta-cache.json'), '{}');
+  assert.strictEqual(s.install('--uninstall').status, 0);
+  assert.ok(!fs.existsSync(cache));
+  assert.ok(fs.existsSync(path.join(s.home, '.local', 'state', 'claude-remote')), 'devices and audit stay');
+});

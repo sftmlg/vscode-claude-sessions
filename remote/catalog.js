@@ -100,7 +100,10 @@ class Catalog {
         if (!prev || Date.parse(m.lastActivity) > Date.parse(prev.lastActivity)) byId.set(m.id, m);
       }
     }
-    return [...byId.values()].sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
+    const { realUnder } = require('./registry');
+    const kept = [];
+    for (const m of byId.values()) if (m.cwd && (await realUnder(m.cwd, this.roots))) kept.push(m);
+    return kept.sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
   }
 
   async search(query, { limit = 20, running = new Map() } = {}) {

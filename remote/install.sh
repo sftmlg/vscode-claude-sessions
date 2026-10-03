@@ -99,11 +99,13 @@ resolve() {
 
 if [ "$UNINSTALL" = 1 ]; then
   PUBLIC_PORT="$(resolve "$CONFIG_FILE" "$(mktemp -d)" | sed -n 2p)"
+  STATE_DIR="$(resolve "$CONFIG_FILE" | sed -n 3p)"
   act "$LAUNCHCTL" bootout "$GUI/$LABEL" || true
   act rm -f "$PLIST"
   act "$TAILSCALE" serve --https="$PUBLIC_PORT" off || true
   act "$TAILSCALE" serve --http="$PUBLIC_PORT" off || true
-  say "Removed the LaunchAgent and serve port $PUBLIC_PORT. Config ($CONFIG_FILE) and state stay."
+  act rm -rf "$STATE_DIR/cache"
+  say "Removed the LaunchAgent, serve port $PUBLIC_PORT and the search caches. Config ($CONFIG_FILE), devices and audit log stay."
   exit 0
 fi
 
