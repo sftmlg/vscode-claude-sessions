@@ -2,6 +2,7 @@ import { createTerm } from './term.js';
 import { Outbox, OutboxSender, DraftStore, setupInput, newId, highlightParts } from './input.js';
 import { inboxSections, relativeTime, absoluteTime } from './inbox.js';
 import { parseOptions, suggestionFrom } from './quick-replies.js';
+import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, sessionFromUrl, PUSH_UNAVAILABLE } from './notify.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const ACTIVE_HOST_KEY = 'claude-remote.host';
@@ -357,6 +358,8 @@ function onBackground(c, data) {
     c.health = m;
   } else if (m.t === 'ack') {
     c.sender.onAck(m);
+  } else if ((m.t === 'pushKey' || m.t === 'pushState') && c === hosts[0]) {
+    onPushMessage(m);
   }
   renderHostTabs();
 }
@@ -819,6 +822,9 @@ function onJson(data) {
     case 'paired':
       setToken(conn, m.token);
       return undefined;
+    case 'pushKey':
+    case 'pushState':
+      return onPushMessage(m);
     case 'searchResults':
       if (m.id === search.id) renderSearch(Array.isArray(m.items) ? m.items : []);
       return undefined;
@@ -837,7 +843,12 @@ function onJson(data) {
       state.defaultDir = m.defaultDir || '';
       conn.setState('online');
       if (conn === hosts[0] && Array.isArray(m.peers)) setPeers(m.peers);
-      if (state.current) {
+      if (pendingOpen && conn === hosts[0]) {
+        const key = pendingOpen;
+        pendingOpen = null;
+        show('list');
+        openSession(key);
+      } else if (state.current) {
         show('session');
         subscribe();
       } else show('list');
@@ -1110,6 +1121,68 @@ function showTakeoverSheet(info) {
   openSheet('Take over this session?', body);
 }
 
+const push = { want: null, subscribed: false, busy: false };
+
+function renderPushSwitch() {
+  const sw = $('push-switch');
+  if (!sw) return;
+  sw.setAttribute('aria-checked', String(push.subscribed));
+  sw.textContent = push.busy ? 'Working…' : push.subscribed ? 'On' : 'Off';
+  sw.disabled = !pushSupported() || push.busy;
+}
+
+async function onPushMessage(m) {
+  if (m.t === 'pushState') {
+    push.subscribed = m.subscribed;
+    push.busy = false;
+  } else if (m.t === 'pushKey') {
+    push.subscribed = m.subscribed;
+    if (push.want === true && !m.subscribed) {
+      push.want = null;
+      try {
+        hosts[0].send({ t: 'pushSubscribe', subscription: await subscribePush(m.key) });
+        return renderPushSwitch();
+      } catch (e) {
+        toast(e.message);
+      }
+    }
+    push.busy = false;
+  }
+  return renderPushSwitch();
+}
+
+async function togglePush() {
+  push.busy = true;
+  renderPushSwitch();
+  if (push.subscribed) {
+    await unsubscribePush().catch(() => {});
+    hosts[0].send({ t: 'pushUnsubscribe' });
+  } else {
+    push.want = true;
+    hosts[0].send({ t: 'pushKey' });
+  }
+}
+
+function pushRow() {
+  const supported = pushSupported();
+  const sw = el('button', { type: 'button', id: 'push-switch', class: 'switch', role: 'switch', 'aria-checked': 'false', disabled: !supported, text: 'Off', onclick: togglePush });
+  if (supported) hosts[0].send({ t: 'pushKey' });
+  return el('div', { class: 'stack' }, [
+    el('h3', { text: 'Notifications' }),
+    el('div', { class: 'row-form' }, [sw, el('span', { class: 'muted small', text: supported ? `Get a notification when a session on ${hosts[0].label} needs you or finishes.` : PUSH_UNAVAILABLE })]),
+  ]);
+}
+
+function openFromLink(url) {
+  const key = sessionFromUrl(url);
+  if (!key) return;
+  if (conn !== hosts[0]) switchHost(hosts[0]);
+  if (conn.authed) openSession(key);
+  else pendingOpen = key;
+}
+
+let pendingOpen = null;
+
 function showSettings() {
   const list = el('ul', { id: 'device-list', class: 'device-list' });
   const code = el('input', { inputmode: 'numeric', pattern: '\\d{6}', maxlength: '6', placeholder: '6-digit code', autocomplete: 'one-time-code' });
@@ -1121,6 +1194,7 @@ function showSettings() {
   });
   const body = el('div', { class: 'stack' }, [
     el('p', { class: 'muted', text: state.device ? `This device: ${state.device.name}` : '' }),
+    pushRow(),
     el('h3', { text: 'Approve a new device' }),
     approve,
     el('h3', { text: 'Paired devices' }),
@@ -1255,6 +1329,8 @@ function init() {
   conn = self;
   show('list');
   self.connect();
+  pendingOpen = sessionFromUrl(location.href);
+  onNotificationClick(openFromLink);
   setPeers(safeStorage((s) => JSON.parse(s.getItem(PEERS_KEY) || '[]'), []));
 }
 

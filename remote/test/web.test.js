@@ -41,10 +41,15 @@ test('the shell has no inline script or style and loads nothing from other origi
   assert.strictEqual(manifest.display, 'standalone');
 });
 
-test('app code renders text only and never registers a service worker', () => {
+test('app code renders text only; only notify.js touches the service worker, behind a secure-context check', () => {
+  assert.ok(!/serviceWorker/.test(read('app.js')), 'app.js leaves the service worker to notify.js');
+  const notify = read('notify.js');
+  assert.match(notify, /w\.isSecureContext && w\.navigator && 'serviceWorker' in w\.navigator/);
+  assert.match(notify, /if \(!pushSupported\(\)\) throw new Error\(PUSH_UNAVAILABLE\)/);
+  assert.match(notify, /register\('sw\.js'\)/);
   for (const f of APP_JS) {
     const src = read(f);
-    for (const bad of [/\.innerHTML\b/, /\.outerHTML\b/, /insertAdjacentHTML/, /document\.write/, /\beval\(/, /new Function\(/, /serviceWorker/, /https?:\/\/(?!.*\$\{)/]) assert.ok(!bad.test(src), `${f} must not match ${bad}`);
+    for (const bad of [/\.innerHTML\b/, /\.outerHTML\b/, /insertAdjacentHTML/, /document\.write/, /\beval\(/, /new Function\(/, /https?:\/\/(?!.*\$\{)/]) assert.ok(!bad.test(src), `${f} must not match ${bad}`);
   }
   const term = read('term.js');
   assert.match(term, /registerOscHandler\(52, \(\) => true\)/, 'OSC 52 swallowed');
@@ -324,4 +329,18 @@ test('stars from the editor show on rows and results; a star filter narrows the 
   assert.match(app, /r\.star\.hidden = !s\.favorite;/);
   assert.match(app, /const visible = starOnly \? state\.sessions\.filter\(\(s\) => s\.favorite\) : state\.sessions;/);
   assert.match(app, /hit\.favorite \? el\('span', \{ class: 'star'/);
+});
+
+test('notifications: one switch per device, disabled with a reason over plain http; links open the session', async () => {
+  const { pushSupported, keyBytes, sessionFromUrl, PUSH_UNAVAILABLE } = await import(path.join(WEB, 'notify.js'));
+  assert.strictEqual(PUSH_UNAVAILABLE, 'needs HTTPS — enable certificates in the tailnet');
+  assert.strictEqual(pushSupported({ isSecureContext: false, navigator: { serviceWorker: {} }, PushManager: 1, Notification: 1 }), false);
+  assert.strictEqual(pushSupported({ isSecureContext: true, navigator: { serviceWorker: {} }, PushManager: 1, Notification: 1 }), true);
+  assert.deepStrictEqual([...keyBytes('AQID')], [1, 2, 3]);
+  assert.strictEqual(sessionFromUrl('https://hub.example.test/#session=cc-a%20b'), 'cc-a b');
+  assert.strictEqual(sessionFromUrl('https://hub.example.test/'), null);
+  const app = read('app.js');
+  assert.match(app, /role: 'switch'/);
+  assert.match(app, /disabled: !supported/);
+  assert.match(app, /text: supported \? `Get a notification when a session on [^`]*` : PUSH_UNAVAILABLE/);
 });

@@ -285,6 +285,17 @@ h3 {
   font-weight: 400;
 }
 
+.switch {
+  min-width: 64px;
+  font-weight: 600;
+}
+
+.switch[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
 .star {
   flex: none;
   color: var(--warn);
