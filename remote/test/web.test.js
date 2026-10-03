@@ -148,7 +148,7 @@ test('session list: sticky search, readable names, clear labels, resume of past 
   assert.match(app, /text: 'in a terminal · read-only', title: 'Runs in a terminal tab on the Mac\. Take it over to steer it here\.'/);
   assert.match(app, /text: 'remote', title: 'Runs in the service\. Steerable here\.'/);
   assert.match(app, /s\.project \|\| basename\(s\.cwd\)/);
-  assert.match(app, /class: 'row-prompt', text: s\.lastPrompt/);
+  assert.match(app, /setText\(r\.prompt, s\.lastPrompt \|\| ''\)/);
   assert.match(app, /t: 'new', id: newId\('n'\), resumeId: hit\.sessionId \}/, 'resume sends only the session id; the server names it');
   assert.match(app, /hit\.running === 'terminal'[\s\S]{0,200}prepareTakeover\(hit\.pid\)/, 'a session in a terminal offers take over, not resume');
 });

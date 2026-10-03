@@ -259,22 +259,49 @@ function waitingCount(c) {
   return (c.sessions || []).filter((s) => s.status === 'waiting').length;
 }
 
+function syncChildren(parent, nodes) {
+  nodes.forEach((n, i) => {
+    if (parent.children[i] !== n) parent.insertBefore(n, parent.children[i] || null);
+  });
+  while (parent.children.length > nodes.length) parent.lastElementChild.remove();
+}
+
+function setText(node, text) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function setAttr(node, name, value) {
+  if (value === null || value === undefined) {
+    if (node.hasAttribute(name)) node.removeAttribute(name);
+  } else if (node.getAttribute(name) !== String(value)) node.setAttribute(name, String(value));
+}
+
+const tabNodes = new Map();
+
 function renderHostTabs() {
   const nav = $('host-tabs');
   if (!nav) return;
   nav.hidden = hosts.length < 2;
   const ordered = [...hosts.filter(isViewerHost), ...hosts.filter((h) => !isViewerHost(h))];
-  nav.replaceChildren(
-    ...ordered.map((c) => {
-      const waiting = waitingCount(c);
-      const title = `${c.label}: ${c.connState === 'online' ? 'connected' : c.connState}${waiting ? `, ${waiting} waiting for you` : ''}`;
-      return el('button', { type: 'button', role: 'tab', class: 'host-tab', 'aria-selected': String(c === conn), title, onclick: () => switchHost(c) }, [
-        el('span', { class: `dot dot-${c.connState}` }),
-        el('span', { text: isViewerHost(c) ? `${c.label} (this device)` : c.label }),
-        waiting ? el('span', { class: 'host-count', text: String(waiting), 'aria-label': `${waiting} waiting` }) : null,
-      ]);
-    }),
-  );
+  const nodes = ordered.map((c) => {
+    let t = tabNodes.get(c.id);
+    if (!t) {
+      t = { dot: el('span'), label: el('span'), count: el('span', { class: 'host-count' }) };
+      t.btn = el('button', { type: 'button', role: 'tab', class: 'host-tab', onclick: () => switchHost(c) }, [t.dot, t.label, t.count]);
+      tabNodes.set(c.id, t);
+    }
+    const waiting = waitingCount(c);
+    setAttr(t.btn, 'aria-selected', String(c === conn));
+    setAttr(t.btn, 'title', `${c.label}: ${c.connState === 'online' ? 'connected' : c.connState}${waiting ? `, ${waiting} waiting for you` : ''}`);
+    setAttr(t.dot, 'class', `dot dot-${c.connState}`);
+    setText(t.label, isViewerHost(c) ? `${c.label} (this device)` : c.label);
+    setText(t.count, waiting ? String(waiting) : '');
+    t.count.hidden = !waiting;
+    setAttr(t.count, 'aria-label', waiting ? `${waiting} waiting` : null);
+    return t.btn;
+  });
+  for (const id of [...tabNodes.keys()]) if (!hosts.some((h) => h.id === id)) tabNodes.delete(id);
+  syncChildren(nav, nodes);
 }
 
 function switchHost(c) {
@@ -494,43 +521,87 @@ function collapsedProjects() {
   return new Set(safeStorage((st) => JSON.parse(st.getItem(COLLAPSED_KEY) || '[]'), []));
 }
 
+const rowNodes = new Map();
+const groupNodes = new Map();
+let needsHead = null;
+
 function sessionRow(s) {
-  const open = () => openSession(keyOf(s));
-  const actions = [];
-  if (!s.managed && s.pid) actions.push(el('button', { type: 'button', class: 'secondary', text: 'Take over', onclick: (e) => (e.stopPropagation(), prepareTakeover(s.pid)) }));
-  return el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
-    el('div', { class: 'row-main' }, [
-      el('div', { class: 'row-title' }, [s.unread ? el('span', { class: 'unread-dot', title: 'New since you last looked', 'aria-label': 'unread' }) : null, el('span', { class: 'row-name', text: labelOf(s) }), pill(s.status)]),
-      el('div', { class: 'row-meta' }, [el('span', { text: s.project || basename(s.cwd) }), badge(s.managed ? 'service' : 'terminal'), when(s.lastActivity)]),
-      s.lastPrompt ? el('div', { class: 'row-prompt', text: s.lastPrompt }) : null,
-    ]),
-    el('div', { class: 'row-actions' }, actions),
-  ]);
+  const key = `${s.managed ? 'm' : 'u'}:${keyOf(s)}`;
+  let r = rowNodes.get(key);
+  if (!r) {
+    r = {};
+    const open = () => openSession(keyOf(r.item));
+    r.dot = el('span', { class: 'unread-dot', title: 'New since you last looked', 'aria-label': 'unread' });
+    r.name = el('span', { class: 'row-name' });
+    r.pill = el('span');
+    r.project = el('span');
+    r.badge = el('span');
+    r.when = el('span', { class: 'when' });
+    r.prompt = el('div', { class: 'row-prompt' });
+    r.takeover = el('button', { type: 'button', class: 'secondary', text: 'Take over', onclick: (e) => (e.stopPropagation(), prepareTakeover(r.item.pid)) });
+    r.li = el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
+      el('div', { class: 'row-main' }, [el('div', { class: 'row-title' }, [r.dot, r.name, r.pill]), el('div', { class: 'row-meta' }, [r.project, r.badge, r.when]), r.prompt]),
+      el('div', { class: 'row-actions' }, [r.takeover]),
+    ]);
+    rowNodes.set(key, r);
+  }
+  r.item = s;
+  r.dot.hidden = !s.unread;
+  setText(r.name, labelOf(s));
+  const p = pill(s.status);
+  setAttr(r.pill, 'class', p.className);
+  setText(r.pill, p.textContent);
+  setText(r.project, s.project || basename(s.cwd));
+  const b = badge(s.managed ? 'service' : 'terminal');
+  setAttr(r.badge, 'class', b.className);
+  setAttr(r.badge, 'title', b.title);
+  setText(r.badge, b.textContent);
+  setText(r.when, relativeTime(s.lastActivity));
+  setAttr(r.when, 'title', absoluteTime(s.lastActivity) || null);
+  setText(r.prompt, s.lastPrompt || '');
+  r.prompt.hidden = !s.lastPrompt;
+  r.takeover.hidden = !(!s.managed && s.pid);
+  r.used = true;
+  return r.li;
+}
+
+function groupNode(project) {
+  let g = groupNodes.get(project);
+  if (!g) {
+    g = { name: el('span', { class: 'group-name', text: project }), count: el('span', { class: 'group-count' }), ul: el('ul', { class: 'session-list' }) };
+    g.details = el('details', { class: 'project-group', open: !collapsedProjects().has(project) }, [el('summary', {}, [g.name, g.count]), g.ul]);
+    g.details.addEventListener('toggle', () => {
+      const set = collapsedProjects();
+      if (g.details.open) set.delete(project);
+      else set.add(project);
+      safeStorage((st) => st.setItem(COLLAPSED_KEY, JSON.stringify([...set])));
+    });
+    g.li = el('li', { class: 'group' }, g.details);
+    groupNodes.set(project, g);
+  }
+  return g;
 }
 
 function renderList() {
   const list = $('session-list');
-  list.replaceChildren();
   $('session-empty').hidden = state.sessions.length > 0;
+  for (const r of rowNodes.values()) r.used = false;
   const { needs, groups } = inboxSections(state.sessions);
+  const top = [];
   if (needs.length) {
-    list.append(el('li', { class: 'section-head', text: 'Needs you' }));
-    for (const s of needs) list.append(sessionRow(s));
+    if (!needsHead) needsHead = el('li', { class: 'section-head', text: 'Needs you' });
+    top.push(needsHead, ...needs.map(sessionRow));
   }
-  const collapsed = collapsedProjects();
-  for (const g of groups) {
-    const details = el('details', { class: 'project-group', open: !collapsed.has(g.project) }, [
-      el('summary', {}, [el('span', { class: 'group-name', text: g.project }), el('span', { class: 'group-count', text: String(g.items.length) })]),
-      el('ul', { class: 'session-list' }, g.items.map(sessionRow)),
-    ]);
-    details.addEventListener('toggle', () => {
-      const set = collapsedProjects();
-      if (details.open) set.delete(g.project);
-      else set.add(g.project);
-      safeStorage((st) => st.setItem(COLLAPSED_KEY, JSON.stringify([...set])));
-    });
-    list.append(el('li', { class: 'group' }, details));
-  }
+  const groupLists = groups.map((grp) => {
+    const g = groupNode(grp.project);
+    setText(g.count, String(grp.items.length));
+    top.push(g.li);
+    return [g, grp.items.map(sessionRow)];
+  });
+  syncChildren(list, top);
+  for (const [g, rows] of groupLists) syncChildren(g.ul, rows);
+  for (const [k, r] of [...rowNodes]) if (!r.used) rowNodes.delete(k);
+  for (const p of [...groupNodes.keys()]) if (!groups.some((g) => g.project === p)) groupNodes.delete(p);
 }
 
 let quickTimer = null;
