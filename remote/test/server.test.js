@@ -330,11 +330,16 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
 
   await t.test('unread per device: transcript growth marks a session unread until the device has seen it', async () => {
     const item = () => c.json.filter((m) => m.t === 'sessions').map((m) => m.items.find((i) => i.sessionId === SID)).filter(Boolean).pop();
-    await waitFor(() => item() && item().transcriptSize > 0, { what: 'size in list' });
+    await waitFor(() => item(), { what: 'session in list' });
+    assert.strictEqual('transcriptSize' in item(), false, 'byte counts stay on the server');
     c.send({ t: 'markSeen', sessionId: SID });
     await waitFor(() => item() && item().unread === false, { what: 'read after markSeen' });
     fs.appendFileSync(transcriptFile, line('new reply while away'));
     await waitFor(() => item() && item().unread === true, { what: 'unread after growth' });
+    const pushes = c.json.filter((m) => m.t === 'sessions').length;
+    fs.appendFileSync(transcriptFile, line('another reply, nothing visible changes'));
+    await new Promise((res) => setTimeout(res, 1200));
+    assert.strictEqual(c.json.filter((m) => m.t === 'sessions').length, pushes, 'no push when nothing visible changed');
     c.send({ t: 'markSeen', sessionId: SID });
     await waitFor(() => item() && item().unread === false, { what: 'read again' });
     c.send({ t: 'markSeen', sessionId: '../../etc' });

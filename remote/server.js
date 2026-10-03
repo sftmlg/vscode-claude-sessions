@@ -147,7 +147,12 @@ function realNodePath() {
   }
 }
 
-const clientItem = ({ transcriptPath, ...rest }) => ({ ...rest, hasTranscript: Boolean(transcriptPath) });
+function minute(iso) {
+  const t = Date.parse(iso || '');
+  return Number.isFinite(t) ? new Date(t - (t % 60000)).toISOString() : iso || null;
+}
+
+const clientItem = ({ transcriptPath, transcriptSize, lastActivity, ...rest }) => ({ ...rest, lastActivity: minute(lastActivity), hasTranscript: Boolean(transcriptPath) });
 
 async function start(config, deps = {}) {
   const log = deps.log || ((msg) => console.log(`${new Date().toISOString()} ${msg}`));
@@ -233,8 +238,15 @@ async function start(config, deps = {}) {
     for (const c of conns) if (c.device && c.ws.readyState === WebSocket.OPEN) c.ws.send(data);
   }
 
+  function pushSessions(c, force = false) {
+    if (!c.device || c.ws.readyState !== WebSocket.OPEN) return;
+    const data = JSON.stringify({ t: 'sessions', items: itemsFor(c) });
+    if (!force && data === c.lastSessions) return;
+    c.lastSessions = data;
+    c.ws.send(data);
+  }
   registry.on('sessions', () => {
-    for (const c of conns) if (c.device && c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify({ t: 'sessions', items: itemsFor(c) }));
+    for (const c of conns) pushSessions(c);
   });
   registry.on('status', (s) => broadcast({ t: 'status', ...s }));
   registry.on('error', (e) => log(`registry error ${e.code || e.message}`));
@@ -333,7 +345,7 @@ async function start(config, deps = {}) {
         conn.device = device;
         log(`ws hello conn=${conn.id} device=${device.id}`);
         send(await helloPayload(conn, device));
-        return send({ t: 'sessions', items: itemsFor(conn) });
+        return pushSessions(conn, true);
       }
       case 'pair': {
         if (conn.device || conn.pairing) return send({ t: 'error', code: 'bad-state', msg: 'pairing not possible now' });
@@ -361,7 +373,7 @@ async function start(config, deps = {}) {
             conn.device = device;
             send({ t: 'paired', token, device });
             send(await helloPayload(conn, device));
-            send({ t: 'sessions', items: itemsFor(conn) });
+            pushSessions(conn, true);
           },
           (e) => {
             conn.pairing = false;
@@ -384,7 +396,7 @@ async function start(config, deps = {}) {
         if (!(await auth.revoke(String(msg.deviceId || ''), conn.device.id))) return send({ t: 'error', code: 'not-found', msg: 'unknown device', ref: 'revoke' });
         return conn.ws.readyState === WebSocket.OPEN && send({ t: 'devices', items: await auth.listDevices() });
       case 'list':
-        return send({ t: 'sessions', items: itemsFor(conn) });
+        return pushSessions(conn, true);
       case 'sub': {
         const item = sessionFor(msg.sessionId, { managed: true });
         if (!conn.subs.has(item.name) && conn.subs.size >= MAX_SUBS) return send({ t: 'error', code: 'too-many', msg: 'too many subscriptions' });
@@ -450,7 +462,7 @@ async function start(config, deps = {}) {
         if (typeof msg.sessionId !== 'string' || !UUID_RE.test(msg.sessionId)) return send({ t: 'error', code: 'bad-request', msg: 'markSeen needs a session id', ref: 'markSeen' });
         const item = registry.listAll().find((i) => i.sessionId === msg.sessionId);
         if (item) seen.mark(conn.device.id, item);
-        return send({ t: 'sessions', items: itemsFor(conn) });
+        return pushSessions(conn, true);
       }
       case 'search': {
         if (!Queue.validId(msg.id) || typeof msg.query !== 'string' || msg.query.length > 200) return send({ t: 'error', code: 'bad-request', msg: 'search needs an id and a query of at most 200 characters', ref: 'search' });
