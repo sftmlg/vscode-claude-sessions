@@ -521,3 +521,9 @@ test('host tabs shrink with an ellipsis and keep the full name for assistive tec
   assert.match(css, /\.host-label \{[^}]*text-overflow: ellipsis/);
   assert.match(css, /\.host-tab \{[^}]*flex: 0 1 auto;[^}]*min-width: /);
 });
+
+test('settings name the active hub own device record and follow a rename', () => {
+  const app = fs.readFileSync(path.join(WEB, 'app.js'), 'utf8');
+  assert.match(app, /el\('p', \{ id: 'this-device', class: 'muted', text: thisDeviceText\(\) \}\)/);
+  assert.match(app, /const own = items\.find\(\(d\) => conn\.device && d\.id === conn\.device\.id\);/);
+});

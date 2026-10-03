@@ -1312,7 +1312,7 @@ function showSettings() {
     code.value = '';
   });
   const body = el('div', { class: 'stack' }, [
-    el('p', { class: 'muted', text: state.device ? `This device: ${state.device.name}` : '' }),
+    el('p', { id: 'this-device', class: 'muted', text: thisDeviceText() }),
     pushRow(),
     el('h3', { text: 'Approve a new device' }),
     approve,
@@ -1339,7 +1339,17 @@ function showRenameDevice(d) {
   name.select();
 }
 
+function thisDeviceText() {
+  return conn.device ? `This device on ${conn.label}: ${conn.device.name}` : '';
+}
+
 function renderDevices(items) {
+  const own = items.find((d) => conn.device && d.id === conn.device.id);
+  if (own) {
+    conn.device = { ...conn.device, name: own.name };
+    state.device = conn.device;
+    if ($('this-device')) $('this-device').textContent = thisDeviceText();
+  }
   const list = $('device-list');
   if (!list) return;
   list.replaceChildren(
