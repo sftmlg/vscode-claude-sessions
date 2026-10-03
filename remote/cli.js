@@ -14,6 +14,7 @@ const USAGE = [
   '  node remote/cli.js pair <code> [name]   (approve a pending pairing shown on the new device)',
   '  node remote/cli.js devices [--json]',
   '  node remote/cli.js revoke <device-id>',
+  '  node remote/cli.js rename <device-id> <name>   (1 to 40 printable characters)',
   '  node remote/cli.js status [--json]   (exit 0 only when every check passes)',
 ].join('\n');
 
@@ -206,6 +207,34 @@ async function main(argv, { config, out = console.log, err = console.error } = {
       items = createAuth(config).listDevices();
     }
     out(json ? JSON.stringify(items, null, 2) : formatDevices(items, config));
+    return 0;
+  }
+
+  if (command === 'rename') {
+    const [id, ...nameParts] = args;
+    const name = nameParts.join(' ');
+    if (!DEVICE_ID_RE.test(id || '') || !name.trim()) {
+      err('Pass a device id as shown by `devices` and the new name.');
+      return 2;
+    }
+    let device;
+    try {
+      const r = await admin(config, 'POST', '/admin/rename', { deviceId: id, name });
+      if (r.status !== 200) {
+        err(`Rename refused: ${(r.body && r.body.error) || r.status}`);
+        return 1;
+      }
+      device = r.body.device;
+    } catch (e) {
+      if (!(await serviceDown(config, e))) throw e;
+      try {
+        device = createAuth(config).rename(id, name);
+      } catch (inner) {
+        err(`Rename refused: ${inner.code || inner.message}`);
+        return 1;
+      }
+    }
+    out(`Renamed ${device.id} to ${device.name}.`);
     return 0;
   }
 

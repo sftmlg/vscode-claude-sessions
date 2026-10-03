@@ -416,6 +416,20 @@ class Auth extends EventEmitter {
     return this.pending.size;
   }
 
+  rename(deviceId, name, approverDevice) {
+    const by = approverDevice && approverDevice.id ? approverDevice.id : 'cli';
+    const device = this.devices.find((d) => d.id === deviceId);
+    if (!device) throw new AuthError('unknown-device');
+    const next = typeof name === 'string' ? name.trim() : '';
+    if (!next || [...next].length > 40 || /[\p{C}\p{Zl}\p{Zp}]/u.test(next)) throw new AuthError('bad-name');
+    const from = device.name;
+    device.name = next;
+    this._persist();
+    this._audit('rename', { device: device.id, from, name: next, by });
+    this.log(`auth device-renamed device=${device.id} by=${by}`);
+    return publicDevice(device);
+  }
+
   revoke(deviceId, by = 'cli') {
     const before = this.devices.length;
     this.devices = this.devices.filter((d) => d.id !== deviceId);
@@ -461,7 +475,7 @@ class Auth extends EventEmitter {
       return send(200, { ok: true, pid: process.pid, port: this.config.port, publicHost: this.config.publicHost, publicPort: this.config.publicPort, devices: this.devices.length, pendingPairings: this.pendingCount(), ...status });
     }
     if (route === 'GET /admin/devices') return send(200, { items: this.listDevices() });
-    if (route !== 'POST /admin/approve' && route !== 'POST /admin/revoke') return send(404, { error: 'not-found' });
+    if (route !== 'POST /admin/approve' && route !== 'POST /admin/revoke' && route !== 'POST /admin/rename') return send(404, { error: 'not-found' });
     if (!/^application\/json\b/.test(String(header(req, 'content-type') || ''))) return send(415, { error: 'json-required' });
     let size = 0;
     const chunks = [];
@@ -482,11 +496,12 @@ class Auth extends EventEmitter {
       }
       try {
         if (route === 'POST /admin/approve') return send(200, { device: this.approvePairing(body.code, null, body.name) });
+        if (route === 'POST /admin/rename') return send(200, { device: this.rename(String(body.deviceId || ''), body.name) });
         if (typeof body.deviceId !== 'string' || !DEVICE_ID_RE.test(body.deviceId)) return send(400, { error: 'bad-device-id' });
         return this.revoke(body.deviceId) ? send(200, { ok: true }) : send(404, { error: 'unknown-device' });
       } catch (e) {
         const code = e instanceof AuthError ? e.code : 'internal';
-        return send(code === 'locked' ? 429 : code === 'internal' ? 500 : 404, { error: code });
+        return send(code === 'locked' ? 429 : code === 'internal' ? 500 : code === 'bad-name' ? 400 : 404, { error: code });
       }
     });
   }

@@ -572,3 +572,33 @@ test('autoApprove needs a serve source and stays under maxDevices, then falls ba
   assert.ok(audit.filter((l) => l.action === 'approve').some((l) => l.by === 'auto'));
   assert.strictEqual(createAuth(tmpConfig()).maxDevices, 12);
 });
+
+test('rename trims, accepts 1 to 40 printable characters, persists and audits', () => {
+  const c = tmpConfig();
+  const a = createAuth(c);
+  const d = a.approvePairing(a.createPairing('Old').code);
+  assert.strictEqual(a.rename(d.id, '  Work laptop  ', { id: 'dev-000000000001' }).name, 'Work laptop');
+  assert.strictEqual(createAuth(c).listDevices()[0].name, 'Work laptop');
+  assert.strictEqual(a.rename(d.id, 'x'.repeat(40)).name.length, 40);
+  for (const bad of ['', '   ', 'x'.repeat(41), 'a\x1bb', 'a\nb', 'a\u2028b', null, 42]) assert.throws(() => a.rename(d.id, bad), { code: 'bad-name' }, JSON.stringify(bad));
+  assert.throws(() => a.rename('dev-ffffffffffff', 'x'), { code: 'unknown-device' });
+  assert.throws(() => a.rename('../x', 'x'), { code: 'unknown-device' });
+  const audit = fs.readFileSync(path.join(c.stateDir, 'audit.log'), 'utf8').trim().split('\n').map(JSON.parse).filter((l) => l.action === 'rename');
+  assert.deepStrictEqual(audit.map((l) => [l.device, l.from, l.name, l.by]), [[d.id, 'Old', 'Work laptop', 'dev-000000000001'], [d.id, 'Work laptop', 'x'.repeat(40), 'cli']]);
+});
+
+test('admin rename route and cli rename', async () => {
+  await withAdminServer(async ({ a, c, port, token }) => {
+    const d = a.approvePairing(a.createPairing('Phone').code);
+    const h = () => ({ host: `127.0.0.1:${port}`, authorization: `Bearer ${token()}`, 'content-type': 'application/json' });
+    const r = await adminRequest(a, port, { method: 'POST', url: '/admin/rename', headers: h(), body: { deviceId: d.id, name: 'Pocket' } });
+    assert.deepStrictEqual([r.status, r.body.device.name], [200, 'Pocket']);
+    assert.strictEqual((await adminRequest(a, port, { method: 'POST', url: '/admin/rename', headers: h(), body: { deviceId: d.id, name: '' } })).status, 400);
+    assert.strictEqual((await adminRequest(a, port, { method: 'POST', url: '/admin/rename', headers: h(), body: { deviceId: 'dev-ffffffffffff', name: 'x' } })).status, 404);
+    const io = capture();
+    assert.strictEqual(await cli.main(['rename', d.id, 'My', 'Phone'], { config: c, ...io }), 0);
+    assert.strictEqual(a.listDevices()[0].name, 'My Phone');
+    assert.strictEqual(await cli.main(['rename', d.id], { config: c, ...capture() }), 2);
+    assert.strictEqual(await cli.main(['rename', 'nope', 'x'], { config: c, ...capture() }), 2);
+  });
+});
