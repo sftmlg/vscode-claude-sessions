@@ -155,7 +155,7 @@ test('session list: sticky search, readable names, clear labels, resume of past 
   assert.match(app, /s\.project \|\| basename\(s\.cwd\)/);
   assert.match(app, /setText\(r\.prompt, s\.lastPrompt \|\| ''\)/);
   assert.match(app, /t: 'new', id: newId\('n'\), resumeId: hit\.sessionId \}/, 'resume sends only the session id; the server names it');
-  assert.match(app, /hit\.running === 'terminal'[\s\S]{0,200}prepareTakeover\(hit\.pid\)/, 'a session in a terminal offers take over, not resume');
+  assert.match(app, /if \(hit\.running === 'terminal'\) return openSession\(hit\.sessionId\);/, 'a session in a terminal opens read-only, take over lives there');
 });
 
 test('every key in the key bar is on the server allowlist', () => {
@@ -341,7 +341,7 @@ test('notifications: one switch per device, disabled with a reason over plain ht
   assert.strictEqual(sessionFromUrl('https://hub.example.test/'), null);
   const app = read('app.js');
   assert.match(app, /role: 'switch'/);
-  assert.match(app, /disabled: !supported/);
+  assert.match(app, /inert\(sw, supported \? null : `Notifications \$\{PUSH_UNAVAILABLE\}\.`\)/);
   assert.match(app, /text: supported \? `Get a notification when a session on [^`]*` : PUSH_UNAVAILABLE/);
 });
 
@@ -450,4 +450,13 @@ test('a long wait reads as stale, and chat never opens blank', async () => {
   assert.match(app, /text: 'Loading conversation…'/);
   assert.match(app, /keyOf\(currentItem\(\) \|\| \{\}\) !== key/, 'compared by key, not by object');
   assert.match(app, /Could not load the conversation/);
+});
+
+test('take over lives on the read-only session screen; unavailable controls say why when tapped', () => {
+  const app = read('app.js');
+  assert.ok(!/text: 'Take over'/.test(app), 'no take-over buttons in lists');
+  assert.match(read('index.html'), /<button type="button" id="takeover-here" class="primary">Take over…<\/button>/);
+  assert.ok(!/\.disabled = /.test(app), 'controls are never silently disabled');
+  assert.match(app, /setAttribute\('aria-disabled', 'true'\)/);
+  assert.match(app, /if \(explainIfInert\(e\.currentTarget\)\) return;/);
 });

@@ -99,6 +99,7 @@ button {
   touch-action: manipulation;
 }
 
+[aria-disabled="true"],
 button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -501,6 +502,10 @@ h3 {
 }
 
 .readonly-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 10px 14px;
   font-size: 13px;
   color: var(--warn);

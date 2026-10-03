@@ -482,7 +482,6 @@ function renderSearch(items) {
   if (!items.length) list.append(el('li', { class: 'muted pane-pad', text: 'No session matches every word.' }));
   for (const hit of items) {
     const actions = [];
-    if (hit.running === 'terminal' && hit.pid) actions.push(el('button', { type: 'button', class: 'secondary', text: 'Take over', onclick: (e) => (e.stopPropagation(), prepareTakeover(hit.pid)) }));
     const open = () => openHit(hit);
     const snippet = el('div', { class: 'row-snippet' }, highlightParts(hit.snippet, search.query).map((p) => (p.hit ? el('mark', { class: 'hit', text: p.text }) : document.createTextNode(p.text))));
     list.append(
@@ -513,10 +512,10 @@ function showResumeSheet(hit) {
   const dl = el('dl', { class: 'facts' }, rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]));
   const go = el('button', { type: 'button', class: 'primary', text: 'Resume here' });
   go.addEventListener('click', async () => {
-    go.disabled = true;
+    setBusy(go, true);
     const ack = await request({ t: 'new', id: newId('n'), resumeId: hit.sessionId });
     if (!ack.ok) {
-      go.disabled = false;
+      setBusy(go, false);
       return toast(errorText(ack.error));
     }
     closeSheet();
@@ -573,10 +572,8 @@ function sessionRow(s) {
     r.badge = el('span');
     r.when = el('span', { class: 'when' });
     r.prompt = el('div', { class: 'row-prompt' });
-    r.takeover = el('button', { type: 'button', class: 'secondary', text: 'Take over', onclick: (e) => (e.stopPropagation(), prepareTakeover(r.item.pid)) });
     r.li = el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
       el('div', { class: 'row-main' }, [el('div', { class: 'row-title' }, [r.dot, r.star, r.name, r.pill]), el('div', { class: 'row-meta' }, [r.project, r.badge, r.when]), r.prompt]),
-      el('div', { class: 'row-actions' }, [r.takeover]),
     ]);
     rowNodes.set(key, r);
   }
@@ -598,7 +595,6 @@ function sessionRow(s) {
   setAttr(r.when, 'title', absoluteTime(s.lastActivity) || null);
   setText(r.prompt, s.lastPrompt || '');
   r.prompt.hidden = !s.lastPrompt;
-  r.takeover.hidden = !(!s.managed && s.pid);
   r.used = true;
   return r.li;
 }
@@ -681,11 +677,38 @@ function renderStatus() {
   ind.replaceChildren(s.status === 'busy' ? el('span', { class: 'spinner' }) : '');
   text.textContent = s.status === 'busy' ? 'working…' : s.status === 'waiting' ? `waiting for you${s.waitingFor ? `: ${s.waitingFor}` : ''}` : s.status === 'idle' ? 'idle' : 'no Claude process detected';
   const managed = Boolean(s.managed);
-  $('tab-terminal').disabled = !managed;
+  inert($('tab-terminal'), managed ? null : 'This session runs in a terminal on the Mac. Take it over to see and steer its screen here.');
   $('readonly-note').hidden = managed;
   $('input-bar').hidden = !managed;
   $('keybar').hidden = !managed;
-  $('tab-chat').disabled = !s.sessionId;
+  inert($('tab-chat'), s.sessionId ? null : 'The conversation appears once Claude has started in this session.');
+}
+
+function setBusy(button, on) {
+  if (on) {
+    button.dataset.label = button.textContent;
+    button.textContent = 'Working…';
+  } else if (button.dataset.label) {
+    button.textContent = button.dataset.label;
+  }
+  button.setAttribute('aria-busy', String(on));
+  button['disabled'] = on;
+}
+
+function inert(node, reason) {
+  if (reason) {
+    node.setAttribute('aria-disabled', 'true');
+    node.dataset.reason = reason;
+  } else {
+    node.removeAttribute('aria-disabled');
+    delete node.dataset.reason;
+  }
+}
+
+function explainIfInert(node) {
+  if (node.getAttribute('aria-disabled') !== 'true') return false;
+  toast(node.dataset.reason || 'Not available right now.');
+  return true;
 }
 
 function renderSize() {
@@ -1086,11 +1109,14 @@ function showNewSession() {
   const rand = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, '0')).join('');
   const name = el('input', { value: `cc-${rand}`, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', pattern: 'cc-[a-z0-9\\-]{1,40}', required: true });
   const dir = el('input', { value: state.defaultDir, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
-  const resume = el('input', { placeholder: 'optional session UUID', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
-  const form = el('form', { class: 'stack' }, [field('Name', name), field('Directory', dir), field('Resume session', resume), el('button', { type: 'submit', class: 'primary', text: 'Start' })]);
+  const start = el('button', { type: 'submit', class: 'primary', text: 'Start' });
+  const form = el('form', { class: 'stack' }, [field('Name', name), field('Directory', dir), el('p', { class: 'muted small', text: 'To continue an earlier session, search for it and choose Resume here.' }), start]);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const ack = await request({ t: 'new', id: newId('n'), name: name.value.trim(), dir: dir.value.trim(), resumeId: resume.value.trim() || undefined });
+    if (start.getAttribute('aria-busy') === 'true') return undefined;
+    setBusy(start, true);
+    const ack = await request({ t: 'new', id: newId('n'), name: name.value.trim(), dir: dir.value.trim() });
+    setBusy(start, false);
     if (!ack.ok) return toast(errorText(ack.error));
     closeSheet();
     conn.send({ t: 'list' });
@@ -1118,10 +1144,10 @@ function showTakeoverSheet(info) {
   const note = el('p', { class: 'muted', text: 'The running process gets SIGTERM, then the session resumes under the service with the same id. Unsent input in its terminal is lost.' });
   let force = false;
   confirm.addEventListener('click', async () => {
-    confirm.disabled = true;
+    setBusy(confirm, true);
     const ack = await request({ t: 'takeover', id: newId('t'), token: info.token, ...(force ? { force: true } : {}) });
     if (!ack.ok) {
-      confirm.disabled = false;
+      setBusy(confirm, false);
       if (ack.error === 'still-running' && !force) {
         force = true;
         note.textContent = 'The process ignored the stop request. Force it with SIGKILL? Anything it has not saved is lost. The process is checked again before the kill.';
@@ -1146,7 +1172,7 @@ function renderPushSwitch() {
   if (!sw) return;
   sw.setAttribute('aria-checked', String(push.subscribed));
   sw.textContent = push.busy ? 'Working…' : push.subscribed ? 'On' : 'Off';
-  sw.disabled = !pushSupported() || push.busy;
+  inert(sw, !pushSupported() ? `Notifications ${PUSH_UNAVAILABLE}.` : push.busy ? 'Waiting for the hub to answer.' : null);
 }
 
 async function onPushMessage(m) {
@@ -1210,7 +1236,8 @@ async function resyncPush() {
 
 function pushRow() {
   const supported = pushSupported();
-  const sw = el('button', { type: 'button', id: 'push-switch', class: 'switch', role: 'switch', 'aria-checked': 'false', disabled: !supported, text: 'Off', onclick: togglePush });
+  const sw = el('button', { type: 'button', id: 'push-switch', class: 'switch', role: 'switch', 'aria-checked': 'false', text: 'Off', onclick: (e) => !explainIfInert(e.currentTarget) && togglePush() });
+  inert(sw, supported ? null : `Notifications ${PUSH_UNAVAILABLE}.`);
   if (supported) hosts[0].send({ t: 'pushKey' });
   return el('div', { class: 'stack' }, [
     el('h3', { text: 'Notifications' }),
@@ -1341,12 +1368,18 @@ function init() {
   });
   $('session-search').addEventListener('keydown', (e) => e.key === 'Escape' && clearSearch());
   $('sheet-backdrop').addEventListener('click', closeSheet);
-  $('tab-terminal').addEventListener('click', () => {
+  $('takeover-here').addEventListener('click', () => {
+    const s = currentItem();
+    if (s && s.pid) prepareTakeover(s.pid);
+  });
+  $('tab-terminal').addEventListener('click', (e) => {
+    if (explainIfInert(e.currentTarget)) return;
     unmountChat();
     setTab('terminal');
     subscribe();
   });
-  $('tab-chat').addEventListener('click', () => {
+  $('tab-chat').addEventListener('click', (e) => {
+    if (explainIfInert(e.currentTarget)) return;
     setTab('chat');
     mountChat();
   });
