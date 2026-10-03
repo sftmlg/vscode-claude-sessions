@@ -31,6 +31,7 @@
   </header>
 
   <nav id="host-tabs" class="host-tabs" role="tablist" aria-label="Macs" hidden></nav>
+  <div id="device-banner" class="device-banner" role="status" hidden></div>
   <div id="health-banner" class="health-banner" role="alert" hidden></div>
   <main id="main">
     <section id="view-pair" class="view pane-pad" hidden>
@@ -88,11 +89,13 @@
         <button type="button" data-key="BTab">⇧Tab</button>
         <button type="button" data-key="Enter">Enter</button>
         <button type="button" data-key="C-c">^C</button>
-        <button type="button" data-key="1">1</button>
-        <button type="button" data-key="2">2</button>
-        <button type="button" data-key="3">3</button>
-        <button type="button" data-key="y">y</button>
-        <button type="button" data-key="n">n</button>
+        <details class="keys-more"><summary>More</summary>
+          <button type="button" data-key="1">1</button>
+          <button type="button" data-key="2">2</button>
+          <button type="button" data-key="3">3</button>
+          <button type="button" data-key="y">y</button>
+          <button type="button" data-key="n">n</button>
+        </details>
       </div>
       <button type="button" id="suggestion" class="suggestion" hidden><span class="suggestion-label">Use suggestion</span><span id="suggestion-text" class="suggestion-text"></span></button>
       <form id="input-bar" class="input-bar">

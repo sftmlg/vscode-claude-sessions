@@ -361,10 +361,13 @@ function onBackground(c, data) {
     setToken(c, m.token);
   } else if (m.t === 'sessions') {
     c.sessions = Array.isArray(m.items) ? m.items : [];
+    c.listAt = Date.now();
   } else if (m.t === 'status') {
     for (const s of c.sessions) if (keyOf(s) === m.sessionId || s.sessionId === m.sessionId) Object.assign(s, { status: m.status, waitingFor: m.waitingFor });
   } else if (m.t === 'health') {
     c.health = m;
+  } else if (m.t === 'deviceAdded') {
+    showDeviceAdded(m);
   } else if (m.t === 'ack') {
     c.sender.onAck(m);
   } else if ((m.t === 'pushKey' || m.t === 'pushState') && c === hosts[0]) {
@@ -398,7 +401,8 @@ function renderHealth(health) {
 function setConn(kind) {
   const c = $('conn');
   c.className = `conn conn-${kind}`;
-  $('conn-text').textContent = kind === 'online' ? 'live' : kind;
+  const at = conn && conn.listAt ? new Date(conn.listAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '';
+  $('conn-text').textContent = kind === 'online' ? 'live' : kind === 'offline' && at ? `offline · list from ${at}` : kind;
 }
 
 const outbox = new Outbox();
@@ -863,6 +867,8 @@ function onJson(data) {
     case 'pushKey':
     case 'pushState':
       return onPushMessage(m);
+    case 'deviceAdded':
+      return showDeviceAdded(m);
     case 'searchResults':
       if (m.id === search.id) renderSearch(Array.isArray(m.items) ? m.items : []);
       return undefined;
@@ -895,6 +901,7 @@ function onJson(data) {
       return undefined;
     case 'sessions':
       conn.sessions = Array.isArray(m.items) ? m.items : [];
+      conn.listAt = Date.now();
       state.sessions = conn.sessions;
       renderHostTabs();
       renderList();
@@ -1323,7 +1330,7 @@ function renderDevices(items) {
           onCancel: showSettings,
         }),
       );
-      return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}`, title: absoluteTime(d.lastSeen) || undefined })]), revoke]);
+      return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}${d.node ? ` · from ${d.node}` : ''}`, title: absoluteTime(d.lastSeen) || undefined })]), revoke]);
     }),
   );
 }
@@ -1334,16 +1341,37 @@ function showPair() {
   $('pair-wait').hidden = true;
   const name = $('device-name');
   if (!name.value) name.value = defaultDeviceName();
+  name.select();
 }
 
 function defaultDeviceName() {
   const ua = navigator.userAgent;
-  if (host) return 'VS Code';
-  if (/iPhone/.test(ua)) return 'iPhone';
-  if (/iPad/.test(ua)) return 'iPad';
-  if (/Android/.test(ua)) return 'Android phone';
-  if (/Macintosh/.test(ua)) return 'Mac browser';
-  return 'Browser';
+  const base = host ? 'VS Code' : /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android phone' : /Macintosh/.test(ua) ? 'Mac browser' : 'Browser';
+  const stamp = new Date().toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  return `${base} · ${stamp}`;
+}
+
+function showDeviceAdded(m) {
+  if (!m.device || (state.device && m.device.id === state.device.id)) return;
+  const banner = $('device-banner');
+  const name = m.device.name || 'A device';
+  const node = m.node || m.device.node || '';
+  const revoke = el('button', { type: 'button', class: 'secondary', text: 'Revoke' });
+  revoke.addEventListener('click', () =>
+    confirmSheet({
+      title: 'Revoke this device?',
+      text: `${name} loses access at once and has to be paired again to come back.`,
+      action: 'Revoke',
+      onConfirm: () => {
+        conn.send({ t: 'revoke', deviceId: m.device.id });
+        closeSheet();
+        banner.hidden = true;
+      },
+    }),
+  );
+  const dismiss = el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dismiss', text: '×', onclick: () => (banner.hidden = true) });
+  banner.replaceChildren(el('span', { text: `New device paired: ${name}${node ? ` (${node})` : ''}` }), revoke, dismiss);
+  banner.hidden = false;
 }
 
 function setImmersive(on) {
@@ -1365,6 +1393,33 @@ function setupImmersive() {
   });
 }
 
+function setupShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || $('sheet').open) return;
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
+    if (typing) return;
+    if (e.key === '?') {
+      e.preventDefault();
+      openSheet('Keyboard shortcuts', el('dl', { class: 'facts' }, [['J / K', 'Next / previous session'], ['Enter', 'Open the focused session'], ['/', 'Search'], ['Esc', 'Close a sheet'], ['⌘/Ctrl + Enter', 'Send the message'], ['?', 'This list']].flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })])));
+      return;
+    }
+    if (document.body.dataset.view !== 'list') return;
+    if (e.key === '/') {
+      e.preventDefault();
+      $('session-search').focus();
+      return;
+    }
+    if (e.key === 'j' || e.key === 'k') {
+      const rows = [...document.querySelectorAll('#session-list .session-row, #search-results .session-row')].filter((r) => r.offsetParent);
+      if (!rows.length) return;
+      const at = rows.indexOf(document.activeElement);
+      const next = at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + (e.key === 'j' ? 1 : -1)));
+      rows[next].focus();
+      e.preventDefault();
+    }
+  });
+}
+
 function setupViewport() {
   const root = document.documentElement;
   const vv = window.visualViewport;
@@ -1381,6 +1436,8 @@ function setupViewport() {
 function init() {
   setupViewport();
   setupImmersive();
+  setupShortcuts();
+  if (window.matchMedia('(max-width: 600px)').matches) $('session-search').placeholder = 'Search';
   input = setupInput({ form: $('input-bar'), textarea: $('input'), badge: $('outbox-badge'), keybar: $('keybar'), outbox, isTouch, onSubmit: submitText, onKey: sendKey, onChange: saveDraft });
   $('suggestion').addEventListener('click', () => {
     const suggestion = $('suggestion').dataset.text;

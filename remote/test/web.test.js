@@ -483,3 +483,17 @@ test('the open session lives in the URL: host and key, back returns to the list'
   assert.match(app, /addEventListener\('popstate'/);
   assert.match(app, /if \(history\.state && history\.state\.session\) history\.back\(\);/);
 });
+
+test('device names carry date and origin, new devices are announced, small screens and keyboards are served', () => {
+  const app = read('app.js');
+  const html = read('index.html');
+  assert.match(app, /\$\{base\} · \$\{stamp\}/, 'auto device names get a date');
+  assert.match(app, /case 'deviceAdded':/);
+  assert.match(app, /`New device paired: \$\{name\}\$\{node \? ` \(\$\{node\}\)` : ''\}`/);
+  assert.match(html, /<div id="device-banner" class="device-banner" role="status" hidden><\/div>/);
+  assert.match(app, /'Search'/, 'short search placeholder on phones');
+  assert.match(app, /`offline · list from \$\{/);
+  assert.match(app, /e\.key === 'j'/);
+  assert.match(app, /e\.key === '\?'/);
+  assert.match(html, /<details class="keys-more"><summary>More<\/summary>/);
+});

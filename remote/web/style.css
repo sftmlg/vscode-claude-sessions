@@ -751,6 +751,41 @@ h3 {
   text-align: center;
 }
 
+.device-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.device-banner > span {
+  flex: 1;
+}
+
+.keys-more {
+  display: inline-flex;
+  flex: none;
+}
+
+.keys-more > summary {
+  list-style: none;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  font: 13px var(--mono);
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.keys-more[open] {
+  gap: 4px;
+}
+
 .health-banner {
   padding: 8px 12px;
   font-size: 13px;
