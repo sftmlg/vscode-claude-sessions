@@ -460,3 +460,14 @@ test('take over lives on the read-only session screen; unavailable controls say 
   assert.match(app, /setAttribute\('aria-disabled', 'true'\)/);
   assert.match(app, /if \(explainIfInert\(e\.currentTarget\)\) return;/);
 });
+
+test('sheets are modal dialogs; take over shows names first and internals on request; revoke states its consequence', () => {
+  const app = read('app.js');
+  assert.match(read('index.html'), /<dialog id="sheet" class="sheet" aria-labelledby="sheet-title"><\/dialog>/);
+  assert.ok(!/sheet-backdrop/.test(read('index.html') + app), 'the dialog backdrop replaces the old overlay');
+  assert.match(app, /sheet\.showModal\(\)/);
+  assert.match(app, /el\('details', \{ class: 'facts-more' \}, \[el\('summary', \{ text: 'Details' \}\)/);
+  assert.ok(!/SIGTERM/.test(app.slice(app.indexOf('function showTakeoverSheet'), app.indexOf('function showSettings'))), 'no process jargon in the sheet text');
+  assert.match(app, /loses access at once and has to be paired again/);
+  assert.ok(!/Tap again to revoke/.test(app));
+});

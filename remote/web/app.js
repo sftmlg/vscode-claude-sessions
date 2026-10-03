@@ -1090,15 +1090,21 @@ function unmountChat() {
 
 function openSheet(title, body) {
   const sheet = $('sheet');
-  sheet.replaceChildren(el('div', { class: 'sheet-head' }, [el('h2', { text: title }), el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', text: '×', onclick: closeSheet })]), body);
-  sheet.hidden = false;
-  $('sheet-backdrop').hidden = false;
+  sheet.replaceChildren(el('div', { class: 'sheet-head' }, [el('h2', { id: 'sheet-title', text: title }), el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', text: '×', onclick: closeSheet })]), body);
+  if (!sheet.open) sheet.showModal();
 }
 
 function closeSheet() {
-  $('sheet').hidden = true;
-  $('sheet-backdrop').hidden = true;
-  $('sheet').replaceChildren();
+  const sheet = $('sheet');
+  if (sheet.open) sheet.close();
+  sheet.replaceChildren();
+}
+
+function confirmSheet({ title, text, action, onConfirm, onCancel }) {
+  const go = el('button', { type: 'button', class: 'danger', text: action });
+  const cancel = el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: () => (onCancel ? onCancel() : closeSheet()) });
+  go.addEventListener('click', () => onConfirm());
+  openSheet(title, el('div', { class: 'stack' }, [el('p', { text }), el('div', { class: 'row-form' }, [cancel, go])]));
 }
 
 function field(label, input) {
@@ -1131,17 +1137,20 @@ function prepareTakeover(pid) {
 }
 
 function showTakeoverSheet(info) {
+  const item = state.sessions.find((x) => x.pid === info.pid) || {};
   const rows = [
-    ['Session', info.title || info.sessionId],
-    ['Process id', String(info.pid)],
-    ['Terminal', info.tty || '—'],
-    ['Directory', info.cwd || '—'],
-    ['Account slot', info.slot || '—'],
-    ['New name', info.name],
+    ['Session', info.title || item.title || 'Untitled session'],
+    ['Project', item.project || basename(info.cwd) || '—'],
+    ['State', info.status || item.status || '—'],
+    ['Name here', info.name],
   ];
-  const dl = el('dl', { class: 'facts' }, rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]));
+  const facts = (list) => el('dl', { class: 'facts' }, list.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]));
+  const dl = el('div', { class: 'stack' }, [
+    facts(rows),
+    el('details', { class: 'facts-more' }, [el('summary', { text: 'Details' }), facts([['Process id', String(info.pid)], ['Terminal', info.tty || '—'], ['Directory', info.cwd || '—'], ['Account slot', info.slot || '—'], ['Session id', info.sessionId || '—']])]),
+  ]);
   const confirm = el('button', { type: 'button', class: 'danger', text: 'Stop it and resume here' });
-  const note = el('p', { class: 'muted', text: 'The running process gets SIGTERM, then the session resumes under the service with the same id. Unsent input in its terminal is lost.' });
+  const note = el('p', { class: 'muted', text: 'This stops Claude in that terminal on the Mac and continues the same conversation here. Anything typed there but not sent is lost.' });
   let force = false;
   confirm.addEventListener('click', async () => {
     setBusy(confirm, true);
@@ -1283,12 +1292,18 @@ function renderDevices(items) {
     ...items.map((d) => {
       const self = state.device && d.id === state.device.id;
       const revoke = el('button', { type: 'button', class: 'secondary', text: self ? 'Revoke (this device)' : 'Revoke' });
-      revoke.addEventListener('click', () => {
-        if (revoke.dataset.armed) return conn.send({ t: 'revoke', deviceId: d.id });
-        revoke.dataset.armed = '1';
-        revoke.textContent = 'Tap again to revoke';
-        return undefined;
-      });
+      revoke.addEventListener('click', () =>
+        confirmSheet({
+          title: 'Revoke this device?',
+          text: `${d.name} loses access at once and has to be paired again to come back.${self ? ' This is the device you are using now.' : ''}`,
+          action: 'Revoke',
+          onConfirm: () => {
+            conn.send({ t: 'revoke', deviceId: d.id });
+            showSettings();
+          },
+          onCancel: showSettings,
+        }),
+      );
       return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}`, title: absoluteTime(d.lastSeen) || undefined })]), revoke]);
     }),
   );
@@ -1367,7 +1382,9 @@ function init() {
     renderList();
   });
   $('session-search').addEventListener('keydown', (e) => e.key === 'Escape' && clearSearch());
-  $('sheet-backdrop').addEventListener('click', closeSheet);
+  $('sheet').addEventListener('click', (e) => {
+    if (e.target === $('sheet')) closeSheet();
+  });
   $('takeover-here').addEventListener('click', () => {
     const s = currentItem();
     if (s && s.pid) prepareTakeover(s.pid);
