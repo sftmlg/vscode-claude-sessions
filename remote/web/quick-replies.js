@@ -1,28 +1,51 @@
-const OPTION_RE = /^\s*(?:[❯›>]\s*)?([1-9])[.)]\s+(.+?)\s*$/;
+const OPTION_RE = /^(\s*)(?:([❯›>])\s*)?([1-9])[.)]\s+(.+?)\s*$/;
 const ESC_RE = /\(esc\)|\besc to (?:cancel|close|go back)\b/i;
 const MAX_LABEL = 60;
 
+const unbox = (line) => String(line || '').replace(/^\s*[│|]/, ' ').replace(/[│|]\s*$/, '').replace(/\s+$/, '');
+const indentOf = (line) => line.length - line.trimStart().length;
+
+function shorten(text) {
+  return text.length > MAX_LABEL ? `${text.slice(0, MAX_LABEL - 1)}…` : text;
+}
+
 export function parseOptions(lines) {
-  const visible = (Array.isArray(lines) ? lines : []).map((l) => String(l || ''));
-  let block = [];
-  let best = [];
+  const visible = (Array.isArray(lines) ? lines : []).map(unbox);
+  const blocks = [];
+  let block = null;
+  const close = () => {
+    if (block && block.options.length >= 2) blocks.push(block);
+    block = null;
+  };
   for (const line of visible) {
     const m = OPTION_RE.exec(line);
     if (m) {
-      const n = Number(m[1]);
-      if (block.length && n !== block[block.length - 1].n + 1) block = [];
-      if (!block.length && n !== 1) continue;
-      block.push({ n, text: m[2] });
-      if (block.length >= 2) best = block.slice();
-    } else if (line.trim()) {
-      block = [];
+      const n = Number(m[3]);
+      const column = m[1].length + (m[2] ? line.slice(m[1].length).indexOf(m[3]) : 0);
+      if (block && n === block.options[block.options.length - 1].n + 1) block.options.push({ n, text: m[4], detail: [], column });
+      else {
+        close();
+        if (n === 1) block = { options: [{ n, text: m[4], detail: [], column }], cursor: false };
+      }
+      if (block && m[2]) block.cursor = true;
+    } else if (!line.trim()) {
+      continue;
+    } else if (block && indentOf(line) > block.options[block.options.length - 1].column) {
+      block.options[block.options.length - 1].detail.push(line.trim());
+    } else {
+      close();
     }
   }
-  const options = best.map(({ n, text }) => {
+  close();
+  const chosen = blocks.filter((b) => b.cursor).pop();
+  if (!chosen) return [];
+  const options = chosen.options.map(({ n, text, detail }) => {
     const plain = text.replace(/\s*\(esc\)\s*$/i, '').trim();
-    return { key: String(n), label: plain.length > MAX_LABEL ? `${plain.slice(0, MAX_LABEL - 1)}…` : plain };
+    const option = { key: String(n), label: shorten(plain) };
+    if (detail.length) option.detail = detail.join(' ');
+    return option;
   });
-  if (options.length && visible.some((l) => ESC_RE.test(l))) options.push({ key: 'Escape', label: 'Cancel (Esc)' });
+  if (visible.some((l) => ESC_RE.test(l))) options.push({ key: 'Escape', label: 'Cancel (Esc)' });
   return options;
 }
 

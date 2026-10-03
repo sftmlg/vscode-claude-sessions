@@ -364,3 +364,34 @@ test('home-screen app and fullscreen: PNG icons, standalone manifest, an immersi
   assert.match(app, /addEventListener\('fullscreenchange'/, 'leaving browser fullscreen leaves immersive mode too');
   assert.match(app, /display-mode: standalone/);
 });
+
+test('quick replies: only the block with the cursor counts; wrapped and description lines stay with their option', async () => {
+  const { parseOptions } = await import(path.join(WEB, 'quick-replies.js'));
+  const planAndDialog = [
+    'Plan:',
+    '1. Update the parser',
+    '2. Add tests',
+    '3. Ship it',
+    '',
+    ' Do you want to make this edit to quick-replies.js?',
+    ' ❯ 1. Yes',
+    '   2. Yes, allow all edits during this session (shift+tab)',
+    '      and keep going',
+    '   3. No, and tell Claude what to do differently (esc)',
+  ];
+  const options = parseOptions(planAndDialog);
+  assert.deepStrictEqual(options.map((o) => o.key), ['1', '2', '3', 'Escape']);
+  assert.strictEqual(options[0].label, 'Yes');
+  assert.strictEqual(options[1].label, 'Yes, allow all edits during this session (shift+tab)');
+  assert.strictEqual(options[1].detail, 'and keep going');
+  const question = [
+    '│ Which colour should the chart use?            │',
+    '│ ❯ 1. Blue                                      │',
+    '│      Calm and readable                         │',
+    '│   2. Green                                     │',
+    '│      Matches the brand                         │',
+    '│   3. Type something.                           │',
+  ];
+  assert.deepStrictEqual(parseOptions(question).map((o) => [o.key, o.label, o.detail || '']), [['1', 'Blue', 'Calm and readable'], ['2', 'Green', 'Matches the brand'], ['3', 'Type something.', '']]);
+  assert.deepStrictEqual(parseOptions(planAndDialog.slice(0, 4)), [], 'a numbered list without the cursor is not a dialog');
+});

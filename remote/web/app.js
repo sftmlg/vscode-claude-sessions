@@ -648,7 +648,7 @@ function renderQuickReplies() {
   if (!s || s.status !== 'waiting') bar.replaceChildren();
   bar.hidden = !options.length;
   if (!options.length) return;
-  bar.replaceChildren(...options.map((o) => el('button', { type: 'button', class: 'quick-reply', title: `Sends the key ${o.key === 'Escape' ? 'Esc' : o.key}`, text: o.key === 'Escape' ? o.label : `${o.key}  ${o.label}`, onclick: () => sendKey(o.key) })));
+  bar.replaceChildren(...options.map((o) => el('button', { type: 'button', class: 'quick-reply', title: `${o.detail ? `${o.label}: ${o.detail}. ` : ''}Sends the key ${o.key === 'Escape' ? 'Esc' : o.key}`, text: o.key === 'Escape' ? o.label : `${o.key}  ${o.label}`, onclick: () => sendKey(o.key) })));
 }
 
 function markSeen(s) {
