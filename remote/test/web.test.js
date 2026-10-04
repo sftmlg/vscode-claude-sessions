@@ -455,6 +455,7 @@ test('a long wait reads as stale, and chat never opens blank', async () => {
 test('every session has the message box; the live screen follows the first message; unavailable controls say why when tapped', () => {
   const app = read('app.js');
   assert.match(app, /\$\('input-bar'\)\.hidden = !managed && !s\.sessionId;/);
+  assert.match(app, /outbox\.pending\(conn\.id\)\.some\(\(i\) => i\.sessionId === keyOf\(s\)\)\) text\.textContent = 'sending…'/, 'between the first message and the live screen the status says sending, never not running');
   assert.match(app, /function followContinued\(\)[\s\S]{0,400}state\.tab = 'terminal';\n  openSession\(live\.name, \{ replace: true \}\);/, 'once the hub runs it, the terminal streams');
   assert.ok(!/\.disabled = /.test(app), 'controls are never silently disabled');
   assert.match(app, /setAttribute\('aria-disabled', 'true'\)/);

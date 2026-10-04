@@ -716,6 +716,7 @@ function renderStatus() {
   ind.replaceChildren(s.status === 'busy' ? el('span', { class: 'spinner' }) : '');
   text.textContent = s.status === 'busy' ? 'working…' : s.status === 'waiting' ? `waiting for you${s.waitingFor ? `: ${s.waitingFor}` : ''}` : s.status === 'idle' ? 'idle' : s.status === 'none' ? 'not running · write to continue' : 'no Claude process detected';
   const managed = Boolean(s.managed);
+  if (!managed && outbox.pending(conn.id).some((i) => i.sessionId === keyOf(s))) text.textContent = 'sending…';
   inert($('tab-terminal'), managed ? null : 'The live screen appears here as soon as you send a message.');
   $('input-bar').hidden = !managed && !s.sessionId;
   $('keybar').hidden = !managed;
@@ -1061,6 +1062,7 @@ function submitText(text) {
   drafts.clear(conn.id, keyOf(s));
   if (conn.authed) conn.sender.pump();
   else toast('Offline: queued, sends when online.');
+  renderStatus();
   return true;
 }
 
