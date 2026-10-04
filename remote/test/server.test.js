@@ -465,7 +465,7 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await waitFor(() => c.json.some((m) => m.t === 'ack' && m.id === limited[0].id && m.ok), { what: 'retry accepted' });
   });
 
-  await t.test('a second client resumes with its token; unmanaged sessions are read-only', async () => {
+  await t.test('a second client resumes with its token; a message to a session in a terminal continues it here', async () => {
     const other = (await import('child_process')).spawn('sleep', ['30'], { stdio: 'ignore' });
     t.after(() => other.kill('SIGKILL'));
     const OUT = '9a9b9c9d-1111-4222-8333-444455556666';
@@ -476,13 +476,17 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await d.wait((m) => m.t === 'helloOk');
     await d.wait((m) => m.t === 'sessions' && m.items.some((i) => i.sessionId === OUT && !i.managed), 'unmanaged listed');
     d.send({ t: 'sub', sessionId: OUT, cols: 80, rows: 24 });
-    await d.wait((m) => m.t === 'error' && m.code === 'read-only', 'read-only');
-    d.send({ t: 'send', id: 'm-ro', sessionId: OUT, text: 'x' });
-    assert.strictEqual((await d.wait((m) => m.t === 'ack' && m.id === 'm-ro')).error, 'read-only');
-    d.send({ t: 'takeoverPrepare', pid: other.pid });
-    const info = await d.wait((m) => m.t === 'takeoverInfo', 'takeoverInfo');
-    assert.strictEqual(info.sessionId, OUT);
-    assert.strictEqual(info.name, 'cc-outside-task');
+    await d.wait((m) => m.t === 'error' && m.code === 'not-live', 'no screen before the first message');
+    const exited = new Promise((r) => other.once('exit', r));
+    d.send({ t: 'send', id: 'm-go', sessionId: OUT, text: 'carry on' });
+    await exited;
+    const { listSessions } = require('../tmux');
+    let pane;
+    await waitFor(async () => (pane = (await listSessions(ctx)).find((x) => x.name === 'cc-outside-task')), { what: 'continued under tmux' });
+    fs.writeFileSync(path.join(sessionsDir, `${pane.panePid}.json`), JSON.stringify({ pid: pane.panePid, sessionId: OUT, status: 'idle', cwd: work, procStart: 'p3' }));
+    const ack = await d.wait((m) => m.t === 'ack' && m.id === 'm-go', 'ack');
+    assert.deepStrictEqual([ack.ok, ack.name, ack.sessionId], [true, 'cc-outside-task', OUT]);
+    await waitFor(() => capture(ctx, 'cc-outside-task').includes('carry on'), { what: 'message typed into the continued session' });
   });
 
   await t.test('audit lines carry no message text and logs no token', async () => {

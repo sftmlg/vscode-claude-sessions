@@ -205,8 +205,12 @@ function countOccurrences(text, term) {
 }
 
 async function searchSessions(sessions, query) {
+  return (await scoredSearch(sessions, query)).map((x) => x.s);
+}
+
+async function scoredSearch(sessions, query) {
   const terms = foldText(query).split(/\s+/).filter(Boolean);
-  if (!terms.length) return sessions;
+  if (!terms.length) return sessions.map((s) => ({ s, score: 0 }));
   const scored = [];
   for (const s of sessions) {
     const m = s.meta || s;
@@ -225,7 +229,7 @@ async function searchSessions(sessions, query) {
     }
     if (all) scored.push({ s, score, recency: Date.parse(m.lastActivity || 0) || 0 });
   }
-  return scored.sort((a, b) => b.score - a.score || b.recency - a.recency).map((x) => x.s);
+  return scored.sort((a, b) => b.score - a.score || b.recency - a.recency);
 }
 
 function searchFields(s) {
@@ -237,7 +241,7 @@ function searchFields(s) {
     [m.firstPrompt || '', 1],
     [(m.lastUser && m.lastUser.text) || '', 1],
     [(m.lastAssistant && m.lastAssistant.text) || '', 1],
-    [m.cwd ? path.basename(m.cwd) : '', 1],
+    [m.cwd || '', 2],
   ].map(([text, weight]) => [foldText(text), weight]);
 }
 
@@ -251,7 +255,8 @@ function snippetAround(text, terms) {
     if (foldText(text.slice(0, mid)).length <= found) lo = mid;
     else hi = mid - 1;
   }
-  return oneLine(text.slice(Math.max(0, lo - 30)), 120);
+  const from = lo > 30 ? text.lastIndexOf(' ', lo - 30) + 1 : 0;
+  return (from > 0 ? '…' : '') + oneLine(text.slice(from), 120);
 }
 
 function matchSnippet(s, query) {
@@ -643,4 +648,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { filesForSession, sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, conversationText, foldText, matchSnippet, deepSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { filesForSession, sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, scoredSearch, conversationText, foldText, matchSnippet, deepSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };

@@ -57,13 +57,11 @@ test('app code renders text only; only notify.js touches the service worker, beh
   assert.match(term, /noopener/);
 });
 
-test('phone fit, background release, subagent requests and forced takeover are wired', () => {
+test('phone fit, background release and subagent requests are wired', () => {
   const app = read('app.js');
   assert.match(app, /isTouch\(\) \|\| window\.innerWidth < 700/, 'auto-fit on touch or narrow screens');
   assert.match(app, /visibilityState === 'hidden'\) return releaseClaim\(true\)/, 'claim released in background');
   assert.match(app, /t: 'agentEvents', sessionId: id, toolUseId/, 'subagent events requested over the socket');
-  assert.match(app, /ack\.error === 'still-running' && !force/, 'SIGKILL only offered after an ignored SIGTERM');
-  assert.match(app, /\.\.\.\(force \? \{ force: true \} : \{\}\)/, 'force flag only on the second confirmation');
 });
 
 test('outbox sender: one message in flight, next only after its ack, a rate-limited retry stays first', async () => {
@@ -79,7 +77,7 @@ test('outbox sender: one message in flight, next only after its ack, a rate-limi
   sender.pump();
   sender.pump();
   assert.deepStrictEqual(sent, ['one']);
-  assert.deepStrictEqual(sender.onAck({ id: a.id, ok: false, error: 'rate-limited' }), { handled: true });
+  assert.deepStrictEqual(sender.onAck({ id: a.id, ok: false, error: 'rate-limited' }), { handled: true, later: 'rate-limited', first: true });
   box.add('cc-a', 'three');
   sender.pump();
   assert.deepStrictEqual(sent, ['one'], 'nothing overtakes the rate-limited head');
@@ -147,15 +145,15 @@ test('session list: sticky search, readable names, clear labels, resume of past 
   assert.match(html, /<ul id="search-results" class="session-list" hidden><\/ul>/);
   assert.match(read('style.css'), /\.list-toolbar \{[^}]*position: sticky/);
   assert.match(app, /SEARCH_DEBOUNCE_MS = 250/);
-  assert.match(app, /t: 'search', id, query, limit: SEARCH_LIMIT/);
+  assert.match(app, /hosts\.filter\(\(h\) => h\.authed && h\.send\(\{ t: 'search', id, query, limit: SEARCH_LIMIT \}\)\)/, 'every Mac is searched at once');
+  assert.match(app, /search\.answers\.get\(c\) \|\| localMatches\(c\)/, 'running sessions match while typing, before the hubs answer');
+  assert.match(read('style.css'), /\.list-toolbar \{[^}]*z-index: 5/, 'the search bar stays above the rows');
   assert.match(app, /el\('mark', \{ class: 'hit', text: p\.text \}\)/, 'hits rendered as separate text-only elements');
   assert.ok(!/'outside'/.test(app), 'the old label is gone');
-  assert.match(app, /text: 'in a terminal · read-only', title: 'Runs in a terminal tab on the Mac\. Take it over to steer it here\.'/);
-  assert.match(app, /text: 'remote', title: 'Runs in the service\. Steerable here\.'/);
+  assert.ok(!/read-only|Take over|take it over/i.test(app + read('index.html')), 'no ownership vocabulary: every session is just a conversation');
   assert.match(app, /s\.project \|\| basename\(s\.cwd\)/);
   assert.match(app, /setText\(r\.prompt, s\.lastPrompt \|\| ''\)/);
-  assert.match(app, /t: 'new', id: newId\('n'\), resumeId: hit\.sessionId \}/, 'resume sends only the session id; the server names it');
-  assert.match(app, /if \(hit\.running === 'terminal'\) return openSession\(hit\.sessionId\);/, 'a session in a terminal opens read-only, take over lives there');
+  assert.match(app, /rememberStub\(hit\);\n  return openSession\(hit\.sessionId\);/, 'any hit opens as a conversation; writing to it continues it');
 });
 
 test('every key in the key bar is on the server allowlist', () => {
@@ -209,7 +207,7 @@ test('one tab per host: own socket, own token per origin, peers from the first h
   assert.match(app, /host\.getToken\(c\.origin\)/, 'the editor bridge is asked per origin');
   assert.match(app, /if \(conn === hosts\[0\] && Array\.isArray\(m\.peers\)\) setPeers\(m\.peers\)/);
   assert.match(app, /if \(this !== conn\) return onBackground\(this, e\.data\)/, 'inactive hosts only update their list and badges');
-  assert.match(app, /outbox\.add\(s\.name, text, conn\.id\)/, 'queued messages go to the host they were typed for');
+  assert.match(app, /outbox\.add\(keyOf\(s\), text, conn\.id\)/, 'queued messages go to the host they were typed for');
   assert.match(read('vscode-bridge.js'), /getToken: \(origin\) => request\('getToken', \{ origin/);
 });
 
@@ -323,11 +321,13 @@ test('suggestion chip: only a dimmed prompt line counts as a suggestion', async 
   assert.match(app, /input\.fill\(suggestion\)/, 'a tap fills the input, it never sends');
 });
 
-test('stars from the editor show on rows and results; a star filter narrows the list', () => {
+test('stars from the editor show on rows and results; filters narrow the list', () => {
   const app = read('app.js');
-  assert.match(read('index.html'), /<button type="button" id="star-filter" class="chip" aria-pressed="false" title="Show only sessions starred in the editor">★ Starred<\/button>/);
+  const html = read('index.html');
+  for (const f of ['all', 'needs', 'working', 'starred']) assert.match(html, new RegExp(`data-filter="${f}"`));
   assert.match(app, /r\.star\.hidden = !s\.favorite;/);
-  assert.match(app, /const visible = starOnly \? state\.sessions\.filter\(\(s\) => s\.favorite\) : state\.sessions;/);
+  assert.match(app, /const visible = state\.sessions\.filter\(FILTERS\[listFilter\]\.test\);/);
+  assert.match(app, /starred: \{ test: \(s\) => s\.favorite/);
   assert.match(app, /hit\.favorite \? el\('span', \{ class: 'star'/);
 });
 
@@ -452,22 +452,20 @@ test('a long wait reads as stale, and chat never opens blank', async () => {
   assert.match(app, /Could not load the conversation/);
 });
 
-test('take over lives on the read-only session screen; unavailable controls say why when tapped', () => {
+test('every session has the message box; the live screen follows the first message; unavailable controls say why when tapped', () => {
   const app = read('app.js');
-  assert.ok(!/text: 'Take over'/.test(app), 'no take-over buttons in lists');
-  assert.match(read('index.html'), /<button type="button" id="takeover-here" class="primary">Take over…<\/button>/);
+  assert.match(app, /\$\('input-bar'\)\.hidden = !managed && !s\.sessionId;/);
+  assert.match(app, /function followContinued\(\)[\s\S]{0,400}state\.tab = 'terminal';\n  openSession\(live\.name, \{ replace: true \}\);/, 'once the hub runs it, the terminal streams');
   assert.ok(!/\.disabled = /.test(app), 'controls are never silently disabled');
   assert.match(app, /setAttribute\('aria-disabled', 'true'\)/);
   assert.match(app, /if \(explainIfInert\(e\.currentTarget\)\) return;/);
 });
 
-test('sheets are modal dialogs; take over shows names first and internals on request; revoke states its consequence', () => {
+test('sheets are modal dialogs; revoke states its consequence', () => {
   const app = read('app.js');
   assert.match(read('index.html'), /<dialog id="sheet" class="sheet" aria-labelledby="sheet-title"><\/dialog>/);
   assert.ok(!/sheet-backdrop/.test(read('index.html') + app), 'the dialog backdrop replaces the old overlay');
   assert.match(app, /sheet\.showModal\(\)/);
-  assert.match(app, /el\('details', \{ class: 'facts-more' \}, \[el\('summary', \{ text: 'Details' \}\)/);
-  assert.ok(!/SIGTERM/.test(app.slice(app.indexOf('function showTakeoverSheet'), app.indexOf('function showSettings'))), 'no process jargon in the sheet text');
   assert.match(app, /loses access at once and has to be paired again/);
   assert.ok(!/Tap again to revoke/.test(app));
 });

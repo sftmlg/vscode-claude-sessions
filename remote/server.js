@@ -7,7 +7,7 @@ const http = require('http');
 const path = require('path');
 const { WebSocketServer, WebSocket } = require('ws');
 const { loadConfig } = require('./config');
-const { Registry, UUID_RE } = require('./registry');
+const { Registry, UUID_RE, realUnder } = require('./registry');
 const { Mirror } = require('./mirror');
 const { Queue } = require('./queue');
 const tmux = require('./tmux');
@@ -381,13 +381,19 @@ async function start(config, deps = {}) {
   function sessionFor(key, { managed = false } = {}) {
     const item = typeof key === 'string' ? registry.resolve(key) : null;
     if (!item) throw Object.assign(new Error('Unknown session'), { code: 'not-found' });
-    if (managed && !item.managed) throw Object.assign(new Error('Session runs outside the service; take it over to steer it'), { code: 'read-only' });
+    if (managed && !item.managed) throw Object.assign(new Error('The live screen starts with the first message'), { code: 'not-live' });
     return item;
+  }
+
+  async function pastSession(key) {
+    if (typeof key !== 'string' || !UUID_RE.test(key)) return null;
+    const meta = await sessions.metaForSession(key).catch(() => null);
+    return meta && meta.cwd && (await realUnder(meta.cwd, config.roots)) ? { sessionId: key } : null;
   }
 
   async function transcriptFor(key, { allowMissing = false } = {}) {
     if (!transcript) throw Object.assign(new Error('Chat view is not available'), { code: 'unavailable' });
-    const item = sessionFor(key);
+    const item = registry.resolve(key) || (await pastSession(key)) || sessionFor(key);
     if (!item.sessionId || !UUID_RE.test(item.sessionId)) throw Object.assign(new Error('No transcript yet'), { code: 'not-found' });
     let file = item.transcriptPath && (await transcript.safeTranscriptPath(item.transcriptPath));
     if (!file) file = await transcript.resolveTranscript(item.sessionId);
@@ -529,21 +535,11 @@ async function start(config, deps = {}) {
       }
       case 'send':
       case 'key':
-      case 'new':
-      case 'takeover': {
+      case 'new': {
         if (!Queue.validId(msg.id)) return send({ t: 'error', code: 'bad-request', msg: 'id must match [A-Za-z0-9_-]{1,64}' });
         const ack = await queue.run(`${conn.device.id}:${msg.id}`, () => mutate(conn, msg));
         if (ack.error === 'busy-dialog') send({ t: 'error', code: 'busy-dialog', msg: 'Claude is showing a dialog; send one line or use the keys', sessionId: msg.sessionId });
-        return send({ t: 'ack', id: msg.id, ok: ack.ok, ...(ack.error ? { error: ack.error } : {}), ...(ack.name ? { name: ack.name } : {}) });
-      }
-      case 'takeoverPrepare': {
-        let info;
-        try {
-          info = await registry.prepareTakeover(msg.pid);
-        } catch (e) {
-          return send({ t: 'error', code: e.code || 'takeover-failed', msg: e.message, ref: 'takeoverPrepare' });
-        }
-        return send({ t: 'takeoverInfo', ...info });
+        return send({ t: 'ack', id: msg.id, ok: ack.ok, ...(ack.error ? { error: ack.error } : {}), ...(ack.name ? { name: ack.name } : {}), ...(ack.sessionId ? { sessionId: ack.sessionId } : {}) });
       }
       case 'events': {
         const { file } = await transcriptFor(msg.sessionId, { allowMissing: true });
@@ -647,8 +643,8 @@ async function start(config, deps = {}) {
     try {
       if (msg.t === 'send' || msg.t === 'key') {
         if (!allow(device.id)) return { ok: false, error: 'rate-limited', retry: true };
-        const item = sessionFor(msg.sessionId, { managed: true });
         if (msg.t === 'key') {
+          const item = sessionFor(msg.sessionId, { managed: true });
           if (!tmux.KEYS.has(msg.key)) return { ok: false, error: 'bad-key' };
           await serialized(item.name, () => tmux.sendKey(ctx, item.name, msg.key));
           audit('key', { device: device.id, session: item.name, key: msg.key });
@@ -658,16 +654,15 @@ async function start(config, deps = {}) {
         const text = tmux.stripControls(msg.text);
         if (!text.trim()) return { ok: false, error: 'empty' };
         if (text.length > MAX_TEXT) return { ok: false, error: 'too-long' };
+        let item = registry.resolve(msg.sessionId);
+        const continued = !item || !item.managed;
+        if (continued) item = await registry.continueSession(item ? item.sessionId : msg.sessionId, { device });
         if (item.status === 'waiting' && text.trim().includes('\n')) return { ok: false, error: 'busy-dialog' };
         await serialized(item.name, () => tmux.paste(ctx, item.name, msg.id, text));
         audit('send', { device: device.id, session: item.name, length: text.length });
-        return { ok: true };
+        return continued ? { ok: true, name: item.name, sessionId: item.sessionId } : { ok: true };
       }
-      if (msg.t === 'new') {
-        const r = await registry.newSession({ name: msg.name, dir: msg.dir, resumeId: msg.resumeId, title: msg.title }, { device });
-        return { ok: true, name: r.name };
-      }
-      const r = await registry.takeover(msg.token, { device, force: msg.force === true });
+      const r = await registry.newSession({ name: msg.name, dir: msg.dir, resumeId: msg.resumeId, title: msg.title }, { device });
       return { ok: true, name: r.name };
     } catch (e) {
       if (e.code && typeof e.code === 'string' && !/^E[A-Z]+$/.test(e.code)) return { ok: false, error: e.code };

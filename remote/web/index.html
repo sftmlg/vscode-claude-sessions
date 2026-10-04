@@ -51,8 +51,13 @@
 
     <section id="view-list" class="view" hidden>
       <div class="list-toolbar">
-        <input id="session-search" type="search" placeholder="Search names and conversations…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search sessions">
-        <button type="button" id="star-filter" class="chip" aria-pressed="false" title="Show only sessions starred in the editor">★ Starred</button>
+        <input id="session-search" type="search" placeholder="Search all sessions on all Macs…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search sessions">
+        <div id="list-filter" class="list-filter" role="group" aria-label="Show">
+          <button type="button" class="chip" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" class="chip" data-filter="needs" aria-pressed="false">Needs you</button>
+          <button type="button" class="chip" data-filter="working" aria-pressed="false">Working</button>
+          <button type="button" class="chip" data-filter="starred" aria-pressed="false" title="Sessions starred in the editor">★</button>
+        </div>
         <button type="button" id="new-session" class="primary">New session</button>
       </div>
       <ul id="search-results" class="session-list" hidden></ul>
@@ -77,7 +82,6 @@
       </div>
       <div id="term-pane" class="term-pane"><div id="term" class="term"></div></div>
       <div id="chat-pane" class="chat-pane" hidden></div>
-      <div id="readonly-note" class="readonly-note" hidden><span>This session runs in a terminal on the Mac and is read-only here.</span><button type="button" id="takeover-here" class="primary">Take over…</button></div>
       <div id="quick-replies" class="quick-replies" aria-label="Answers" hidden></div>
       <div id="keybar" class="keybar" aria-label="Keys">
         <button type="button" data-key="Escape">Esc</button>

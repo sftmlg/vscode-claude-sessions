@@ -170,7 +170,7 @@ test('snippets come from the matching passage, also deep inside the conversation
   assert.ok(deep.includes('für Müller are in the appendix'), deep);
   assert.ok(deep.length <= 120);
   assert.strictEqual(await deepSnippet(file, 'nowhere'), '');
-  assert.strictEqual(matchSnippet({ firstPrompt: `${'ü '.repeat(40)}Größe passt` }, 'groesse'), `${'ü '.repeat(15)}Größe passt`);
+  assert.strictEqual(matchSnippet({ firstPrompt: `${'ü '.repeat(40)}Größe passt` }, 'groesse'), `…${'ü '.repeat(15)}Größe passt`, 'starts at a word and marks the cut');
 });
 
 test('search folds case and umlauts', () => {

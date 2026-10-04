@@ -15,7 +15,7 @@ try {
 } catch {}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const TAKEOVER_TTL_MS = 60000;
+const READY_WAIT_MS = 45000;
 const EXIT_WAIT_MS = 10000;
 const META_TTL_MS = 15000;
 const STARTING_MS = 60000;
@@ -127,19 +127,19 @@ async function realUnder(dir, roots) {
 }
 
 class Registry extends EventEmitter {
-  constructor(config, { ctx, audit = () => {}, pollMs = 1000, exitWaitMs = EXIT_WAIT_MS, takeoverTtlMs = TAKEOVER_TTL_MS } = {}) {
+  constructor(config, { ctx, audit = () => {}, pollMs = 1000, exitWaitMs = EXIT_WAIT_MS, readyWaitMs = READY_WAIT_MS } = {}) {
     super();
     this.config = config;
     this.ctx = ctx || { socket: config.tmuxSocket, bin: config.tmuxPath, childPath: config.childPath };
     this.audit = audit;
     this.pollMs = pollMs;
     this.exitWaitMs = exitWaitMs;
-    this.takeoverTtlMs = takeoverTtlMs;
+    this.readyWaitMs = readyWaitMs;
     this.items = [];
     this.signature = '';
     this.statuses = new Map();
     this.meta = new Map();
-    this.tokens = new Map();
+    this.continuing = new Map();
     this.starting = new Map();
     this.refreshing = null;
     this.titlesFile = config.stateDir ? path.join(config.stateDir, 'titles.json') : null;
@@ -340,7 +340,7 @@ class Registry extends EventEmitter {
     const real = await realUnder(dir || this.config.defaultDir, this.config.roots);
     if (!real) throw new RegistryError('dir-not-allowed', 'Directory is not under a configured root');
     if (await tmux.hasSession(this.ctx, name)) throw new RegistryError('name-taken', `Session ${name} exists`);
-    if (resume && [...(await readPidRecords()).values()].some((r) => r.sessionId === resume)) throw new RegistryError('session-running', 'A running process holds this session; take it over instead');
+    if (resume && [...(await readPidRecords()).values()].some((r) => r.sessionId === resume)) throw new RegistryError('session-running', 'A running process holds this session');
     await tmux.newSession(this.ctx, { name, dir: real, argv: this.buildArgv(resume) });
     if (given) {
       this.titles.set(name, given);
@@ -362,59 +362,50 @@ class Registry extends EventEmitter {
     return `cc-${crypto.randomBytes(4).toString('hex')}`;
   }
 
-  async prepareTakeover(pid) {
-    pid = Number(pid);
-    if (!Number.isInteger(pid) || pid <= 1) throw new RegistryError('bad-pid');
-    await this.refresh();
-    const item = this.items.find((i) => i.pid === pid);
-    if (!item) throw new RegistryError('not-found', 'No running Claude session with this pid');
-    if (item.managed) throw new RegistryError('managed', 'This session already runs under the service');
-    if (item.status === 'busy') throw new RegistryError('busy', 'The session is working; try again when it is idle');
-    if (!(await realUnder(item.cwd, this.config.roots))) throw new RegistryError('dir-not-allowed', 'Working directory is not under a configured root');
-    const proc = (await processTable()).procs.get(pid);
-    if (!proc) throw new RegistryError('not-found');
-    const base = `cc-${slug(item.title) || item.sessionId.slice(0, 8)}`;
-    const name = await this.freeName(tmux.NAME_RE.test(base) ? base : `cc-${item.sessionId.slice(0, 8)}`);
-    const token = crypto.randomBytes(24).toString('base64url');
-    const expiresAt = Date.now() + this.takeoverTtlMs;
-    this.tokens.set(token, { pid, procStart: item.procStart, sessionId: item.sessionId, tty: proc.tty, lstart: proc.lstart, cwd: item.cwd, name, expiresAt });
-    const timer = setTimeout(() => this.tokens.delete(token), this.takeoverTtlMs);
-    timer.unref();
-    return { token, pid, tty: proc.tty, cwd: item.cwd, slot: item.slot, sessionId: item.sessionId, name, title: item.title, status: item.status, expiresAt };
+  continueSession(sessionId, { device } = {}) {
+    if (!UUID_RE.test(String(sessionId))) return Promise.reject(new RegistryError('not-found'));
+    let p = this.continuing.get(sessionId);
+    if (!p) {
+      p = this.bringIn(sessionId, { device }).finally(() => this.continuing.delete(sessionId));
+      this.continuing.set(sessionId, p);
+    }
+    return p;
   }
 
-  async takeover(token, { device, force = false } = {}) {
-    const t = typeof token === 'string' ? this.tokens.get(token) : null;
-    if (t) this.tokens.delete(token);
-    if (!t || Date.now() > t.expiresAt) throw new RegistryError('token-expired', 'Takeover confirmation expired; start again');
-    if (force && !t.termSent) throw new RegistryError('force-not-allowed', 'Force is only offered after the process ignored SIGTERM');
-    const records = await readPidRecords();
-    const rec = records.get(t.pid);
-    const proc = (await processTable()).procs.get(t.pid);
-    const unchanged = rec && proc && rec.sessionId === t.sessionId && rec.procStart === t.procStart && proc.tty === t.tty && proc.lstart === t.lstart;
-    if (!unchanged) throw new RegistryError('changed', 'The process changed since confirmation; nothing was stopped');
-    if (rec.status === 'busy') throw new RegistryError('busy', 'The session started working; nothing was stopped');
-    if (!(await realUnder(t.cwd, this.config.roots))) throw new RegistryError('dir-not-allowed');
-    const signal = force ? 'SIGKILL' : 'SIGTERM';
-    this.audit(force ? 'takeover-kill' : 'takeover-term', { device: device && device.id, pid: t.pid, sessionId: t.sessionId });
-    process.kill(t.pid, signal);
-    const until = Date.now() + this.exitWaitMs;
-    while (isAlive(t.pid)) {
-      if (Date.now() > until) {
-        this.audit('takeover-timeout', { device: device && device.id, pid: t.pid, sessionId: t.sessionId, signal });
-        if (!force) {
-          this.tokens.set(token, { ...t, termSent: true });
-          const timer = setTimeout(() => this.tokens.delete(token), Math.max(0, t.expiresAt - Date.now()));
-          timer.unref();
-        }
-        throw new RegistryError('still-running', force ? 'The process survived SIGKILL; nothing was started' : 'The process ignored SIGTERM; confirm again to force it (SIGKILL)');
-      }
-      await new Promise((r) => setTimeout(r, 100));
+  async bringIn(sessionId, { device }) {
+    await this.refresh();
+    let item = this.resolve(sessionId);
+    if (item && item.managed) return item;
+    if (item) {
+      if (item.status === 'busy') throw new RegistryError('working', 'Claude is working in this session; the message waits until it finishes');
+      if (!(await realUnder(item.cwd, this.config.roots))) throw new RegistryError('dir-not-allowed');
+      await this.stopProcess(item, { device });
     }
-    const name = await this.freeName(t.name);
-    const result = await this.newSession({ name, dir: t.cwd, resumeId: t.sessionId }, { device });
-    this.audit('takeover', { device: device && device.id, pid: t.pid, sessionId: t.sessionId, name });
-    return result;
+    const base = item ? `cc-${slug(item.title) || sessionId.slice(0, 8)}` : null;
+    const wanted = base ? await this.freeName(tmux.NAME_RE.test(base) ? base : `cc-${sessionId.slice(0, 8)}`) : undefined;
+    const { name } = await this.newSession({ name: wanted, resumeId: sessionId, dir: item ? item.cwd : undefined }, { device });
+    this.audit('continue', { device: device && device.id, sessionId, name, from: item ? 'terminal' : 'past' });
+    const until = Date.now() + this.readyWaitMs;
+    for (;;) {
+      await this.refresh();
+      item = this.resolve(name);
+      if (item && item.sessionId === sessionId && item.status === 'idle') return item;
+      if (Date.now() > until) throw new RegistryError('not-ready', 'The session started but is not ready for input yet');
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  async stopProcess(item, { device }) {
+    const rec = (await readPidRecords()).get(item.pid);
+    if (!rec || rec.sessionId !== item.sessionId || rec.procStart !== item.procStart) throw new RegistryError('changed', 'The session changed; try again');
+    for (const signal of ['SIGTERM', 'SIGKILL']) {
+      this.audit('continue-stop', { device: device && device.id, pid: item.pid, sessionId: item.sessionId, signal });
+      process.kill(item.pid, signal);
+      const until = Date.now() + this.exitWaitMs;
+      while (isAlive(item.pid) && Date.now() <= until) await new Promise((r) => setTimeout(r, 100));
+      if (!isAlive(item.pid)) return;
+    }
+    throw new RegistryError('still-running', 'The earlier Claude process did not exit');
   }
 }
 

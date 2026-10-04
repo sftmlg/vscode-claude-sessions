@@ -113,12 +113,13 @@ class Catalog {
     const q = String(query || '').trim();
     const all = await this.list();
     if (q) for (const m of all) await this.loadText(m);
-    const hits = q ? await sessions.searchSessions(all, q) : all;
-    return Promise.all(hits.slice(0, limit).map(async (m) => {
+    const hits = await sessions.scoredSearch(all, q);
+    return Promise.all(hits.slice(0, limit).map(async ({ s: m, score }) => {
       const run = running.get(m.id);
       const ext = extensionInfo(m.id, m.cwd, this.roots);
       return {
         sessionId: m.id,
+        score,
         title: ext.name || displayTitle(m, null, this.titleFor(m.id)),
         favorite: ext.favorite,
         cwd: m.cwd,

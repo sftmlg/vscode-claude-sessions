@@ -145,65 +145,46 @@ test('registry on a throwaway socket', async (t) => {
     assert.deepStrictEqual(statuses[statuses.length - 1], { sessionId: 'cc-new', status: 'waiting', waitingFor: 'permission' });
   });
 
-  await t.test('takeover is refused while busy and for managed sessions', async () => {
-    writePid(outside.pid, { sessionId: ID1, name: 'Demo task', status: 'busy' });
-    await assert.rejects(reg.prepareTakeover(outside.pid), (e) => e.code === 'busy');
-    writePid(outside.pid, { sessionId: ID1, name: 'Demo task' });
-    const pane = reg.resolve('cc-new');
-    await assert.rejects(reg.prepareTakeover(pane.pid), (e) => e.code === 'managed');
-    await assert.rejects(reg.prepareTakeover(1), (e) => e.code === 'bad-pid');
-  });
+  const markReady = async (name, sessionId) => {
+    const { listSessions } = require('../tmux');
+    let pane;
+    await waitFor(async () => (pane = (await listSessions(ctx)).find((x) => x.name === name)), { what: `pane ${name}` });
+    writePid(pane.panePid, { sessionId, status: 'idle' });
+  };
 
-  await t.test('takeover aborts when the session id changed after confirmation', async () => {
-    const info = await reg.prepareTakeover(outside.pid);
-    writePid(outside.pid, { sessionId: ID3, name: 'Demo task' });
-    await assert.rejects(reg.takeover(info.token), (e) => e.code === 'changed');
+  await t.test('continuing waits while Claude works', async () => {
+    writePid(outside.pid, { sessionId: ID1, name: 'Demo task', status: 'busy' });
+    await assert.rejects(reg.continueSession(ID1), (e) => e.code === 'working');
     assert.ok(!outside.killed && outside.exitCode === null);
     writePid(outside.pid, { sessionId: ID1, name: 'Demo task' });
-    await assert.rejects(reg.takeover(info.token), (e) => e.code === 'token-expired');
+    await assert.rejects(reg.continueSession('../etc'), (e) => e.code === 'not-found');
+    assert.strictEqual(await reg.continueSession(ID2), reg.resolve('cc-new'), 'a session the hub runs is used as it is');
   });
 
-  await t.test('takeover stops the process and resumes the session under tmux', async () => {
-    const info = await reg.prepareTakeover(outside.pid);
-    assert.strictEqual(info.sessionId, ID1);
-    assert.strictEqual(info.name, 'cc-demo-task');
-    assert.strictEqual(info.slot, '.claude-a');
-    assert.ok(info.expiresAt > Date.now());
+  await t.test('continuing a session from a terminal resumes it under tmux and is ready once Claude is idle', async () => {
     const exited = new Promise((r) => outside.once('exit', r));
-    const res = await reg.takeover(info.token, { device: { id: 'dev-1' } });
+    const pending = Promise.all([reg.continueSession(ID1, { device: { id: 'dev-1' } }), reg.continueSession(ID1, { device: { id: 'dev-2' } })]);
     await exited;
-    assert.strictEqual(res.name, 'cc-demo-task');
+    await markReady('cc-demo-task', ID1);
     await waitFor(() => capture(ctx, 'cc-demo-task').includes(`[--flag] [--resume] [${ID1}]`), { what: 'resumed session' });
-    assert.deepStrictEqual(audits.filter((a) => a.sessionId === ID1).map((a) => a.action), ['takeover-term', 'takeover']);
-    assert.ok(audits.some((a) => a.action === 'new' && a.resume === ID1 && a.name === 'cc-demo-task'));
+    const [first, second] = await pending;
+    assert.strictEqual(first.name, 'cc-demo-task');
+    assert.strictEqual(second, first, 'two messages at once start it once');
+    assert.strictEqual(first.managed, true);
+    assert.deepStrictEqual(audits.filter((a) => a.sessionId === ID1).map((a) => [a.action, a.signal]), [['continue-stop', 'SIGTERM'], ['continue', undefined]]);
   });
 
-  await t.test('a process that ignores SIGTERM is not replaced', async () => {
+  await t.test('a process that ignores the stop request is stopped harder, then resumed', async () => {
     const stubborn = spawn('/bin/sh', ['-c', 'trap "" TERM; while :; do sleep 1; done'], { stdio: 'ignore' });
     procs.push(stubborn);
     await new Promise((r) => setTimeout(r, 100));
     writePid(stubborn.pid, { sessionId: ID3, name: 'Stubborn' });
-    const early = await reg.prepareTakeover(stubborn.pid);
-    await assert.rejects(reg.takeover(early.token, { force: true }), (e) => e.code === 'force-not-allowed');
-    const info = await reg.prepareTakeover(stubborn.pid);
-    await assert.rejects(reg.takeover(info.token), (e) => e.code === 'still-running');
-    assert.strictEqual(reg.listAll().some((i) => i.name === 'cc-stubborn'), false);
-    assert.strictEqual(stubborn.exitCode, null);
-
-    writePid(stubborn.pid, { sessionId: ID1, name: 'Stubborn' });
-    await assert.rejects(reg.takeover(info.token, { force: true }), (e) => e.code === 'changed');
-    assert.strictEqual(stubborn.exitCode, null, 'a changed tuple is never killed');
-
-    writePid(stubborn.pid, { sessionId: ID3, name: 'Stubborn' });
-    const again = await reg.prepareTakeover(stubborn.pid);
-    await assert.rejects(reg.takeover(again.token), (e) => e.code === 'still-running');
     const killed = new Promise((r) => stubborn.once('exit', (code, signal) => r(signal)));
-    const res = await reg.takeover(again.token, { device: { id: 'dev-1' }, force: true });
+    const pending = reg.continueSession(ID3);
     assert.strictEqual(await killed, 'SIGKILL');
-    assert.strictEqual(res.name, 'cc-stubborn');
-    await waitFor(() => capture(ctx, 'cc-stubborn').includes(`[--resume] [${ID3}]`), { what: 'resumed after SIGKILL' });
-    assert.ok(audits.some((a) => a.action === 'takeover-kill' && a.sessionId === ID3));
-    await assert.rejects(reg.takeover(again.token, { force: true }), (e) => e.code === 'token-expired');
+    await markReady('cc-stubborn', ID3);
+    assert.strictEqual((await pending).name, 'cc-stubborn');
+    assert.deepStrictEqual(audits.filter((a) => a.action === 'continue-stop' && a.sessionId === ID3).map((a) => a.signal), ['SIGTERM', 'SIGKILL']);
   });
 
   await t.test('titles prefer the transcript over the automatic name; resume derives name and directory', async () => {
@@ -241,14 +222,14 @@ test('registry on a throwaway socket', async (t) => {
     await assert.rejects(reg.newSession({ resumeId: ID5 }), (e) => e.code === 'session-running');
   });
 
-  await t.test('takeover tokens expire', async () => {
-    const quick = new Registry(config, { ctx, takeoverTtlMs: 30 });
-    const other = sleeper();
-    procs.push(other);
-    writePid(other.pid, { sessionId: ID3, name: 'Late' });
-    const info = await quick.prepareTakeover(other.pid);
-    await new Promise((r) => setTimeout(r, 60));
-    await assert.rejects(quick.takeover(info.token), (e) => e.code === 'token-expired');
+  await t.test('a session that never becomes ready is reported, not hidden', async () => {
+    const slow = new Registry(config, { ctx, readyWaitMs: 300 });
+    const ID6 = '66666666-0000-4000-8000-000000000006';
+    const proj = path.join(work, 'proj');
+    const dir = path.join(home, '.claude', 'projects', proj.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.writeFileSync(path.join(dir, `${ID6}.jsonl`), JSON.stringify({ type: 'user', cwd: proj, timestamp: new Date().toISOString(), message: { content: 'an earlier session' } }) + '\n');
+    await assert.rejects(slow.continueSession(ID6), (e) => e.code === 'not-ready');
+    slow.stop();
   });
 
   assert.ok(UUID_RE.test(ID1));

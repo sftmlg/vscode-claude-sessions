@@ -233,6 +233,12 @@
         "title": "Attach to a service session in a terminal tab",
         "category": "Claude Sessions",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "claudeSessions.openRemoteInBrowser",
+        "title": "Open remote sessions in the browser",
+        "category": "Claude Sessions",
+        "icon": "$(link-external)"
       }
     ],
     "viewsContainers": {
@@ -336,6 +342,18 @@
           "command": "claudeSessions.attachRemote",
           "when": "view == claudeSessions.remote",
           "group": "navigation@1"
+        },
+        {
+          "command": "claudeSessions.openRemoteInBrowser",
+          "when": "view == claudeSessions.remote",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "claudeSessions.openRemoteInBrowser",
+          "when": "activeWebviewPanelId == 'claudeSessions.remotePanel'",
+          "group": "navigation"
         }
       ],
       "view/item/context": [

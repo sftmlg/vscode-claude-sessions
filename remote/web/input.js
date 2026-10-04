@@ -110,6 +110,8 @@ export function highlightParts(text, query) {
   return parts;
 }
 
+const LATER = { 'rate-limited': 1, working: 4 };
+
 export class OutboxSender {
   constructor({ outbox, send, isReady, host = 'self', retryMs = 1000, setTimer = (fn, ms) => setTimeout(fn, ms) }) {
     Object.assign(this, { outbox, send, isReady, host, retryMs, setTimer });
@@ -133,13 +135,14 @@ export class OutboxSender {
     const item = this.outbox.pending(this.host).find((i) => i.id === m.id);
     if (!item) return { handled: false };
     if (this.inflight === m.id) this.inflight = null;
-    if (!m.ok && m.error === 'rate-limited') {
+    const later = LATER[m.error];
+    if (!m.ok && later) {
       this.waiting = true;
       this.setTimer(() => {
         this.waiting = false;
         this.pump();
-      }, this.retryMs);
-      return { handled: true };
+      }, this.retryMs * later);
+      return { handled: true, later: m.error, first: !item.deferred && (item.deferred = true) };
     }
     this.outbox.remove(m.id);
     this.pump();

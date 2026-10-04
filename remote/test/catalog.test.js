@@ -74,7 +74,8 @@ test('search covers names and conversation text of every session under the roots
   const running = new Map([[A, { managed: true, name: 'cc-checkout-fix' }], [B, { managed: false, pid: 4242 }]]);
   const hits = await catalog.search('CHECKOUT', { running });
   assert.deepStrictEqual(hits.map((h) => h.sessionId), [A, C], 'name hit first, then frequency; nothing outside the roots');
-  assert.deepStrictEqual(hits[0], { sessionId: A, title: 'Checkout fix', favorite: false, cwd: repo, project: 'shop-site', running: 'service', name: 'cc-checkout-fix', pid: null, lastActivity: hits[0].lastActivity, snippet: hits[0].snippet });
+  assert.deepStrictEqual(hits[0], { sessionId: A, title: 'Checkout fix', favorite: false, cwd: repo, project: 'shop-site', running: 'service', name: 'cc-checkout-fix', pid: null, lastActivity: hits[0].lastActivity, snippet: hits[0].snippet, score: hits[0].score });
+  assert.ok(hits[0].score > hits[1].score, 'results carry a score so hubs can be merged');
   assert.match(hits[0].snippet, /checkout/i);
   assert.strictEqual(hits[1].running, null);
   assert.strictEqual(hits[1].title, 'Refactor the checkout tests and the checkout docs, checkout everywhere');
@@ -85,6 +86,7 @@ test('search covers names and conversation text of every session under the roots
   assert.strictEqual(muller[0].pid, 4242);
   assert.strictEqual(muller[0].project, 'shop-site');
   assert.deepStrictEqual((await catalog.search('checkout nothing-like-this')).length, 0, 'every word must occur');
+  assert.ok((await catalog.search('shop-site')).some((h) => h.sessionId === A), 'the project folder name finds its sessions');
 
   const recent = await catalog.search('', { limit: 2 });
   assert.deepStrictEqual(recent.map((h) => h.sessionId), [C, B], 'an empty query lists the newest sessions');

@@ -248,7 +248,19 @@ h3 {
   padding: 10px 12px;
   position: sticky;
   top: 0;
+  z-index: 5;
   background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.list-filter {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.row-host {
+  color: var(--accent);
 }
 
 .list-toolbar input[type="search"] {
@@ -430,10 +442,6 @@ h3 {
   font-size: 11px;
 }
 
-.tag-unmanaged {
-  color: var(--warn);
-}
-
 .session-view {
   display: flex;
   flex-direction: column;
@@ -528,17 +536,6 @@ h3 {
   --chat-error: var(--danger);
   --chat-denied: var(--warn);
   --chat-accent: var(--accent);
-}
-
-.readonly-note {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 14px;
-  font-size: 13px;
-  color: var(--warn);
-  border-top: 1px solid var(--line);
 }
 
 .suggestion {

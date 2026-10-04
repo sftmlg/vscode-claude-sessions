@@ -11,7 +11,7 @@ const VIEWER_HOST_KEY = 'claude-remote.viewerHost';
 const BACKOFF = [500, 1000, 2000, 4000, 8000, 10000];
 const PING_MS = 20000;
 const RETRY_MS = 1000;
-const PERMANENT_LOCAL = new Set(['busy-dialog', 'empty', 'too-long', 'bad-request', 'read-only', 'not-found', 'bad-key']);
+const PERMANENT_LOCAL = new Set(['busy-dialog', 'empty', 'too-long', 'bad-request', 'not-live', 'not-found', 'bad-key', 'not-ready', 'still-running', 'changed', 'dir-not-allowed', 'session-starting', 'failed']);
 
 const $ = (id) => document.getElementById(id);
 const host = typeof window.claudeRemoteHost === 'object' && window.claudeRemoteHost ? window.claudeRemoteHost : null;
@@ -100,7 +100,6 @@ function toast(text) {
 const ERROR_TEXT = {
   'busy-dialog': 'Claude shows a dialog: send a single line or use the keys.',
   'rate-limited': 'Slow down: too many inputs per second.',
-  'read-only': 'This session runs outside the service. Take it over to steer it.',
   'not-found': 'Session not found.',
   'session-ended': 'The session ended.',
   'dir-not-allowed': 'That directory is outside the allowed roots.',
@@ -108,13 +107,12 @@ const ERROR_TEXT = {
   'bad-name': 'Name must look like cc-my-task (lowercase letters, digits, dashes).',
   'bad-title': 'Keep the name under 80 characters.',
   'bad-resume-id': 'Resume id must be a session UUID.',
-  'session-running': 'A running process holds this session. Use Take over.',
-  busy: 'The session is working right now. Try again when it is idle.',
-  changed: 'The process changed since you confirmed. Nothing was stopped.',
-  'token-expired': 'Confirmation expired. Start again.',
-  'still-running': 'The process did not exit. Nothing was started.',
-  'session-starting': 'This session is starting already; it appears in the list in a moment.',
-  'force-not-allowed': 'Force is only possible after the process ignored the stop request.',
+  'session-running': 'This session is still open on the Mac.',
+  changed: 'The session changed on the Mac. Send again.',
+  'still-running': 'Claude on the Mac did not let go of this session. Send again in a moment.',
+  'session-starting': 'This session is starting; send again in a moment.',
+  'not-ready': 'The session is still starting. Send again in a moment.',
+  failed: 'That did not work. Send again.',
   'unknown-code': 'Unknown pairing code.',
   locked: 'Too many wrong codes. Pairing is locked for a while.',
   'too-many-pending': 'Too many pending pairings. Try again later.',
@@ -380,6 +378,8 @@ function onBackground(c, data) {
     c.health = m;
   } else if (m.t === 'deviceAdded') {
     showDeviceAdded(m);
+  } else if (m.t === 'searchResults') {
+    onSearchResults(c, m);
   } else if (m.t === 'ack') {
     c.sender.onAck(m);
   } else if ((m.t === 'pushKey' || m.t === 'pushState') && c === hosts[0]) {
@@ -425,10 +425,11 @@ let draftTimer = null;
 
 function saveDraft(text) {
   const s = currentItem();
-  if (!s || !s.managed) return;
+  if (!s || (!s.managed && !s.sessionId)) return;
   const host = conn.id;
+  const key = keyOf(s);
   clearTimeout(draftTimer);
-  draftTimer = setTimeout(() => drafts.save(host, s.name, text), 300);
+  draftTimer = setTimeout(() => drafts.save(host, key, text), 300);
   renderSuggestion();
 }
 
@@ -453,7 +454,14 @@ function show(view) {
 
 function currentItem() {
   if (!state.current) return null;
-  return state.sessions.find((s) => (s.managed ? s.name === state.current : s.sessionId === state.current)) || null;
+  return state.sessions.find((s) => (s.managed ? s.name === state.current : s.sessionId === state.current)) || stubs.get(state.current) || null;
+}
+
+const stubs = new Map();
+
+function rememberStub(s) {
+  if (!s || !s.sessionId) return;
+  stubs.set(s.sessionId, { sessionId: s.sessionId, title: s.title, project: s.project, cwd: s.cwd, lastActivity: s.lastActivity, favorite: s.favorite, status: 'none', managed: false });
 }
 
 const keyOf = (s) => (s.managed ? s.name : s.sessionId);
@@ -462,9 +470,8 @@ const SEARCH_LIMIT = 30;
 const search = { query: '', id: null, timer: null };
 
 function badge(kind) {
-  if (kind === 'service') return el('span', { class: 'tag tag-managed', text: 'remote', title: 'Runs in the service. Steerable here.' });
-  if (kind === 'terminal') return el('span', { class: 'tag tag-unmanaged', text: 'in a terminal · read-only', title: 'Runs in a terminal tab on the Mac. Take it over to steer it here.' });
-  return el('span', { class: 'tag tag-past', text: 'not running', title: 'A past session. Resume it here to continue.' });
+  if (kind) return null;
+  return el('span', { class: 'tag tag-past', text: 'earlier', title: 'Not running right now. Writing to it continues it.' });
 }
 
 function onSearchInput() {
@@ -478,13 +485,21 @@ function onSearchInput() {
     renderList();
     return;
   }
-  search.timer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS);
+  search.id = newId('q');
+  search.answers = new Map();
+  renderSearch();
+  search.timer = setTimeout(() => runSearch(search.id, query), SEARCH_DEBOUNCE_MS);
 }
 
-function runSearch(query) {
-  const id = newId('q');
-  search.id = id;
-  if (!conn.send({ t: 'search', id, query, limit: SEARCH_LIMIT })) toast('Offline: search needs the connection.');
+function runSearch(id, query) {
+  const sent = hosts.filter((h) => h.authed && h.send({ t: 'search', id, query, limit: SEARCH_LIMIT }));
+  if (!sent.length) toast('Offline: search needs the connection.');
+}
+
+function onSearchResults(c, m) {
+  if (m.id !== search.id) return;
+  search.answers.set(c, Array.isArray(m.items) ? m.items : []);
+  renderSearch();
 }
 
 function clearSearch() {
@@ -492,58 +507,54 @@ function clearSearch() {
   onSearchInput();
 }
 
-function renderSearch(items) {
+function localMatches(c) {
+  const terms = search.query.toLowerCase().split(/\s+/).filter(Boolean);
+  return (c.sessions || [])
+    .filter((s) => s.sessionId)
+    .map((s) => ({ s, hay: [labelOf(s), s.project, s.cwd, s.lastPrompt].filter(Boolean).join(' ').toLowerCase() }))
+    .filter(({ hay }) => terms.every((t) => hay.includes(t)))
+    .map(({ s }) => ({ sessionId: s.sessionId, title: labelOf(s), favorite: s.favorite, cwd: s.cwd, project: s.project, running: s.managed ? 'service' : 'terminal', name: s.managed ? s.name : null, lastActivity: s.lastActivity, snippet: s.lastPrompt || '', score: 100 }));
+}
+
+function searchHits() {
+  const hits = [];
+  for (const c of hosts) {
+    if (!c.authed && !search.answers.has(c)) continue;
+    for (const hit of search.answers.get(c) || localMatches(c)) hits.push({ ...hit, host: c });
+  }
+  return hits.sort((a, b) => (b.score || 0) - (a.score || 0) || (Date.parse(b.lastActivity) || 0) - (Date.parse(a.lastActivity) || 0));
+}
+
+function renderSearch() {
   const list = $('search-results');
   list.hidden = false;
   $('session-list').hidden = true;
   $('session-empty').hidden = true;
   list.replaceChildren();
-  if (!items.length) list.append(el('li', { class: 'muted pane-pad', text: 'No session matches every word.' }));
-  for (const hit of items) {
-    const actions = [];
+  const hits = searchHits();
+  const pending = hosts.some((h) => h.authed && !search.answers.has(h));
+  if (!hits.length) list.append(el('li', { class: 'muted pane-pad', text: pending ? 'Searching…' : 'No session matches every word.' }));
+  const many = hosts.length > 1;
+  for (const hit of hits) {
     const open = () => openHit(hit);
     const snippet = el('div', { class: 'row-snippet' }, highlightParts(hit.snippet, search.query).map((p) => (p.hit ? el('mark', { class: 'hit', text: p.text }) : document.createTextNode(p.text))));
     list.append(
       el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
         el('div', { class: 'row-main' }, [
           el('div', { class: 'row-title' }, [hit.favorite ? el('span', { class: 'star', text: '★', title: 'Starred in the editor' }) : null, el('span', { class: 'row-name', text: hit.title || hit.sessionId.slice(0, 8) }), badge(hit.running)]),
-          el('div', { class: 'row-meta' }, [el('span', { text: hit.project || basename(hit.cwd) }), when(hit.lastActivity)]),
+          el('div', { class: 'row-meta' }, [el('span', { text: hit.project || basename(hit.cwd) }), many ? el('span', { class: 'row-host', text: hit.host.label }) : null, when(hit.lastActivity)]),
           hit.snippet ? snippet : null,
         ]),
-        el('div', { class: 'row-actions' }, actions),
       ]),
     );
   }
 }
 
 function openHit(hit) {
+  if (hit.host && hit.host !== conn) switchHost(hit.host);
   if (hit.running === 'service' && hit.name) return openSession(hit.name);
-  if (hit.running === 'terminal') return openSession(hit.sessionId);
-  return showResumeSheet(hit);
-}
-
-function showResumeSheet(hit) {
-  const rows = [
-    ['Session', hit.title || hit.sessionId],
-    ['Project', hit.project || basename(hit.cwd) || '—'],
-    ['Last activity', timeAgo(hit.lastActivity) || '—'],
-  ];
-  const dl = el('dl', { class: 'facts' }, rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]));
-  const go = el('button', { type: 'button', class: 'primary', text: 'Resume here' });
-  go.addEventListener('click', async () => {
-    setBusy(go, true);
-    const ack = await request({ t: 'new', id: newId('n'), resumeId: hit.sessionId });
-    if (!ack.ok) {
-      setBusy(go, false);
-      return toast(errorText(ack.error));
-    }
-    closeSheet();
-    clearSearch();
-    conn.send({ t: 'list' });
-    openSession(ack.name);
-    return undefined;
-  });
-  openSheet('Resume this session?', el('div', { class: 'stack' }, [el('p', { class: 'muted', text: 'Starts it in the service with its full history, so it can be steered from here and from the Mac.' }), dl, go]));
+  rememberStub(hit);
+  return openSession(hit.sessionId);
 }
 
 const labelOf = (s) => s.title || s.name || (s.sessionId ? s.sessionId.slice(0, 8) : 'session');
@@ -571,8 +582,22 @@ function collapsedProjects() {
   return new Set(safeStorage((st) => JSON.parse(st.getItem(COLLAPSED_KEY) || '[]'), []));
 }
 
-const STAR_KEY = 'claude-remote.star-only';
-let starOnly = safeStorage((st) => st.getItem(STAR_KEY) === '1', false);
+const FILTER_KEY = 'claude-remote.filter';
+const FILTERS = {
+  all: { test: () => true, empty: 'No running Claude sessions.' },
+  needs: { test: (s) => s.status === 'waiting' || s.unread, empty: 'Nothing needs you right now.' },
+  working: { test: (s) => s.status === 'busy', empty: 'No session is working right now.' },
+  starred: { test: (s) => s.favorite, empty: 'No starred session is running. Star sessions in the editor.' },
+};
+let listFilter = safeStorage((st) => st.getItem(FILTER_KEY), null);
+if (!FILTERS[listFilter]) listFilter = 'all';
+
+function setFilter(name) {
+  listFilter = FILTERS[name] ? name : 'all';
+  safeStorage((st) => st.setItem(FILTER_KEY, listFilter));
+  for (const b of document.querySelectorAll('#list-filter [data-filter]')) b.setAttribute('aria-pressed', String(b.dataset.filter === listFilter));
+  renderList();
+}
 const rowNodes = new Map();
 const groupNodes = new Map();
 let needsHead = null;
@@ -588,11 +613,10 @@ function sessionRow(s) {
     r.name = el('span', { class: 'row-name' });
     r.pill = el('span');
     r.project = el('span');
-    r.badge = el('span');
     r.when = el('span', { class: 'when' });
     r.prompt = el('div', { class: 'row-prompt' });
     r.li = el('li', { class: 'session-row', tabindex: '0', onclick: open, onkeydown: (e) => e.key === 'Enter' && open() }, [
-      el('div', { class: 'row-main' }, [el('div', { class: 'row-title' }, [r.dot, r.star, r.name, r.pill]), el('div', { class: 'row-meta' }, [r.project, r.badge, r.when]), r.prompt]),
+      el('div', { class: 'row-main' }, [el('div', { class: 'row-title' }, [r.dot, r.star, r.name, r.pill]), el('div', { class: 'row-meta' }, [r.project, r.when]), r.prompt]),
     ]);
     rowNodes.set(key, r);
   }
@@ -606,10 +630,6 @@ function sessionRow(s) {
   setAttr(r.pill, 'title', stale ? `Waiting since ${absoluteTime(s.lastActivity)}` : null);
   setText(r.pill, stale ? `waiting · ${stale}` : p.textContent);
   setText(r.project, s.project || basename(s.cwd));
-  const b = badge(s.managed ? 'service' : 'terminal');
-  setAttr(r.badge, 'class', b.className);
-  setAttr(r.badge, 'title', b.title);
-  setText(r.badge, b.textContent);
   setText(r.when, relativeTime(s.lastActivity));
   setAttr(r.when, 'title', absoluteTime(s.lastActivity) || null);
   setText(r.prompt, s.lastPrompt || '');
@@ -637,9 +657,9 @@ function groupNode(project) {
 
 function renderList() {
   const list = $('session-list');
-  const visible = starOnly ? state.sessions.filter((s) => s.favorite) : state.sessions;
+  const visible = state.sessions.filter(FILTERS[listFilter].test);
   $('session-empty').hidden = visible.length > 0;
-  $('session-empty').textContent = starOnly ? 'No starred session is running. Star sessions in the editor.' : 'No running Claude sessions.';
+  $('session-empty').textContent = FILTERS[listFilter].empty;
   for (const r of rowNodes.values()) r.used = false;
   const { needs, groups } = inboxSections(visible);
   const top = [];
@@ -688,17 +708,16 @@ function renderStatus() {
   const text = $('status-text');
   if (!s) {
     ind.className = 'status-indicator';
-    text.textContent = 'session not running';
+    text.textContent = 'session not found';
     return;
   }
   $('title').textContent = labelOf(s);
   ind.className = `status-indicator status-${s.status}`;
   ind.replaceChildren(s.status === 'busy' ? el('span', { class: 'spinner' }) : '');
-  text.textContent = s.status === 'busy' ? 'working…' : s.status === 'waiting' ? `waiting for you${s.waitingFor ? `: ${s.waitingFor}` : ''}` : s.status === 'idle' ? 'idle' : 'no Claude process detected';
+  text.textContent = s.status === 'busy' ? 'working…' : s.status === 'waiting' ? `waiting for you${s.waitingFor ? `: ${s.waitingFor}` : ''}` : s.status === 'idle' ? 'idle' : s.status === 'none' ? 'not running · write to continue' : 'no Claude process detected';
   const managed = Boolean(s.managed);
-  inert($('tab-terminal'), managed ? null : 'This session runs in a terminal on the Mac. Take it over to see and steer its screen here.');
-  $('readonly-note').hidden = managed;
-  $('input-bar').hidden = !managed;
+  inert($('tab-terminal'), managed ? null : 'The live screen appears here as soon as you send a message.');
+  $('input-bar').hidden = !managed && !s.sessionId;
   $('keybar').hidden = !managed;
   inert($('tab-chat'), s.sessionId ? null : 'The conversation appears once Claude has started in this session.');
 }
@@ -744,12 +763,13 @@ function openSession(key, { fromHistory = false, replace = false } = {}) {
   }
   state.current = key;
   const s = currentItem();
+  if (s && !s.managed) rememberStub(s);
   show('session');
   const tab = initialTab(key, s, state.tab);
   state.tab = tab === 'terminal' ? state.tab : tab;
   setTab(tab);
   const opened = currentItem();
-  if (input) input.setText(opened && opened.managed ? drafts.load(conn.id, opened.name) : '');
+  if (input) input.setText(opened ? drafts.load(conn.id, keyOf(opened)) : '');
   renderStatus();
   subscribe();
   markSeen(currentItem());
@@ -884,8 +904,7 @@ function onJson(data) {
     case 'deviceAdded':
       return showDeviceAdded(m);
     case 'searchResults':
-      if (m.id === search.id) renderSearch(Array.isArray(m.items) ? m.items : []);
-      return undefined;
+      return onSearchResults(conn, m);
     case 'health':
       conn.health = m;
       return renderHealth(m);
@@ -919,6 +938,7 @@ function onJson(data) {
       state.sessions = conn.sessions;
       renderHostTabs();
       renderList();
+      if (followContinued()) return undefined;
       if (state.current) renderStatus();
       if (state.current && state.subscribedKey !== state.current && currentItem()) {
         if (!currentItem().managed && state.tab !== 'chat') setTab('chat');
@@ -956,8 +976,6 @@ function onJson(data) {
     case 'reset':
       for (const fn of state.resetListeners) fn(m);
       return undefined;
-    case 'takeoverInfo':
-      return showTakeoverSheet(m);
     case 'devices':
       return renderDevices(m.items || []);
     case 'error':
@@ -984,6 +1002,19 @@ function onJson(data) {
   }
 }
 
+function followContinued() {
+  const cur = currentItem();
+  if (!cur || cur.managed || !cur.sessionId) return false;
+  const live = state.sessions.find((s) => s.managed && s.sessionId === cur.sessionId);
+  if (!live) return false;
+  stubs.delete(cur.sessionId);
+  const draft = $('input').value;
+  state.tab = 'terminal';
+  openSession(live.name, { replace: true });
+  if (draft && input) input.setText(draft);
+  return true;
+}
+
 function onAck(m) {
   const waiter = state.pendingAcks.get(m.id);
   if (waiter) {
@@ -996,6 +1027,8 @@ function onAck(m) {
     if (!m.ok) toast(errorText(m.error));
     return;
   }
+  if (r.later) return r.later === 'working' && r.first ? toast('Claude is still working in this session. Your message goes out when it finishes.') : undefined;
+  if (m.ok && m.name) conn.send({ t: 'list' });
   if (!r.item) return;
   if (r.error !== 'busy-dialog') toast(errorText(r.error));
   if (PERMANENT_LOCAL.has(r.error) && input) input.restore(r.item.text);
@@ -1018,14 +1051,14 @@ function request(msg) {
 
 function submitText(text) {
   const s = currentItem();
-  if (!s || !s.managed) return false;
-  const item = outbox.add(s.name, text, conn.id);
+  if (!s || (!s.managed && !s.sessionId)) return false;
+  const item = outbox.add(keyOf(s), text, conn.id);
   if (!item) {
     toast('Outbox is full; wait for the connection.');
     return false;
   }
   clearTimeout(draftTimer);
-  drafts.clear(conn.id, s.name);
+  drafts.clear(conn.id, keyOf(s));
   if (conn.authed) conn.sender.pump();
   else toast('Offline: queued, sends when online.');
   return true;
@@ -1157,48 +1190,6 @@ function showNewSession() {
     return undefined;
   });
   openSheet('New session', form);
-}
-
-function prepareTakeover(pid) {
-  if (!conn.send({ t: 'takeoverPrepare', pid })) toast('Offline.');
-}
-
-function showTakeoverSheet(info) {
-  const item = state.sessions.find((x) => x.pid === info.pid) || {};
-  const rows = [
-    ['Session', info.title || item.title || 'Untitled session'],
-    ['Project', item.project || basename(info.cwd) || '—'],
-    ['State', info.status || item.status || '—'],
-    ['Name here', info.name],
-  ];
-  const facts = (list) => el('dl', { class: 'facts' }, list.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]));
-  const dl = el('div', { class: 'stack' }, [
-    facts(rows),
-    el('details', { class: 'facts-more' }, [el('summary', { text: 'Details' }), facts([['Process id', String(info.pid)], ['Terminal', info.tty || '—'], ['Directory', info.cwd || '—'], ['Account slot', info.slot || '—'], ['Session id', info.sessionId || '—']])]),
-  ]);
-  const confirm = el('button', { type: 'button', class: 'danger', text: 'Stop it and resume here' });
-  const note = el('p', { class: 'muted', text: 'This stops Claude in that terminal on the Mac and continues the same conversation here. Anything typed there but not sent is lost.' });
-  let force = false;
-  confirm.addEventListener('click', async () => {
-    setBusy(confirm, true);
-    const ack = await request({ t: 'takeover', id: newId('t'), token: info.token, ...(force ? { force: true } : {}) });
-    if (!ack.ok) {
-      setBusy(confirm, false);
-      if (ack.error === 'still-running' && !force) {
-        force = true;
-        note.textContent = 'The process ignored the stop request. Force it with SIGKILL? Anything it has not saved is lost. The process is checked again before the kill.';
-        confirm.textContent = 'Force stop (SIGKILL) and resume';
-        return undefined;
-      }
-      return toast(errorText(ack.error));
-    }
-    closeSheet();
-    conn.send({ t: 'list' });
-    openSession(ack.name || info.name);
-    return undefined;
-  });
-  const body = el('div', { class: 'stack' }, [note, dl, confirm]);
-  openSheet('Take over this session?', body);
 }
 
 const push = { want: null, subscribed: false, busy: false, refused: '' };
@@ -1519,20 +1510,11 @@ function init() {
   $('open-settings').addEventListener('click', showSettings);
   $('new-session').addEventListener('click', showNewSession);
   $('session-search').addEventListener('input', onSearchInput);
-  $('star-filter').setAttribute('aria-pressed', String(starOnly));
-  $('star-filter').addEventListener('click', () => {
-    starOnly = !starOnly;
-    safeStorage((st) => st.setItem(STAR_KEY, starOnly ? '1' : '0'));
-    $('star-filter').setAttribute('aria-pressed', String(starOnly));
-    renderList();
-  });
+  for (const b of document.querySelectorAll('#list-filter [data-filter]')) b.addEventListener('click', () => setFilter(b.dataset.filter));
+  setFilter(listFilter);
   $('session-search').addEventListener('keydown', (e) => e.key === 'Escape' && clearSearch());
   $('sheet').addEventListener('click', (e) => {
     if (e.target === $('sheet')) closeSheet();
-  });
-  $('takeover-here').addEventListener('click', () => {
-    const s = currentItem();
-    if (s && s.pid) prepareTakeover(s.pid);
   });
   $('tab-terminal').addEventListener('click', (e) => {
     if (explainIfInert(e.currentTarget)) return;

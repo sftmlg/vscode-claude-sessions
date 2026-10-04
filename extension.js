@@ -763,6 +763,11 @@ function remoteSocketOrigin(url) {
   }
 }
 
+function remotePageUrl(url) {
+  const origin = remoteSocketOrigin(url);
+  return origin ? `${origin.replace(/^ws/, 'http')}/` : null;
+}
+
 function peerSocketSource(url) {
   try {
     const u = new URL(String(url || ''));
@@ -1443,6 +1448,11 @@ function activate(context) {
     t.show();
     return t;
   };
+  const openRemoteInBrowser = () => {
+    const page = remotePageUrl(remoteUrl());
+    if (!page) return openRemote();
+    return vscode.env.openExternal(vscode.Uri.parse(page));
+  };
   const openRemote = () => {
     if (remotePanel) {
       remotePanel.reveal();
@@ -1555,6 +1565,7 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.renameMachine', () => renameMachine(remoteView.snapshot && remoteView.snapshot.name)),
     vscode.commands.registerCommand('claudeSessions.openRemote', () => openRemote()),
     vscode.commands.registerCommand('claudeSessions.attachRemote', () => attachRemote()),
+    vscode.commands.registerCommand('claudeSessions.openRemoteInBrowser', () => openRemoteInBrowser()),
     vscode.commands.registerCommand('claudeSessions.disconnectNextcloud', async () => {
       await context.secrets.delete(SYNC_SECRET);
       if (settings().get('sync.credentialsFile')) await settings().update('sync.credentialsFile', undefined, vscode.ConfigurationTarget.Global);
