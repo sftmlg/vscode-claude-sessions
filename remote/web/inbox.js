@@ -65,3 +65,10 @@ export function initialTab(key, item, current) {
   if (item) return item.managed ? current : 'chat';
   return /^cc-/.test(key) ? 'terminal' : 'chat';
 }
+
+export function deviceOrigin(node) {
+  if (!node) return '';
+  if (typeof node === 'string') return node;
+  if (!node.name) return '';
+  return node.os ? `${node.name} (${node.os})` : node.name;
+}

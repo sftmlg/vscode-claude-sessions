@@ -1,8 +1,8 @@
 import { createTerm } from './term.js';
 import { Outbox, OutboxSender, DraftStore, setupInput, newId, highlightParts } from './input.js';
-import { inboxSections, relativeTime, absoluteTime, staleFor, initialTab } from './inbox.js';
+import { inboxSections, relativeTime, absoluteTime, staleFor, initialTab, deviceOrigin } from './inbox.js';
 import { parseOptions, suggestionFrom } from './quick-replies.js';
-import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, onSubscriptionChange, currentSubscription, sessionTarget, sessionHash, PUSH_UNAVAILABLE } from './notify.js';
+import { pushSupported, subscribePush, unsubscribePush, onNotificationClick, onSubscriptionChange, currentSubscription, sessionTarget, sessionHash, pushRefusal, PUSH_UNAVAILABLE } from './notify.js';
 
 const TOKEN_KEY = 'claude-remote.token';
 const ACTIVE_HOST_KEY = 'claude-remote.host';
@@ -384,6 +384,8 @@ function onBackground(c, data) {
     c.sender.onAck(m);
   } else if ((m.t === 'pushKey' || m.t === 'pushState') && c === hosts[0]) {
     onPushMessage(m);
+  } else if (m.t === 'error' && m.ref === 'push' && c === hosts[0]) {
+    onPushRefused(m);
   }
   renderHostTabs();
 }
@@ -959,6 +961,7 @@ function onJson(data) {
     case 'devices':
       return renderDevices(m.items || []);
     case 'error':
+      if (m.ref === 'push' && conn === hosts[0]) return onPushRefused(m);
       if (m.ref === 'events' || m.ref === 'agentEvents') {
         const i = state.eventWaiters.findIndex((w) => w.type === m.ref);
         if (i >= 0) state.eventWaiters.splice(i, 1)[0].reject(new Error(errorText(m.code, m.msg)));
@@ -1198,18 +1201,32 @@ function showTakeoverSheet(info) {
   openSheet('Take over this session?', body);
 }
 
-const push = { want: null, subscribed: false, busy: false };
+const push = { want: null, subscribed: false, busy: false, refused: '' };
 
 function renderPushSwitch() {
   const sw = $('push-switch');
   if (!sw) return;
   sw.setAttribute('aria-checked', String(push.subscribed));
   sw.textContent = push.busy ? 'Working…' : push.subscribed ? 'On' : 'Off';
+  const note = $('push-refused');
+  if (note) {
+    note.textContent = push.refused;
+    note.hidden = !push.refused;
+  }
   inert(sw, !pushSupported() ? `Notifications ${PUSH_UNAVAILABLE}.` : push.busy ? 'Waiting for the hub to answer.' : null);
+}
+
+function onPushRefused(m) {
+  push.want = null;
+  push.subscribed = false;
+  push.refused = pushRefusal(m.code);
+  unsubscribePush().catch(() => {});
+  pushSettled();
 }
 
 async function onPushMessage(m) {
   if (m.t === 'pushState') {
+    if (m.subscribed) push.refused = '';
     push.subscribed = m.subscribed;
     clearTimeout(pushTimer);
     push.busy = false;
@@ -1275,6 +1292,7 @@ function pushRow() {
   return el('div', { class: 'stack' }, [
     el('h3', { text: 'Notifications' }),
     el('div', { class: 'row-form' }, [sw, el('span', { class: 'muted small', text: supported ? `Get a notification when a session on ${hosts[0].label} needs you or finishes.` : PUSH_UNAVAILABLE })]),
+    el('p', { id: 'push-refused', class: 'small', role: 'status', text: push.refused, hidden: !push.refused }),
   ]);
 }
 
@@ -1369,7 +1387,7 @@ function renderDevices(items) {
         }),
       );
       const rename = el('button', { type: 'button', class: 'secondary', text: 'Rename', onclick: () => showRenameDevice(d) });
-      return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}${d.node ? ` · from ${d.node}` : ''}`, title: absoluteTime(d.lastSeen) || undefined })]), el('div', { class: 'row-form' }, [rename, revoke])]);
+      return el('li', { class: 'device-row' }, [el('div', {}, [el('div', { text: d.name }), el('div', { class: 'muted small', text: `last seen ${timeAgo(d.lastSeen)}${deviceOrigin(d.node) ? ` · from ${deviceOrigin(d.node)}` : ''}`, title: absoluteTime(d.lastSeen) || undefined })]), el('div', { class: 'row-form' }, [rename, revoke])]);
     }),
   );
 }

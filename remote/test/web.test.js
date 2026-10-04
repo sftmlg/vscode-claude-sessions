@@ -527,3 +527,21 @@ test('settings name the active hub own device record and follow a rename', () =>
   assert.match(app, /el\('p', \{ id: 'this-device', class: 'muted', text: thisDeviceText\(\) \}\)/);
   assert.match(app, /const own = items\.find\(\(d\) => conn\.device && d\.id === conn\.device\.id\);/);
 });
+
+test('a device row names where it was last seen from, never an object', async () => {
+  const { deviceOrigin } = await import(path.join(WEB, 'inbox.js'));
+  assert.strictEqual(deviceOrigin({ name: 'phone', os: 'iOS' }), 'phone (iOS)');
+  assert.strictEqual(deviceOrigin({ name: 'laptop', os: null }), 'laptop');
+  assert.strictEqual(deviceOrigin(null), '');
+  assert.strictEqual(deviceOrigin('legacy-name'), 'legacy-name');
+  assert.ok(/deviceOrigin\(d\.node\)/.test(fs.readFileSync(path.join(WEB, 'app.js'), 'utf8')));
+});
+
+test('a refused push subscription explains itself and is undone in the browser', async () => {
+  const { pushRefusal } = await import(path.join(WEB, 'notify.js'));
+  assert.strictEqual(pushRefusal('bad-endpoint'), "This browser's push service is not supported — use Chrome, Safari or Firefox.");
+  assert.match(pushRefusal('other'), /refused/);
+  const app = fs.readFileSync(path.join(WEB, 'app.js'), 'utf8');
+  assert.match(app, /m\.ref === 'push'/);
+  assert.match(app, /function onPushRefused\(m\) \{[^}]*unsubscribePush\(\)/);
+});
