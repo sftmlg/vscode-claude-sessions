@@ -137,7 +137,7 @@ test('state writes merge keys and a corrupt file is kept, never overwritten sile
   assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"tabs": [');
 });
 
-test('search: every word must occur, title hits beat body hits, frequency beats recency', async () => {
+test('search: every word must occur, name and folder hits come first, newest first within each', async () => {
   const dir = path.join(home, '.claude', 'projects', '-search-ws');
   fs.mkdirSync(dir, { recursive: true });
   const put = (id, minutesAgo, texts) => {
@@ -150,9 +150,10 @@ test('search: every word must occur, title hits beat body hits, frequency beats 
     { id: 'many', title: 'misc', meta: { file: put('many', 1, ['Invoice for Schmid', 'invoice invoice invoice schmid']), lastActivity: iso(1) } },
     { id: 'once', title: 'misc', meta: { file: put('once', 0, ['one INVOICE to schmid']), lastActivity: iso(0) } },
     { id: 'half', title: 'misc', meta: { file: put('half', 0, ['only invoice']), lastActivity: iso(0) } },
+    { id: 'repo', title: 'misc', meta: { file: put('repo', 70, ['invoice run']), cwd: '/work/schmid-site/app', lastActivity: iso(70) } },
   ];
   const hits = (await searchSessions(rows, 'Invoice SCHMID')).map((r) => r.id);
-  assert.deepStrictEqual(hits, ['title', 'many', 'once']);
+  assert.deepStrictEqual(hits, ['title', 'repo', 'once', 'many']);
 });
 
 test('snippets come from the matching passage, also deep inside the conversation', async () => {

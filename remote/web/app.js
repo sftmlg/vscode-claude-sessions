@@ -513,7 +513,7 @@ function localMatches(c) {
     .filter((s) => s.sessionId)
     .map((s) => ({ s, hay: [labelOf(s), s.project, s.cwd, s.lastPrompt].filter(Boolean).join(' ').toLowerCase() }))
     .filter(({ hay }) => terms.every((t) => hay.includes(t)))
-    .map(({ s }) => ({ sessionId: s.sessionId, title: labelOf(s), favorite: s.favorite, cwd: s.cwd, project: s.project, running: s.managed ? 'service' : 'terminal', name: s.managed ? s.name : null, lastActivity: s.lastActivity, snippet: s.lastPrompt || '', score: 100 }));
+    .map(({ s }) => ({ sessionId: s.sessionId, title: labelOf(s), favorite: s.favorite, cwd: s.cwd, project: s.project, running: s.managed ? 'service' : 'terminal', name: s.managed ? s.name : null, lastActivity: s.lastActivity, snippet: s.lastPrompt || '', score: 1 }));
 }
 
 function searchHits() {

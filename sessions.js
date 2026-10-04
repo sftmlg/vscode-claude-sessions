@@ -198,12 +198,6 @@ async function conversationText(file) {
   return text;
 }
 
-function countOccurrences(text, term) {
-  let n = 0;
-  for (let i = text.indexOf(term); i >= 0; i = text.indexOf(term, i + term.length)) n++;
-  return n;
-}
-
 async function searchSessions(sessions, query) {
   return (await scoredSearch(sessions, query)).map((x) => x.s);
 }
@@ -216,21 +210,22 @@ async function scoredSearch(sessions, query) {
     const m = s.meta || s;
     const fields = searchFields(s);
     const body = m.file ? await conversationText(m.file).catch(() => '') : '';
-    let score = 0;
+    let named = false;
     let all = true;
     for (const term of terms) {
       const fieldWeight = fields.reduce((acc, [text, weight]) => (text.includes(term) ? Math.max(acc, weight) : acc), 0);
-      const count = countOccurrences(body, term);
-      if (!fieldWeight && !count) {
+      if (!fieldWeight && !body.includes(term)) {
         all = false;
         break;
       }
-      score += fieldWeight * 10 + Math.log2(1 + count);
+      if (fieldWeight >= NAME_WEIGHT) named = true;
     }
-    if (all) scored.push({ s, score, recency: Date.parse(m.lastActivity || 0) || 0 });
+    if (all) scored.push({ s, score: named ? 1 : 0, recency: Date.parse(m.lastActivity || 0) || 0 });
   }
   return scored.sort((a, b) => b.score - a.score || b.recency - a.recency);
 }
+
+const NAME_WEIGHT = 2;
 
 function searchFields(s) {
   const m = s.meta || s;
