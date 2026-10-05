@@ -57,7 +57,7 @@ async function newSession(ctx, { name, dir, argv, cols = 120, rows = 40 }) {
   assertName(name);
   if (!Array.isArray(argv) || argv.length < 2 || !argv.every((a) => typeof a === 'string')) throw new Error('argv needs at least two entries so tmux does not use a shell');
   const env = ctx.childPath ? ['-e', `PATH=${ctx.childPath}`] : [];
-  await run(ctx, ['new-session', '-d', '-s', name, '-x', String(cols), '-y', String(rows), '-c', dir, ...env, '--', ...argv]);
+  await run(ctx, ['start-server', ';', 'set-option', '-g', 'focus-events', 'on', ';', 'new-session', '-d', '-s', name, '-x', String(cols), '-y', String(rows), '-c', dir, ...env, '--', ...argv]);
 }
 
 async function hasSession(ctx, name) {

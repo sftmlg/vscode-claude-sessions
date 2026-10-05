@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const tmux = require('../tmux');
 const { testCtx, killServer, startPane, capture, waitFor, tempHome } = require('./fixtures/fs-helpers');
 
@@ -45,6 +46,7 @@ test('tmux integration on a throwaway socket', async (t) => {
     const screen = await waitFor(() => capture(ctx, 'cc-args').includes('fake-claude') && capture(ctx, 'cc-args'), { what: 'fake claude' });
     assert.match(screen, /\[\$\(touch [^\]]+\)\] \[;echo hi\]/);
     assert.strictEqual(fs.existsSync(marker), false);
+    assert.strictEqual(execFileSync(ctx.bin || 'tmux', ['-L', ctx.socket, 'show-options', '-gv', 'focus-events'], { encoding: 'utf8' }).trim(), 'on', 'Claude gets focus events and shows no tmux hint');
     const list = await tmux.listSessions(ctx);
     const s = list.find((x) => x.name === 'cc-args');
     assert.ok(s);
