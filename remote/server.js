@@ -8,6 +8,7 @@ const path = require('path');
 const { WebSocketServer, WebSocket } = require('ws');
 const { loadConfig } = require('./config');
 const { Registry, UUID_RE, realUnder } = require('./registry');
+const launch = require('./launch');
 const { Mirror } = require('./mirror');
 const { Queue } = require('./queue');
 const tmux = require('./tmux');
@@ -172,6 +173,7 @@ async function start(config, deps = {}) {
   const ctx = { socket: config.tmuxSocket, bin: config.tmuxPath, childPath: config.childPath };
   const registry = deps.registry || new Registry(config, { ctx, audit });
   sessions.loadCache(path.join(config.stateDir, 'cache'));
+  const launchToken = launch.ensureToken(config.stateDir);
   const catalog = deps.catalog || new Catalog(config, { titleFor: (id) => (registry.titleFor ? registry.titleFor(id) : null) });
   const seen = deps.seen || new SeenStore(config.stateDir);
   const tailnet = deps.tailnet || new Tailnet();
@@ -210,6 +212,7 @@ async function start(config, deps = {}) {
   const verifyPeer = (socket) => peerCheck.verify(socket).catch(() => ({ ok: false, reason: 'peer-unknown' }));
 
   const server = http.createServer(async (req, res) => {
+    if (String(req.url).split('?')[0] === '/admin/session') return launch.handleLaunch(req, res, { port: server.address().port, token: launchToken, registry, log });
     if (String(req.url).startsWith('/admin/')) return auth.handleAdmin(req, res, { sessions: registry.listAll().length, mirrors: mirrors.size, connections: conns.size, ...health });
     const check = checkRequest(req, config);
     const peer = check.ok ? await verifyPeer(req.socket) : null;
@@ -535,6 +538,7 @@ async function start(config, deps = {}) {
       }
       case 'send':
       case 'key':
+      case 'continue':
       case 'new': {
         if (!Queue.validId(msg.id)) return send({ t: 'error', code: 'bad-request', msg: 'id must match [A-Za-z0-9_-]{1,64}' });
         const ack = await queue.run(`${conn.device.id}:${msg.id}`, () => mutate(conn, msg));
@@ -661,6 +665,10 @@ async function start(config, deps = {}) {
         await serialized(item.name, () => tmux.paste(ctx, item.name, msg.id, text));
         audit('send', { device: device.id, session: item.name, length: text.length });
         return continued ? { ok: true, name: item.name, sessionId: item.sessionId } : { ok: true };
+      }
+      if (msg.t === 'continue') {
+        const item = await registry.continueSession(msg.sessionId, { device });
+        return { ok: true, name: item.name, sessionId: item.sessionId };
       }
       const r = await registry.newSession({ name: msg.name, dir: msg.dir, resumeId: msg.resumeId, title: msg.title }, { device });
       return { ok: true, name: r.name };

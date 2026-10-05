@@ -2,6 +2,7 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execFile } = require('child_process');
 const updater = require('./updater');
 const { syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests } = require('./sync');
@@ -35,8 +36,12 @@ const SHELL_NAMES = new Set(['', 'zsh', '-zsh', 'bash', '-bash', 'sh', 'fish', '
 const LEGACY_DIR = '.vscode/claude-sessions';
 
 const settings = () => vscode.workspace.getConfiguration('claudeSessions');
-const claudeCommand = () => settings().get('claudeCommand') || 'claude';
+const claudeBase = () => settings().get('claudeCommand') || 'claude';
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+const SERVICE_RUNNER = path.join(os.homedir(), '.local', 'bin', 'claude-remote-run');
+const REATTACH_MS = 120000;
+const inService = () => settings().get('remote.runInService') !== false && fs.existsSync(SERVICE_RUNNER);
+const claudeCommand = () => (inService() ? `${shellQuote(SERVICE_RUNNER)} ${claudeBase()}` : claudeBase());
 
 function isAutoTitle(name) {
   return SHELL_NAMES.has(name) || AUTO_TITLE.test(name);
@@ -313,6 +318,10 @@ class Tracker {
       const status = s ? s.status || 'idle' : m.sessionId ? 'exited' : null;
       if (status === 'busy' && m.status !== 'busy' && vscode.window.activeTerminal === t && vscode.window.state.focused && !this.editorFocusedSince(m.statusChangedAt)) this.setTerminalFocus(true);
       if (status !== m.status) m.statusChangedAt = Date.now();
+      if (status === 'exited' && m.reattached !== m.sessionId && Date.now() - m.statusChangedAt < REATTACH_MS && inService() && [...running.values()].some((r) => r.sessionId === m.sessionId)) {
+        m.reattached = m.sessionId;
+        t.sendText(`${shellQuote(SERVICE_RUNNER)} --attach-only ${m.sessionId}`);
+      }
       const visible = this.terminalFocused && vscode.window.state.focused && vscode.window.activeTerminal === t;
       this.notifications.onStatus(m.sessionId, m.name, m.status, status, visible);
       m.status = status;
@@ -1431,6 +1440,14 @@ function activate(context) {
         resolve(err ? [] : String(out).split('\n').filter((n) => /^cc-[a-z0-9-]{1,40}$/.test(n)));
       });
     });
+  const endServiceSession = async (sessionId) => {
+    const panes = await new Promise((resolve) => execFile(remoteTmux(), ['-u', '-L', remoteSocket(), 'list-panes', '-a', '-F', '#{session_name} #{pane_pid}'], { timeout: 3000 }, (err, out) => resolve(err ? '' : String(out))));
+    const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
+    for (const [name, pid] of panes.split('\n').filter(Boolean).map((l) => l.split(' '))) {
+      const s = findSession(Number(pid), children, running);
+      if (s && s.sessionId === sessionId && /^cc-[a-z0-9-]{1,40}$/.test(name)) execFile(remoteTmux(), ['-u', '-L', remoteSocket(), 'kill-session', '-t', `=${name}`], () => {});
+    }
+  };
   const attachRemote = async () => {
     const names = await listServiceSessions();
     if (!names.length) {
@@ -1656,6 +1673,7 @@ function activate(context) {
     vscode.window.onDidCloseTerminal((t) => {
       const m = tracker.meta.get(t);
       if (m && m.sessionId) {
+        if (m.status && m.status !== 'exited' && inService()) endServiceSession(m.sessionId);
         tracker.forget(m.sessionId);
         notifications.dismiss(m.sessionId);
       }
@@ -1702,7 +1720,7 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('claudeSessions.copyResume', (item) => {
       const { tab } = item.data;
-      vscode.env.clipboard.writeText(`cd ${shellQuote(tab.cwd || store.wsPath)} && ${claudeCommand()} --resume ${tab.sessionId}`);
+      vscode.env.clipboard.writeText(`cd ${shellQuote(tab.cwd || store.wsPath)} && ${claudeBase()} --resume ${tab.sessionId}`);
     }),
     vscode.commands.registerCommand('claudeSessions.renameSaved', async (item) => {
       const { tab } = item.data;

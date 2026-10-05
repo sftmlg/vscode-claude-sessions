@@ -20,6 +20,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 DEPS_DIR="${CLAUDE_REMOTE_DEPS_DIR:-$REPO_DIR}"
 CONFIG_FILE="${CLAUDE_REMOTE_CONFIG:-$HOME/.config/claude-remote/config.json}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+RUNNER="$HOME/.local/bin/claude-remote-run"
 CHILD_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 ROOTS=()
@@ -101,11 +102,11 @@ if [ "$UNINSTALL" = 1 ]; then
   PUBLIC_PORT="$(resolve "$CONFIG_FILE" "$(mktemp -d)" | sed -n 2p)"
   STATE_DIR="$(resolve "$CONFIG_FILE" | sed -n 3p)"
   act "$LAUNCHCTL" bootout "$GUI/$LABEL" || true
-  act rm -f "$PLIST"
+  act rm -f "$PLIST" "$RUNNER"
   act "$TAILSCALE" serve --https="$PUBLIC_PORT" off || true
   act "$TAILSCALE" serve --http="$PUBLIC_PORT" off || true
   act rm -rf "$STATE_DIR/cache"
-  say "Removed the LaunchAgent, serve port $PUBLIC_PORT and the search caches. Config ($CONFIG_FILE), devices and audit log stay."
+  say "Removed the LaunchAgent, the claude-remote-run launcher, serve port $PUBLIC_PORT and the search caches. Config ($CONFIG_FILE), devices and audit log stay."
   exit 0
 fi
 
@@ -208,7 +209,8 @@ else
 fi
 
 RENDERED="$(mktemp)"
-trap 'rm -f "$MERGED" "$RENDERED"' EXIT
+RUNNER_TMP="$(mktemp)"
+trap 'rm -f "$MERGED" "$RENDERED" "$RUNNER_TMP"' EXIT
 # shellcheck disable=SC2016
 "$NODE" -e '
   const fs = require("fs");
@@ -225,6 +227,9 @@ trap 'rm -f "$MERGED" "$RENDERED"' EXIT
 
 act mkdir -p "$(dirname "$PLIST")"
 act install -m 644 "$RENDERED" "$PLIST"
+printf '#!/bin/bash\nCLAUDE_REMOTE_CONFIG=%q exec %q %q "$@"\n' "$CONFIG_FILE" "$NODE" "$REPO_DIR/remote/claude-run.js" >"$RUNNER_TMP"
+act mkdir -p "$HOME/.local/bin"
+act install -m 755 "$RUNNER_TMP" "$RUNNER"
 act "$LAUNCHCTL" bootout "$GUI/$LABEL" 2>/dev/null || true
 if [ "$DRY_RUN" != 1 ]; then
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

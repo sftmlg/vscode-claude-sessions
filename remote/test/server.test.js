@@ -489,6 +489,29 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await waitFor(() => capture(ctx, 'cc-outside-task').includes('carry on'), { what: 'message typed into the continued session' });
   });
 
+  await t.test('editor tabs start sessions in the service through the local launch route', async () => {
+    const { requestLaunch, readToken } = require('../launch');
+    const token = readToken(stateDir);
+    assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+    assert.strictEqual(fs.statSync(path.join(stateDir, 'launch.token')).mode & 0o077, 0);
+    const post = (headers, body = '{}') => new Promise((resolve) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/admin/session', headers: { host: `127.0.0.1:${port}`, 'content-type': 'application/json', ...headers } }, (res) => resolve(res.statusCode));
+      req.end(body);
+    });
+    assert.strictEqual(await post({}), 403, 'no token');
+    assert.strictEqual(await post({ authorization: `Bearer ${token}`, origin: 'https://evil.example.test' }), 403, 'a browser request never launches');
+    assert.strictEqual(await post({ authorization: `Bearer ${token}`, 'tailscale-user-login': LOGIN }), 403, 'nothing from the tailnet');
+    const viaPort = { stateDir, port };
+    const made = await requestLaunch(viaPort, { dir: work });
+    assert.strictEqual(made.status, 200);
+    assert.match(made.body.name, /^cc-/);
+    await waitFor(() => capture(ctx, made.body.name).includes('fake-claude'), { what: 'started in the service' });
+    assert.strictEqual((await requestLaunch(viaPort, { dir: '/etc' })).body.error, 'dir-not-allowed');
+    assert.strictEqual((await requestLaunch(viaPort, { resumeId: '9a9b9c9d-1111-4222-8333-444455556666' })).body.name, 'cc-outside-task', 'a session the service runs is attached, not started twice');
+    assert.strictEqual((await requestLaunch(viaPort, { resumeId: 'abcdabcd-0000-4000-8000-000000000000', attachOnly: true })).body.error, 'not-found');
+    execFileSync(ctx.bin, ['-L', ctx.socket, 'kill-session', '-t', `=${made.body.name}`]);
+  });
+
   await t.test('audit lines carry no message text and logs no token', async () => {
     const audit = fs.readFileSync(path.join(stateDir, 'audit.log'), 'utf8');
     assert.match(audit, /"action":"send"/);

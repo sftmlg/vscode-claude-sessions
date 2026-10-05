@@ -61,15 +61,30 @@ function isAlive(pid) {
   }
 }
 
+const TMUX_BINS = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'];
+const REMOTE_SOCKET = () => process.env.CLAUDE_REMOTE_TMUX_SOCKET || 'ccremote';
+
+async function serviceAttachEdges() {
+  const bin = TMUX_BINS.find((f) => fs.existsSync(f));
+  if (!bin) return [];
+  const sock = ['-u', '-L', REMOTE_SOCKET()];
+  const [clients, panes] = await Promise.all([run(bin, [...sock, 'list-clients', '-F', '#{client_pid} #{session_name}']), run(bin, [...sock, 'list-panes', '-a', '-F', '#{session_name} #{pane_pid}'])]);
+  const paneOf = new Map(panes.split('\n').filter(Boolean).map((l) => l.split(' ')).map(([name, pid]) => [name, Number(pid)]));
+  return clients.split('\n').filter(Boolean).map((l) => l.split(' ')).map(([pid, name]) => [Number(pid), paneOf.get(name)]).filter(([a, b]) => a && b);
+}
+
 async function processChildren() {
-  const out = await run('ps', ['-Ao', 'pid=,ppid=']);
+  const [out, edges] = await Promise.all([run('ps', ['-Ao', 'pid=,ppid=']), serviceAttachEdges()]);
   const children = new Map();
-  for (const line of out.split('\n')) {
-    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-    if (!pid) continue;
+  const link = (ppid, pid) => {
     if (!children.has(ppid)) children.set(ppid, []);
     children.get(ppid).push(pid);
+  };
+  for (const line of out.split('\n')) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (pid) link(ppid, pid);
   }
+  for (const [client, pane] of edges) link(client, pane);
   return children;
 }
 

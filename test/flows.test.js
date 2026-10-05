@@ -509,6 +509,19 @@ test('a renamed tab keeps its name after closing and reopening by id', async () 
   const reopened = fake.vscode.window.terminals.find((x) => x.sent.some((s) => s.includes(`--resume ${id}`)));
   assert.ok(reopened, 'a new tab resumes the session by id');
   assert.strictEqual(reopened.name, 'schmid-mail');
+  assert.ok(!reopened.sent.some((s) => s.includes('claude-remote-run')), 'without the service the tab runs claude itself');
+
+  const runner = path.join(process.env.HOME, '.local', 'bin', 'claude-remote-run');
+  fs.mkdirSync(path.dirname(runner), { recursive: true });
+  fs.writeFileSync(runner, '#!/bin/sh\n', { mode: 0o755 });
+  await fake.run('claudeSessions.resumeNewTab', closed);
+  const viaService = fake.vscode.window.terminals.filter((x) => x.sent.some((s) => s.includes(`'${runner}' claude --resume ${id}`)));
+  assert.strictEqual(viaService.length, 1, 'with the service installed the tab starts the session there and attaches');
+  fake.config['remote.runInService'] = false;
+  await fake.run('claudeSessions.resumeNewTab', closed);
+  assert.strictEqual(fake.vscode.window.terminals.filter((x) => x.sent.some((s) => s.includes('claude-remote-run'))).length, 1, 'the setting turns it off');
+  delete fake.config['remote.runInService'];
+  fs.rmSync(runner);
   api.deactivate();
 });
 

@@ -717,6 +717,7 @@ function renderStatus() {
   text.textContent = s.status === 'busy' ? 'working…' : s.status === 'waiting' ? `waiting for you${s.waitingFor ? `: ${s.waitingFor}` : ''}` : s.status === 'idle' ? 'idle' : s.status === 'none' ? 'not running · write to continue' : 'no Claude process detected';
   const managed = Boolean(s.managed);
   if (!managed && outbox.pending(conn.id).some((i) => i.sessionId === keyOf(s))) text.textContent = 'sending…';
+  if (bringIntoService(s)) text.textContent = 'opening the live screen…';
   inert($('tab-terminal'), managed ? null : 'The live screen appears here as soon as you send a message.');
   $('input-bar').hidden = !managed && !s.sessionId;
   $('keybar').hidden = !managed;
@@ -799,6 +800,7 @@ function closeSession() {
   if (s && s.sessionId && s.sessionId !== state.current) conn.send({ t: 'unsub', sessionId: s.sessionId });
   unmountChat();
   state.current = null;
+  state.continuing = null;
   state.subscribedKey = null;
   state.claim = false;
   state.sizeOwner = null;
@@ -1003,12 +1005,25 @@ function onJson(data) {
   }
 }
 
+function bringIntoService(s) {
+  if (state.continuing === s.sessionId) return true;
+  if (s.managed || !s.pid || s.status !== 'idle') return false;
+  state.continuing = s.sessionId;
+  request({ t: 'continue', id: newId('c'), sessionId: s.sessionId }).then((ack) => {
+    if (ack.ok) return conn.send({ t: 'list' });
+    if (state.continuing === s.sessionId) state.continuing = null;
+    return ack.error === 'working' ? undefined : toast(errorText(ack.error));
+  });
+  return true;
+}
+
 function followContinued() {
   const cur = currentItem();
   if (!cur || cur.managed || !cur.sessionId) return false;
   const live = state.sessions.find((s) => s.managed && s.sessionId === cur.sessionId);
   if (!live) return false;
   stubs.delete(cur.sessionId);
+  state.continuing = null;
   const draft = $('input').value;
   state.tab = 'terminal';
   openSession(live.name, { replace: true });

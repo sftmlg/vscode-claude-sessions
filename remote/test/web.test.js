@@ -456,6 +456,8 @@ test('every session has the message box; the live screen follows the first messa
   const app = read('app.js');
   assert.match(app, /\$\('input-bar'\)\.hidden = !managed && !s\.sessionId;/);
   assert.match(app, /outbox\.pending\(conn\.id\)\.some\(\(i\) => i\.sessionId === keyOf\(s\)\)\) text\.textContent = 'sending…'/, 'between the first message and the live screen the status says sending, never not running');
+  assert.match(app, /if \(s\.managed \|\| !s\.pid \|\| s\.status !== 'idle'\) return false;/, 'a running session moves into the service only while Claude is idle');
+  assert.match(app, /if \(bringIntoService\(s\)\) text\.textContent = 'opening the live screen…';/);
   assert.match(app, /function followContinued\(\)[\s\S]{0,400}state\.tab = 'terminal';\n  openSession\(live\.name, \{ replace: true \}\);/, 'once the hub runs it, the terminal streams');
   assert.ok(!/\.disabled = /.test(app), 'controls are never silently disabled');
   assert.match(app, /setAttribute\('aria-disabled', 'true'\)/);

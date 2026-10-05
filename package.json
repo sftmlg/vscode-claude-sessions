@@ -642,6 +642,12 @@
           "scope": "machine",
           "description": "WebSocket address of the remote session service (ws://host:port/ws) opened by Open remote sessions. Empty: the panel explains how to set it."
         },
+        "claudeSessions.remote.runInService": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Start Claude tabs inside the remote session service of this machine when it is installed, so every session can be mirrored and steered from other devices. The tab attaches to it; closing VS Code leaves the session running."
+        },
         "claudeSessions.remote.tmuxSocket": {
           "type": "string",
           "default": "ccremote",

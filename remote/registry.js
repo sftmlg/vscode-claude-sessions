@@ -362,6 +362,19 @@ class Registry extends EventEmitter {
     return `cc-${crypto.randomBytes(4).toString('hex')}`;
   }
 
+  async openForTerminal({ dir, resumeId, attachOnly = false } = {}, { device } = {}) {
+    await this.refresh();
+    const item = resumeId ? this.resolve(resumeId) : null;
+    if (item && item.managed) return { name: item.name };
+    if (attachOnly) throw new RegistryError('not-found', 'The service does not run this session');
+    if (item) return this.continueSession(resumeId, { device });
+    if (resumeId) return this.newSession({ resumeId, dir }, { device });
+    const real = await realUnder(dir || this.config.defaultDir, this.config.roots);
+    if (!real) throw new RegistryError('dir-not-allowed', 'Directory is not under a configured root');
+    const name = await this.freeName(`cc-${slug(path.basename(real)).slice(0, 30) || 'session'}`);
+    return this.newSession({ name, dir: real }, { device });
+  }
+
   continueSession(sessionId, { device } = {}) {
     if (!UUID_RE.test(String(sessionId))) return Promise.reject(new RegistryError('not-found'));
     let p = this.continuing.get(sessionId);
