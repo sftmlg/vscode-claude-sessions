@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -667,9 +667,9 @@
         },
         "claudeSessions.sync.recentDays": {
           "type": "number",
-          "default": 14,
+          "default": 0,
           "minimum": 0,
-          "description": "Every session of this repository with activity in the last N days goes up to Nextcloud from the machine it lives on (recent/<machine>/), favorites or not; older ones are removed there again. Other machines see them in Remote and load them with one click. 0 = only favorites."
+          "description": "0 (default): only favorites go to Nextcloud; other sessions are listed in the register and uploaded when another machine loads them. N > 0: every session with activity in the last N days also goes up from its machine (recent/<machine>/), at the cost of upload traffic. Switching back to 0 removes those copies."
         }
       }
     }

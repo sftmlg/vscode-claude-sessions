@@ -993,7 +993,7 @@ test('a recent session of another machine loads with one click, without a reques
     assert.ok(!cloud.files.has(`${base}/requests/${id}.json`), 'no request needed');
     assert.ok(cloud.files.has(`${base}/${id}.jsonl`), 'as a favorite it is shared both ways from now on');
     assert.ok(fake.messages.some((m) => /"recent-one" from Studio C is on this machine now/.test(m)), fake.messages.join(' | '));
-    assert.ok(cloud.files.has(`${base}/recent/book_d/${own}.jsonl`), 'this machine uploads its own recent sessions');
+    assert.ok(!cloud.files.has(`${base}/recent/book_d/${own}.jsonl`), 'by default only favorites go up; other sessions wait until another machine loads them');
   } finally {
     api.deactivate();
     delete process.env.CLAUDE_SESSIONS_MACHINE;

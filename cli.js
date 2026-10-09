@@ -14,7 +14,7 @@ const USAGE = [
   '  node cli.js archive <repo-path> --name <name> [--days N] [--apply]   (preview unless --apply; running sessions are skipped)',
   '  node cli.js state [repo-path]   (favorites, names, saved tabs and whether their session files and processes exist)',
   '  node cli.js sync login <nextcloud-url> --credentials <file>   (browser login, writes an app password to <file>)',
-  '  node cli.js sync [repo-path] --credentials <file> [--folder <name>] [--recent-days N]   (same sync as the plugin: favorites both ways, every session of the last N days (14) up from this machine; 0 = favorites only)',
+  '  node cli.js sync [repo-path] --credentials <file> [--folder <name>] [--recent-days N]   (same sync as the plugin: favorites both ways, every session of the last N days up from this machine; default 0 = favorites only, uploaded copies of other sessions removed)',
   '  node cli.js sync check --credentials <file>   (exit 0 when the app password is accepted, 1 when rejected)',
   '  node cli.js sync status --credentials <file> [--folder <name>]   (every repository folder in Nextcloud: favorites, files, locks, and which are missing here)',
   '  node cli.js sync list [repo-path] --credentials <file> [--since YYYY-MM-DD] [--json]   (every session of a repository in Nextcloud: favorites and recent ones of every machine, with machine, last sync and size)',
@@ -60,9 +60,9 @@ async function main(argv) {
       if (rest[0] === 'list') {
         const sinceAt = rest.indexOf('--since');
         const since = sinceAt >= 0 ? Date.parse(rest[sinceAt + 1]) : 0;
-        const list = (await listRemoteSessions({ ...opts, wsPath: path.resolve(free[0] || process.cwd()) })).filter((x) => Date.parse(x.lastSync) >= since);
+        const list = (await listRemoteSessions({ ...opts, wsPath: path.resolve(free[0] || process.cwd()) })).filter((x) => (Date.parse(x.lastSync || x.lastActivity) || 0) >= since);
         if (rest.includes('--json')) console.log(JSON.stringify(list, null, 2));
-        else for (const x of list) console.log(`${x.favorite ? '★' : '☆'} ${x.lastSync.slice(0, 16).replace('T', ' ')}  ${(x.machine || '?').padEnd(18)} ${(Math.round(x.bytes / 1e5) / 10).toString().padStart(6)} MB  ${x.id}  ${x.name || ''}`);
+        else for (const x of list) console.log(`${x.favorite ? '★' : '☆'} ${x.path ? `synced ${x.lastSync.slice(0, 16).replace('T', ' ')}` : `listed, active ${String(x.lastActivity || '').slice(0, 16).replace('T', ' ')}`}  ${(x.machine || '?').padEnd(18)} ${x.path ? `${(Math.round(x.bytes / 1e5) / 10).toString().padStart(6)} MB` : '        '}  ${x.id}  ${x.name || ''}`);
         return 0;
       }
       if (!free[0]) {
@@ -115,7 +115,7 @@ async function main(argv) {
       stateFile: path.join(repo, '.vscode', 'claude-sessions.json'),
       folder: folderIndex >= 0 ? rest[folderIndex + 1] : undefined,
       running,
-      recentDays: recentIndex >= 0 ? Number(rest[recentIndex + 1]) : 14,
+      recentDays: recentIndex >= 0 ? Number(rest[recentIndex + 1]) : 0,
     });
     console.log(`${result.favorites} favorites · ${result.downloaded.length} downloaded · ${result.uploaded.length} uploaded · ${result.recent.uploaded.length} recent uploaded · ${result.recent.pruned.length} recent removed · ${result.removed.length} removed · ${result.skippedRunning.length} kept because running here · ${result.locked.length} locked here · ${result.conflicts.length} locked elsewhere`);
     for (const f of result.forked) console.log(`forked: ${f.id} grew apart on ${f.machine}; this machine's copy is now ${f.forkId} "${f.name}"`);

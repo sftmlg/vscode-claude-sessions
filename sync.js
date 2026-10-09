@@ -460,9 +460,7 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
     if (local && manifest[id]) files[id] = { size: local.size, mtimeMs: local.mtimeMs, hash: manifest[id].hash };
   }
   const forkNames = Object.fromEntries(forks.map((f) => [f.forkId, f.name]));
-  const recent = recentDays > 0
-    ? await syncRecent({ dav, folderParts, wsPath, machine, days: recentDays, favorites: new Set(final), cache: (state.sync && state.sync.recent) || {} })
-    : null;
+  const recent = await syncRecent({ dav, folderParts, wsPath, machine, days: recentDays, favorites: new Set(final), cache: (state.sync && state.sync.recent) || {} });
   const adopted = Object.fromEntries(Object.entries(merge.fromRemote).filter(([id]) => (current.names || {})[id] === (state.names || {})[id]));
   const nameTimes = Object.fromEntries(final.filter((id) => favoriteNames[id] && merge.stamps[id]).map((id) => [id, merge.stamps[id]]));
   for (const f of forks) nameTimes[f.forkId] = now;
@@ -477,17 +475,17 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   if (nextState !== previous) await dav.put([...folderParts, 'state.json'], Buffer.from(`${nextState}\n`), Math.floor(Date.now() / 1000));
   result.favorites = final.length;
   result.removed = removed;
-  result.recent = recent || { uploaded: [], pruned: [], failed: [], files: {} };
+  result.recent = recent;
   return result;
 }
 
 async function syncRecent({ dav, folderParts, wsPath, machine, days, favorites, cache }) {
   const parts = [...folderParts, 'recent', machineKey(machine)];
-  await dav.ensureFolder(parts);
+  if (days > 0) await dav.ensureFolder(parts);
   const remote = await dav.list(parts);
   const out = { uploaded: [], pruned: [], failed: [], files: {} };
   const keep = new Set();
-  for (const meta of await listRepoSessions(wsPath, days)) {
+  for (const meta of days > 0 ? await listRepoSessions(wsPath, days) : []) {
     if (favorites.has(meta.id)) continue;
     keep.add(meta.id);
     try {
@@ -651,11 +649,22 @@ async function listRemoteSessions({ creds, wsPath, folder = 'Claude Sessions', f
       sessions.push({ id, name: nameOf(id), favorite: false, machine: m.name, path: [...folderParts, 'recent', machineKey(m.id), e.name].join('/'), lastSync: new Date(e.mtimeSec * 1000).toISOString(), bytes: e.bytes });
     }
   }
-  return sessions.sort((a, b) => Number(b.favorite) - Number(a.favorite) || Date.parse(b.lastSync) - Date.parse(a.lastSync));
+  const listed = new Set(sessions.map((x) => x.id));
+  for (const m of machines) {
+    for (const x of m.sessions || []) {
+      if (listed.has(x.id)) continue;
+      listed.add(x.id);
+      sessions.push({ id: x.id, name: x.name || null, favorite: Boolean(x.favorite), machine: m.name, path: null, lastSync: null, lastActivity: x.lastActivity || null, running: Boolean(x.running), bytes: 0 });
+    }
+  }
+  const when = (x) => Date.parse(x.lastSync || x.lastActivity) || 0;
+  return sessions.sort((a, b) => Number(Boolean(b.path)) - Number(Boolean(a.path)) || Number(b.favorite) - Number(a.favorite) || when(b) - when(a));
 }
 
 async function getRemoteSession({ creds, wsPath, id, folder = 'Claude Sessions', fetchImpl }) {
-  const found = (await listRemoteSessions({ creds, wsPath, folder, fetchImpl })).filter((x) => x.id === id || x.id.startsWith(id));
+  const all = (await listRemoteSessions({ creds, wsPath, folder, fetchImpl })).filter((x) => x.id === id || x.id.startsWith(id));
+  const found = all.filter((x) => x.path);
+  if (!found.length && all.length) throw new Error(`${all[0].id} is only listed by ${all[0].machine}; its content is not in Nextcloud. Load it in Remote, then that machine uploads it.`);
   if (!found.length) throw new Error(`No session ${id} in Nextcloud for ${repoKey(wsPath)}`);
   const pick = found.reduce((a, b) => (Date.parse(b.lastSync) > Date.parse(a.lastSync) ? b : a));
   return { session: pick, body: await new WebDav(creds, fetchImpl).get(pick.path.split('/')) };

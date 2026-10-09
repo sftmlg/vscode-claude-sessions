@@ -779,3 +779,27 @@ test('every session of a repository in Nextcloud can be listed and fetched from 
     await cloud.stop();
   }
 });
+
+test('with recentDays 0 this machine removes its uploaded copies of non-favorites; the register still lists them', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    writeSession(a, R1, 'uploaded while the window was on');
+    writeState(a, {});
+    const onA = { creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1' };
+    use(a);
+    await syncFavorites({ ...onA, recentDays: 14 });
+    assert.ok(cloud.files.has(`Claude Sessions/my-repo/recent/studio_1/${R1}.jsonl`));
+    const off = await syncFavorites(onA);
+    assert.deepStrictEqual(off.recent.pruned, [R1]);
+    assert.deepStrictEqual(off.recent.uploaded, []);
+    assert.ok(!cloud.files.has(`Claude Sessions/my-repo/recent/studio_1/${R1}.jsonl`));
+    await heartbeat({ ...onA, name: 'Mac Studio', sessions: [{ id: R1, name: 'meta-only', lastActivity: new Date().toISOString(), running: true }] });
+    const list = await listRemoteSessions({ creds: cloud.creds(), wsPath: a.ws });
+    assert.deepStrictEqual(list.map((x) => [x.id, x.name, x.machine, x.path, x.running]), [[R1, 'meta-only', 'Mac Studio', null, true]]);
+    await assert.rejects(getRemoteSession({ creds: cloud.creds(), wsPath: a.ws, id: R1 }), /only listed by Mac Studio/);
+  } finally {
+    await cloud.stop();
+  }
+});

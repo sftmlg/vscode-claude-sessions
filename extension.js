@@ -884,7 +884,7 @@ function activate(context) {
     folder: settings().get('sync.folder') || 'Claude Sessions',
     intervalMinutes: Math.max(5, Number(settings().get('sync.intervalMinutes')) || 60),
     checkSeconds: Math.max(30, Number(settings().get('sync.checkSeconds')) || 120),
-    recentDays: Math.max(0, Number(settings().get('sync.recentDays') ?? 14) || 0),
+    recentDays: Math.max(0, Number(settings().get('sync.recentDays')) || 0),
   });
   let busy = 0;
   const setSyncing = (value) => {
