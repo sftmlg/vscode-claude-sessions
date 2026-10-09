@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -40,6 +40,12 @@
       {
         "command": "claudeSessions.refresh",
         "title": "Refresh",
+        "category": "Claude Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeSessions.refreshActive",
+        "title": "Refresh: re-read the tabs and check the split layout (focus briefly cycles through the terminals)",
         "category": "Claude Sessions",
         "icon": "$(refresh)"
       },
@@ -295,7 +301,7 @@
         },
         {
           "command": "claudeSessions.refresh",
-          "when": "view == claudeSessions.active || view == claudeSessions.inactive",
+          "when": "view == claudeSessions.inactive",
           "group": "navigation@9"
         },
         {
@@ -347,6 +353,11 @@
           "command": "claudeSessions.openRemoteInBrowser",
           "when": "view == claudeSessions.remote",
           "group": "navigation@2"
+        },
+        {
+          "command": "claudeSessions.refreshActive",
+          "when": "view == claudeSessions.active",
+          "group": "navigation@9"
         }
       ],
       "editor/title": [

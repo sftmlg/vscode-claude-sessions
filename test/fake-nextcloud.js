@@ -87,9 +87,9 @@ function createFakeNextcloud({ loginName = 'david', appPassword = 'app-secret' }
       if (req.method === 'PROPFIND') {
         if (!folders.has(key)) return res.writeHead(404).end();
         const p = options.ns;
-        const entry = (name, mtime) =>
-          `<${p}:response><${p}:href>${prefix}/${encodeURI(name)}</${p}:href><${p}:propstat><${p}:prop><${p}:getlastmodified>${new Date(mtime * 1000).toUTCString()}</${p}:getlastmodified></${p}:prop></${p}:propstat></${p}:response>`;
-        const children = [...files.entries()].filter(([k]) => k.split('/').slice(0, -1).join('/') === key).map(([k, v]) => entry(k, v.mtime));
+        const entry = (name, mtime, size) =>
+          `<${p}:response><${p}:href>${prefix}/${encodeURI(name)}</${p}:href><${p}:propstat><${p}:prop><${p}:getlastmodified>${new Date(mtime * 1000).toUTCString()}</${p}:getlastmodified>${size === undefined ? '' : `<${p}:getcontentlength>${size}</${p}:getcontentlength>`}</${p}:prop></${p}:propstat></${p}:response>`;
+        const children = [...files.entries()].filter(([k]) => k.split('/').slice(0, -1).join('/') === key).map(([k, v]) => entry(k, v.mtime, v.body.length));
         res.writeHead(207, { 'Content-Type': 'application/xml' });
         if (options.garbage) return res.end('<html>maintenance</html>');
         return res.end(`<?xml version="1.0"?><${p}:multistatus xmlns:${p}="DAV:">${entry(`${key}/`, Math.floor(Date.now() / 1000))}${children.join('')}</${p}:multistatus>`);

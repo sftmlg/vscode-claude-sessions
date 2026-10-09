@@ -1000,3 +1000,22 @@ test('a recent session of another machine loads with one click, without a reques
     await cloud.stop();
   }
 });
+
+test('the refresh button in Active checks the split layout again and returns focus', async () => {
+  const { fake, api } = await setup();
+  await api.activeView.ready;
+  const a = fake.vscode.window.createTerminal({ name: 'a' });
+  const b = fake.vscode.window.createTerminal({ name: 'b' });
+  const c = fake.vscode.window.createTerminal({ name: 'c' });
+  fake.panes.length = 0;
+  fake.panes.push([a, b], [c]);
+  api.tracker.groups = [[a], [b], [c]];
+  c.show();
+  await fake.run('claudeSessions.refreshActive');
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((t) => t.name)), [['a', 'b'], ['c']]);
+  assert.strictEqual(fake.vscode.window.activeTerminal, c, 'focus returns to where it was');
+  const menu = require('../package.json').contributes.menus['view/title'];
+  assert.ok(menu.some((m) => m.command === 'claudeSessions.refreshActive' && /view == claudeSessions\.active/.test(m.when)), 'Active shows this refresh');
+  assert.ok(!menu.some((m) => m.command === 'claudeSessions.refresh' && /claudeSessions\.active/.test(m.when)), 'not the plain one');
+  api.deactivate();
+});

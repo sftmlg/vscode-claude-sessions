@@ -1715,6 +1715,10 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.reloadWindow', () => vscode.commands.executeCommand('workbench.action.reloadWindow')),
     vscode.commands.registerCommand('claudeSessions.captureLayout', () => scan('manual')),
     vscode.commands.registerCommand('claudeSessions.refresh', () => view.refresh()),
+    vscode.commands.registerCommand('claudeSessions.refreshActive', async () => {
+      await scan('refresh');
+      view.refresh();
+    }),
     vscode.commands.registerCommand('claudeSessions.focusTab', (t) => {
       if (!t) return;
       t.show(false);

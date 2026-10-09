@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeNextcloud } = require('./fake-nextcloud');
-const { syncFavorites, startLogin, finishLogin, projectDir, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent } = require('../sync');
+const { syncFavorites, startLogin, finishLogin, projectDir, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent, listRemoteSessions, getRemoteSession } = require('../sync');
 
 const originalHome = process.env.HOME;
 delete process.env.CLAUDE_CONFIG_DIR;
@@ -664,6 +664,117 @@ test('loading refuses to overwrite a different copy on this machine', async () =
     use(b);
     await assert.rejects(loadRecent({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, id: R1, owner: 'studio#1' }), /different copy/);
     assert.match(fs.readFileSync(path.join(projectDir(b.ws), `${R1}.jsonl`), 'utf8'), /book version/);
+  } finally {
+    await cloud.stop();
+  }
+});
+
+function appendTyped(m, id, type, mtimeSec = Math.floor(Date.now() / 1000)) {
+  use(m);
+  const file = path.join(projectDir(m.ws), `${id}.jsonl`);
+  fs.appendFileSync(file, `${JSON.stringify({ type, sessionId: id, at: Date.now() })}\n`);
+  fs.utimesSync(file, mtimeSec, mtimeSec);
+}
+
+test('copies that differ only by the bookkeeping Claude writes on exit are not forked; the conversation wins', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const b = machine('b');
+    const t0 = Math.floor(Date.now() / 1000) - 600;
+    writeSession(a, F1, 'shared start', t0);
+    writeState(a, { favorites: { [F1]: true } });
+    writeState(b, {});
+    const onA = { creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1' };
+    const onB = { creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'book#2' };
+    use(a);
+    await syncFavorites(onA);
+    use(b);
+    await syncFavorites(onB);
+    appendLine(b, F1, 'real work on the book', t0 + 100);
+    use(b);
+    await syncFavorites(onB);
+    appendTyped(a, F1, 'last-prompt', t0 + 200);
+    appendTyped(a, F1, 'cost-state', t0 + 200);
+    use(a);
+    const res = await syncFavorites(onA);
+    assert.deepStrictEqual(res.forked, [], 'no fork for bookkeeping');
+    assert.deepStrictEqual(res.downloaded, [F1], 'the copy with the conversation wins');
+    const bookFile = (use(b), fs.readFileSync(path.join(projectDir(b.ws), `${F1}.jsonl`)));
+    use(a);
+    assert.ok(fs.readFileSync(path.join(projectDir(a.ws), `${F1}.jsonl`)).equals(bookFile));
+
+    appendLine(a, F1, 'more real work on the studio', t0 + 300);
+    appendTyped(b, F1, 'cost-state', t0 + 300);
+    use(b);
+    await syncFavorites(onB);
+    use(a);
+    const back = await syncFavorites(onA);
+    assert.deepStrictEqual(back.forked, []);
+    assert.deepStrictEqual(back.uploaded, [F1], 'here the studio holds the conversation, so it goes up');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('a rename on one machine reaches the other; when both renamed, the later rename wins on both', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const b = machine('b');
+    writeSession(a, F1, 'named session');
+    writeState(a, { favorites: { [F1]: true }, names: { [F1]: 'alpha' } });
+    writeState(b, {});
+    const onA = { creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1' };
+    const onB = { creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'book#2' };
+    const sync = async (m, opts, now) => (use(m), syncFavorites({ ...opts, now }));
+    const t = Date.now();
+    await sync(a, onA, t);
+    await sync(b, onB, t + 1000);
+    assert.strictEqual(readState(b).names[F1], 'alpha');
+    writeState(a, { ...readState(a), names: { [F1]: 'alpha-renamed' } });
+    await sync(a, onA, t + 2000);
+    await sync(b, onB, t + 3000);
+    assert.strictEqual(readState(b).names[F1], 'alpha-renamed', 'a rename travels');
+    writeState(a, { ...readState(a), names: { [F1]: 'from-studio' } });
+    writeState(b, { ...readState(b), names: { [F1]: 'from-book' } });
+    await sync(a, onA, t + 4000);
+    await sync(b, onB, t + 5000);
+    await sync(a, onA, t + 6000);
+    assert.strictEqual(readState(a).names[F1], 'from-book', 'the later rename wins');
+    assert.strictEqual(readState(b).names[F1], 'from-book');
+    await sync(b, onB, t + 7000);
+    await sync(a, onA, t + 8000);
+    assert.strictEqual(readState(a).names[F1], 'from-book', 'and stays');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('every session of a repository in Nextcloud can be listed and fetched from anywhere, favorites first', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    writeSession(a, F1, 'a favorite');
+    writeSession(a, R1, 'a recent one');
+    writeState(a, { favorites: { [F1]: true }, names: { [F1]: 'fav-name' } });
+    const onA = { creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1' };
+    use(a);
+    await heartbeat({ ...onA, name: 'Mac Studio', sessions: [{ id: R1, name: 'recent-name' }] });
+    await syncFavorites({ ...onA, recentDays: 14 });
+    const list = await listRemoteSessions({ creds: cloud.creds(), wsPath: a.ws });
+    assert.deepStrictEqual(list.map((x) => [x.id, x.favorite, x.machine, x.name]), [
+      [F1, true, 'Mac Studio', 'fav-name'],
+      [R1, false, 'Mac Studio', 'recent-name'],
+    ]);
+    assert.ok(list.every((x) => x.bytes > 0 && Date.parse(x.lastSync) > 0));
+    const { session, body } = await getRemoteSession({ creds: cloud.creds(), wsPath: a.ws, id: R1.slice(0, 8) });
+    assert.strictEqual(session.id, R1);
+    assert.ok(body.equals(fs.readFileSync(path.join(projectDir(a.ws), `${R1}.jsonl`))));
+    await assert.rejects(getRemoteSession({ creds: cloud.creds(), wsPath: a.ws, id: 'nope' }), /No session nope/);
   } finally {
     await cloud.stop();
   }

@@ -217,6 +217,54 @@ async function writeLocal(file, body, mtimeSec) {
   await fsp.rename(tmp, file);
 }
 
+function mergeNames({ local, remote, base, times, now }) {
+  const names = {};
+  const stamps = { ...times };
+  const fromRemote = {};
+  for (const id of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+    const l = local[id];
+    const r = remote[id];
+    if (l === undefined) {
+      names[id] = fromRemote[id] = r;
+      continue;
+    }
+    if (r === undefined || l === r) {
+      names[id] = l;
+      if (r === undefined) stamps[id] = stamps[id] || now;
+      continue;
+    }
+    const localChanged = base ? l !== base[id] : !times[id];
+    const remoteChanged = base ? r !== base[id] : true;
+    if (localChanged && (!remoteChanged || now >= (times[id] || 0))) {
+      names[id] = l;
+      stamps[id] = now;
+    } else {
+      names[id] = fromRemote[id] = r;
+    }
+  }
+  return { names, stamps, fromRemote };
+}
+
+const CONVERSATION = new Set(['user', 'assistant']);
+
+function divergingLines(a, b) {
+  const la = a.toString('utf8').split('\n');
+  const lb = b.toString('utf8').split('\n');
+  let i = 0;
+  while (i < la.length && i < lb.length && la[i] === lb[i]) i++;
+  return [la.slice(i), lb.slice(i)];
+}
+
+function holdsConversation(lines) {
+  return lines.some((line) => {
+    try {
+      return CONVERSATION.has(JSON.parse(line).type);
+    } catch {
+      return false;
+    }
+  });
+}
+
 function completeLines(buffer) {
   const end = buffer.lastIndexOf(0x0a);
   return end === buffer.length - 1 ? buffer : buffer.subarray(0, end + 1);
@@ -254,7 +302,8 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   const syncBase = new Set((state.sync && state.sync.favorites) || []);
   const merged = [...new Set([...localFav, ...remoteFav])].filter((id) => (localFav.has(id) && remoteFav.has(id)) || !syncBase.has(id)).sort();
   const removed = [...syncBase].filter((id) => !merged.includes(id));
-  const names = { ...(remoteState.names || {}), ...(state.names || {}) };
+  const merge = mergeNames({ local: state.names || {}, remote: remoteState.names || {}, base: (state.sync && state.sync.names) || null, times: remoteState.nameTimes || {}, now });
+  const names = merge.names;
 
   const locks = {};
   for (const name of remoteLocks.keys()) {
@@ -341,6 +390,16 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
       if (!heldElsewhere(id)) await upload(id, localBody, localSec);
       return;
     }
+    const [localExtra, remoteExtra] = divergingLines(localBody, remoteBody);
+    if (!holdsConversation(localExtra)) {
+      if (running.has(id)) result.skippedRunning.push(id);
+      else await download(id, local.file, remoteBody, entry, by);
+      return;
+    }
+    if (!holdsConversation(remoteExtra)) {
+      if (!heldElsewhere(id)) await upload(id, localBody, localSec);
+      return;
+    }
     if (running.has(id)) {
       result.diverged.push({ id, machine: by, kept: 'running here; resolved once it stops' });
       return;
@@ -404,14 +463,17 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   const recent = recentDays > 0
     ? await syncRecent({ dav, folderParts, wsPath, machine, days: recentDays, favorites: new Set(final), cache: (state.sync && state.sync.recent) || {} })
     : null;
+  const adopted = Object.fromEntries(Object.entries(merge.fromRemote).filter(([id]) => (current.names || {})[id] === (state.names || {})[id]));
+  const nameTimes = Object.fromEntries(final.filter((id) => favoriteNames[id] && merge.stamps[id]).map((id) => [id, merge.stamps[id]]));
+  for (const f of forks) nameTimes[f.forkId] = now;
   writeStatePatch(stateFile, {
     favorites: localNow,
-    names: { ...favoriteNames, ...(current.names || {}), ...forkNames },
-    sync: { favorites: final, at: new Date().toISOString(), locks: Object.fromEntries(Object.keys(locks).filter(heldElsewhere).map((id) => [id, locks[id]])), files, recent: recent ? recent.files : undefined },
+    names: { ...favoriteNames, ...(current.names || {}), ...adopted, ...forkNames },
+    sync: { favorites: final, names: favoriteNames, at: new Date().toISOString(), locks: Object.fromEntries(Object.keys(locks).filter(heldElsewhere).map((id) => [id, locks[id]])), files, recent: recent ? recent.files : undefined },
   });
   const liveManifest = Object.fromEntries(final.filter((id) => manifest[id]).map((id) => [id, manifest[id]]));
-  const nextState = JSON.stringify({ favorites, names: favoriteNames, files: liveManifest }, null, 2);
-  const previous = JSON.stringify({ favorites: remoteState.favorites || {}, names: remoteState.names || {}, files: remoteState.files || {} }, null, 2);
+  const nextState = JSON.stringify({ favorites, names: favoriteNames, nameTimes, files: liveManifest }, null, 2);
+  const previous = JSON.stringify({ favorites: remoteState.favorites || {}, names: remoteState.names || {}, nameTimes: remoteState.nameTimes || {}, files: remoteState.files || {} }, null, 2);
   if (nextState !== previous) await dav.put([...folderParts, 'state.json'], Buffer.from(`${nextState}\n`), Math.floor(Date.now() / 1000));
   result.favorites = final.length;
   result.removed = removed;
@@ -522,12 +584,7 @@ async function heartbeat({ creds, wsPath, stateFile, folder = 'Claude Sessions',
     renewed.push(id);
   }
 
-  const machines = [];
-  for (const file of (await dav.list(machinesParts)).keys()) {
-    if (!file.endsWith('.json')) continue;
-    const m = await dav.getJson([...machinesParts, file]);
-    if (m && m.id) machines.push({ ...m, self: m.id === machine || m.id === legacy });
-  }
+  const machines = (await readMachines(dav, folderParts)).map((m) => ({ ...m, self: m.id === machine || m.id === legacy }));
   machines.sort((a, b) => Number(b.self) - Number(a.self) || String(a.name).localeCompare(String(b.name)));
 
   const incoming = [];
@@ -552,6 +609,58 @@ async function heartbeat({ creds, wsPath, stateFile, folder = 'Claude Sessions',
   return { name: entry.name, machines, incoming, outgoing, renewed, uploaded };
 }
 
+async function readMachines(dav, folderParts) {
+  const machines = [];
+  for (const file of (await dav.list([...folderParts, 'machines'])).keys()) {
+    if (!file.endsWith('.json')) continue;
+    const m = await dav.getJson([...folderParts, 'machines', file]);
+    if (m && m.id) machines.push(m);
+  }
+  return machines;
+}
+
+async function listRemoteSessions({ creds, wsPath, folder = 'Claude Sessions', fetchImpl }) {
+  const dav = new WebDav(creds, fetchImpl);
+  const folderParts = [folder, repoKey(wsPath)];
+  const machines = await readMachines(dav, folderParts);
+  const state = (await dav.getJson([...folderParts, 'state.json'])) || {};
+  const nameOf = (id) => (state.names || {})[id] || machines.flatMap((m) => m.sessions || []).find((x) => x.id === id)?.name || null;
+  const machineName = (id) => (machines.find((m) => m.id === id) || {}).name || id;
+  const sessions = [];
+  const sizes = async (parts) => {
+    const res = await dav.request('PROPFIND', parts, { headers: { Depth: '1' }, ok: [207, 404] });
+    if (res.status === 404) return [];
+    return (await res.text())
+      .split(/<(?:[\w-]+:)?response[\s>]/i)
+      .slice(1)
+      .map((block) => ({
+        name: decodeURIComponent(((block.match(/<(?:[\w-]+:)?href>([^<]+)</i) || [])[1] || '').replace(/\/$/, '').split('/').pop()),
+        mtimeSec: Math.floor(Date.parse((block.match(/<(?:[\w-]+:)?getlastmodified>([^<]+)</i) || [])[1]) / 1000),
+        bytes: Number((block.match(/<(?:[\w-]+:)?getcontentlength>(\d+)</i) || [])[1] || 0),
+      }))
+      .filter((e) => SESSION_FILE.test(e.name));
+  };
+  for (const e of await sizes(folderParts)) {
+    const id = e.name.replace(/\.jsonl$/, '');
+    const by = ((state.files || {})[id] || {}).machine;
+    sessions.push({ id, name: nameOf(id), favorite: true, machine: by ? machineName(by) : null, path: [...folderParts, e.name].join('/'), lastSync: new Date(e.mtimeSec * 1000).toISOString(), bytes: e.bytes });
+  }
+  for (const m of machines) {
+    for (const e of await sizes([...folderParts, 'recent', machineKey(m.id)])) {
+      const id = e.name.replace(/\.jsonl$/, '');
+      sessions.push({ id, name: nameOf(id), favorite: false, machine: m.name, path: [...folderParts, 'recent', machineKey(m.id), e.name].join('/'), lastSync: new Date(e.mtimeSec * 1000).toISOString(), bytes: e.bytes });
+    }
+  }
+  return sessions.sort((a, b) => Number(b.favorite) - Number(a.favorite) || Date.parse(b.lastSync) - Date.parse(a.lastSync));
+}
+
+async function getRemoteSession({ creds, wsPath, id, folder = 'Claude Sessions', fetchImpl }) {
+  const found = (await listRemoteSessions({ creds, wsPath, folder, fetchImpl })).filter((x) => x.id === id || x.id.startsWith(id));
+  if (!found.length) throw new Error(`No session ${id} in Nextcloud for ${repoKey(wsPath)}`);
+  const pick = found.reduce((a, b) => (Date.parse(b.lastSync) > Date.parse(a.lastSync) ? b : a));
+  return { session: pick, body: await new WebDav(creds, fetchImpl).get(pick.path.split('/')) };
+}
+
 async function requestSession({ creds, wsPath, stateFile, id, from, name, folder = 'Claude Sessions', machine = machineId(), now = Date.now(), fetchImpl }) {
   const dav = new WebDav(creds, fetchImpl);
   const requestsParts = [folder, repoKey(wsPath), 'requests'];
@@ -569,4 +678,4 @@ async function closeRequests({ creds, wsPath, ids, folder = 'Claude Sessions', f
   for (const id of ids) await dav.request('DELETE', [folder, repoKey(wsPath), 'requests', `${id}.json`], { ok: [204, 404] });
 }
 
-module.exports = { heartbeat, loadRecent, requestSession, closeRequests, machineKey, readRemoteStatus, WebDav, startLogin, finishLogin, syncFavorites, readLock, machineId, LOCK_TTL_MS, repoKey, projectDir, normalizeServer };
+module.exports = { heartbeat, loadRecent, listRemoteSessions, getRemoteSession, requestSession, closeRequests, machineKey, readRemoteStatus, WebDav, startLogin, finishLogin, syncFavorites, readLock, machineId, LOCK_TTL_MS, repoKey, projectDir, normalizeServer };

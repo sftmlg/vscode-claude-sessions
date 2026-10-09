@@ -17,6 +17,8 @@ const USAGE = [
   '  node cli.js sync [repo-path] --credentials <file> [--folder <name>] [--recent-days N]   (same sync as the plugin: favorites both ways, every session of the last N days (14) up from this machine; 0 = favorites only)',
   '  node cli.js sync check --credentials <file>   (exit 0 when the app password is accepted, 1 when rejected)',
   '  node cli.js sync status --credentials <file> [--folder <name>]   (every repository folder in Nextcloud: favorites, files, locks, and which are missing here)',
+  '  node cli.js sync list [repo-path] --credentials <file> [--since YYYY-MM-DD] [--json]   (every session of a repository in Nextcloud: favorites and recent ones of every machine, with machine, last sync and size)',
+  '  node cli.js sync get <session-id or prefix> [repo-path] --credentials <file> [--out <file>]   (the newest copy in Nextcloud; stdout without --out)',
   '  node cli.js sync machines [repo-path] --credentials <file> [--folder <name>]   (the machine register of a repository: names, last seen, last sync, sessions, open requests)',
 ].join('\n');
 
@@ -47,6 +49,32 @@ async function main(argv) {
         console.log(`${repo.name}: ${repo.favorites.length} favorites · ${repo.files} files · ${repo.locks.length} locks`);
         for (const f of repo.favorites) console.log(`  ${f.here ? 'here   ' : 'missing'} ${f.id} ${f.name || ''}${f.file ? '' : ' (no file in Nextcloud)'}${f.lock ? ` 🔒 ${f.lock}` : ''}`);
       }
+      return 0;
+    }
+    if (rest[0] === 'list' || rest[0] === 'get') {
+      const { listRemoteSessions, getRemoteSession } = require('./sync');
+      const valued = ['--credentials', '--folder', '--out', '--since'];
+      const free = rest.slice(1).filter((a, i, all) => !a.startsWith('--') && !valued.includes(all[i - 1]));
+      const folderAt = rest.indexOf('--folder');
+      const opts = { creds: JSON.parse(fs.readFileSync(credFile, 'utf8')), folder: folderAt >= 0 ? rest[folderAt + 1] : undefined };
+      if (rest[0] === 'list') {
+        const sinceAt = rest.indexOf('--since');
+        const since = sinceAt >= 0 ? Date.parse(rest[sinceAt + 1]) : 0;
+        const list = (await listRemoteSessions({ ...opts, wsPath: path.resolve(free[0] || process.cwd()) })).filter((x) => Date.parse(x.lastSync) >= since);
+        if (rest.includes('--json')) console.log(JSON.stringify(list, null, 2));
+        else for (const x of list) console.log(`${x.favorite ? '★' : '☆'} ${x.lastSync.slice(0, 16).replace('T', ' ')}  ${(x.machine || '?').padEnd(18)} ${(Math.round(x.bytes / 1e5) / 10).toString().padStart(6)} MB  ${x.id}  ${x.name || ''}`);
+        return 0;
+      }
+      if (!free[0]) {
+        console.error(USAGE);
+        return 1;
+      }
+      const { session, body } = await getRemoteSession({ ...opts, wsPath: path.resolve(free[1] || process.cwd()), id: free[0] });
+      const outAt = rest.indexOf('--out');
+      if (outAt >= 0) {
+        fs.writeFileSync(rest[outAt + 1], body);
+        console.error(`${session.id} from ${session.machine || 'Nextcloud'} (${session.path}) written to ${rest[outAt + 1]}`);
+      } else process.stdout.write(body);
       return 0;
     }
     if (rest[0] === 'machines') {
@@ -202,4 +230,7 @@ async function main(argv) {
   return 0;
 }
 
-main(process.argv.slice(2)).then((code) => process.exit(code));
+main(process.argv.slice(2)).then((code) => process.exit(code), (err) => {
+  console.error(err.message);
+  process.exit(1);
+});
