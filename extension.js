@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 const updater = require('./updater');
-const { syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests } = require('./sync');
+const { syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent } = require('./sync');
 const {
   readRunningSessions,
   processChildren,
@@ -884,6 +884,7 @@ function activate(context) {
     folder: settings().get('sync.folder') || 'Claude Sessions',
     intervalMinutes: Math.max(5, Number(settings().get('sync.intervalMinutes')) || 60),
     checkSeconds: Math.max(30, Number(settings().get('sync.checkSeconds')) || 120),
+    recentDays: Math.max(0, Number(settings().get('sync.recentDays') ?? 14) || 0),
   });
   let busy = 0;
   const setSyncing = (value) => {
@@ -967,10 +968,10 @@ function activate(context) {
     setSyncing(true);
     try {
       const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
-      const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running });
-      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
+      const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running, recentDays: syncSettings().recentDays });
+      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.recent.uploaded.length ? ` · ${result.recent.uploaded.length} recent up` : ''}${result.recent.pruned.length ? ` · ${result.recent.pruned.length} recent removed` : ''}${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
       const names = store.readState().names || {};
-      for (const f of result.failed) tracker.log(`sync: "${names[f.id] || f.id}" not synced: ${f.error}`);
+      for (const f of result.failed.concat(result.recent.failed)) tracker.log(`sync: "${names[f.id] || f.id}" not synced: ${f.error}`);
       if (result.failed.length && manual) vscode.window.showWarningMessage(`Nextcloud sync: ${result.failed.map((f) => `"${names[f.id] || f.id}"`).join(', ')} could not be synced; the others were. Details in the output channel Claude Sessions.`);
       for (const f of result.forked) {
         vscode.window.showInformationMessage(`"${f.name}" holds what this machine wrote while "${names[f.id] || f.id}" grew apart on ${f.machine}; both sessions are kept and starred.`);
@@ -1092,6 +1093,20 @@ function activate(context) {
     if (!stored) return vscode.window.showInformationMessage('Connect Nextcloud first (Claude Sessions: Connect Nextcloud).');
     const state = store.readState();
     if (!(state.names || {})[s.id]) store.writeState({ names: { ...(state.names || {}), [s.id]: s.name } });
+    if (s.uploaded && s.uploaded.recent) {
+      try {
+        await loadRecent({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), id: s.id, owner: s.machine, name: s.name, folder: syncSettings().folder });
+      } catch (err) {
+        tracker.log(`loading ${s.id} from ${s.machineName} failed: ${err.message}`);
+        return vscode.window.showWarningMessage(`"${s.name}" was not loaded: ${err.message}`);
+      }
+      notifications.onChange.fire();
+      vscode.window.showInformationMessage(`"${s.name}" from ${s.machineName} is on this machine now and starred, so both machines keep it in sync.`, 'Resume').then((choice) => {
+        if (choice === 'Resume') vscode.commands.executeCommand('claudeSessions.resume', { data: { tab } });
+      });
+      await runSync(true, { quiet: true });
+      return runHeartbeat(true, { act: false });
+    }
     awaiting.set(s.id, s.machineName);
     if (s.uploaded) {
       notifications.setFavorite(s.id, true);

@@ -4,7 +4,7 @@ const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { filesForSession, readStateFile, writeStatePatch } = require('./sessions');
+const { filesForSession, readStateFile, writeStatePatch, listRepoSessions } = require('./sessions');
 
 const SESSION_FILE = /^[0-9a-zA-Z-]+\.jsonl$/;
 // Proxies in front of Nextcloud cap request bodies (Cloudflare: 100 MB); larger files go up in chunks of this size.
@@ -209,6 +209,14 @@ function takeLock(stateFile) {
   return () => fs.rmSync(lock, { force: true });
 }
 
+async function writeLocal(file, body, mtimeSec) {
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.sync`;
+  await fsp.writeFile(tmp, body);
+  await fsp.utimes(tmp, mtimeSec, mtimeSec);
+  await fsp.rename(tmp, file);
+}
+
 function completeLines(buffer) {
   const end = buffer.lastIndexOf(0x0a);
   return end === buffer.length - 1 ? buffer : buffer.subarray(0, end + 1);
@@ -223,7 +231,7 @@ async function syncFavorites(options) {
   }
 }
 
-async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), machine = machineId(), legacy = legacyMachineId(), now = Date.now(), fetchImpl, chunkBytes }) {
+async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), machine = machineId(), legacy = legacyMachineId(), now = Date.now(), fetchImpl, chunkBytes, recentDays = 0 }) {
   const isMine = (lock) => Boolean(lock) && (lock.machine === machine || lock.machine === legacy);
   const dav = new WebDav(creds, fetchImpl, { chunkBytes });
   const folderParts = [folder, repoKey(wsPath)];
@@ -277,13 +285,6 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   const manifest = { ...(remoteState.files || {}) };
   const localCache = { ...((state.sync && state.sync.files) || {}) };
   const forks = [];
-  const writeLocal = async (file, body, mtimeSec) => {
-    await fsp.mkdir(path.dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.sync`;
-    await fsp.writeFile(tmp, body);
-    await fsp.utimes(tmp, mtimeSec, mtimeSec);
-    await fsp.rename(tmp, file);
-  };
   const record = (id, body, by, mtimeSec) => {
     manifest[id] = { bytes: body.length, hash: sha256(body), machine: by, mtimeSec };
   };
@@ -400,10 +401,13 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
     if (local && manifest[id]) files[id] = { size: local.size, mtimeMs: local.mtimeMs, hash: manifest[id].hash };
   }
   const forkNames = Object.fromEntries(forks.map((f) => [f.forkId, f.name]));
+  const recent = recentDays > 0
+    ? await syncRecent({ dav, folderParts, wsPath, machine, days: recentDays, favorites: new Set(final), cache: (state.sync && state.sync.recent) || {} })
+    : null;
   writeStatePatch(stateFile, {
     favorites: localNow,
     names: { ...favoriteNames, ...(current.names || {}), ...forkNames },
-    sync: { favorites: final, at: new Date().toISOString(), locks: Object.fromEntries(Object.keys(locks).filter(heldElsewhere).map((id) => [id, locks[id]])), files },
+    sync: { favorites: final, at: new Date().toISOString(), locks: Object.fromEntries(Object.keys(locks).filter(heldElsewhere).map((id) => [id, locks[id]])), files, recent: recent ? recent.files : undefined },
   });
   const liveManifest = Object.fromEntries(final.filter((id) => manifest[id]).map((id) => [id, manifest[id]]));
   const nextState = JSON.stringify({ favorites, names: favoriteNames, files: liveManifest }, null, 2);
@@ -411,7 +415,63 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   if (nextState !== previous) await dav.put([...folderParts, 'state.json'], Buffer.from(`${nextState}\n`), Math.floor(Date.now() / 1000));
   result.favorites = final.length;
   result.removed = removed;
+  result.recent = recent || { uploaded: [], pruned: [], failed: [], files: {} };
   return result;
+}
+
+async function syncRecent({ dav, folderParts, wsPath, machine, days, favorites, cache }) {
+  const parts = [...folderParts, 'recent', machineKey(machine)];
+  await dav.ensureFolder(parts);
+  const remote = await dav.list(parts);
+  const out = { uploaded: [], pruned: [], failed: [], files: {} };
+  const keep = new Set();
+  for (const meta of await listRepoSessions(wsPath, days)) {
+    if (favorites.has(meta.id)) continue;
+    keep.add(meta.id);
+    try {
+      const local = await newestFile(meta.id);
+      if (!local) continue;
+      const seen = cache[meta.id];
+      if (remote.has(`${meta.id}.jsonl`) && seen && seen.size === local.size && seen.mtimeMs === local.mtimeMs) {
+        out.files[meta.id] = seen;
+        continue;
+      }
+      const body = completeLines(await fsp.readFile(local.file));
+      if (!body.length) continue;
+      await dav.put([...parts, `${meta.id}.jsonl`], body, Math.floor(local.mtimeMs / 1000));
+      out.files[meta.id] = { size: local.size, mtimeMs: local.mtimeMs };
+      out.uploaded.push(meta.id);
+    } catch (err) {
+      out.failed.push({ id: meta.id, error: err.message });
+    }
+  }
+  for (const name of remote.keys()) {
+    if (!SESSION_FILE.test(name) || keep.has(name.replace(/\.jsonl$/, ''))) continue;
+    await dav.request('DELETE', [...parts, name], { ok: [204, 404] });
+    out.pruned.push(name.replace(/\.jsonl$/, ''));
+  }
+  return out;
+}
+
+async function loadRecent({ creds, wsPath, stateFile, id, owner, name, folder = 'Claude Sessions', fetchImpl }) {
+  const dav = new WebDav(creds, fetchImpl);
+  const parts = [folder, repoKey(wsPath), 'recent', machineKey(owner)];
+  const entry = (await dav.list(parts)).get(`${id}.jsonl`);
+  if (!entry) throw new Error('the other machine no longer has it in Nextcloud');
+  const body = await dav.get([...parts, `${id}.jsonl`]);
+  const local = await newestFile(id);
+  if (local) {
+    const mine = completeLines(await fsp.readFile(local.file));
+    const grows = body.length >= mine.length && body.subarray(0, mine.length).equals(mine);
+    if (!grows) throw new Error('this machine holds a different copy of it; star it on both machines to merge them');
+  }
+  await writeLocal(local ? local.file : path.join(projectDir(wsPath), `${id}.jsonl`), body, entry.mtimeSec);
+  const state = localState(stateFile);
+  writeStatePatch(stateFile, {
+    favorites: { ...(state.favorites || {}), [id]: true },
+    names: name && !(state.names || {})[id] ? { ...(state.names || {}), [id]: name } : state.names || {},
+  });
+  return { bytes: body.length };
 }
 
 async function readRemoteStatus(dav, folder = 'Claude Sessions', now = Date.now()) {
@@ -480,8 +540,15 @@ async function heartbeat({ creds, wsPath, stateFile, folder = 'Claude Sessions',
     else if (req.by === machine || req.by === legacy) outgoing.push(req);
   }
   const remoteState = (await dav.getJson([...folderParts, 'state.json'])) || {};
-  const listing = await dav.list(folderParts);
-  const uploaded = Object.fromEntries([...listing.entries()].filter(([n]) => SESSION_FILE.test(n)).map(([n, e]) => [n.replace(/\.jsonl$/, ''), { mtimeSec: e.mtimeSec, by: ((remoteState.files || {})[n.replace(/\.jsonl$/, '')] || {}).machine || null }]));
+  const uploaded = {};
+  for (const m of machines) {
+    for (const [n, e] of await dav.list([...folderParts, 'recent', machineKey(m.id)])) {
+      if (SESSION_FILE.test(n)) uploaded[n.replace(/\.jsonl$/, '')] = { mtimeSec: e.mtimeSec, by: m.id, recent: true };
+    }
+  }
+  for (const [n, e] of await dav.list(folderParts)) {
+    if (SESSION_FILE.test(n)) uploaded[n.replace(/\.jsonl$/, '')] = { mtimeSec: e.mtimeSec, by: ((remoteState.files || {})[n.replace(/\.jsonl$/, '')] || {}).machine || null };
+  }
   return { name: entry.name, machines, incoming, outgoing, renewed, uploaded };
 }
 
@@ -502,4 +569,4 @@ async function closeRequests({ creds, wsPath, ids, folder = 'Claude Sessions', f
   for (const id of ids) await dav.request('DELETE', [folder, repoKey(wsPath), 'requests', `${id}.json`], { ok: [204, 404] });
 }
 
-module.exports = { heartbeat, requestSession, closeRequests, machineKey, readRemoteStatus, WebDav, startLogin, finishLogin, syncFavorites, readLock, machineId, LOCK_TTL_MS, repoKey, projectDir, normalizeServer };
+module.exports = { heartbeat, loadRecent, requestSession, closeRequests, machineKey, readRemoteStatus, WebDav, startLogin, finishLogin, syncFavorites, readLock, machineId, LOCK_TTL_MS, repoKey, projectDir, normalizeServer };

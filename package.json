@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.30.1",
+  "version": "0.31.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -653,6 +653,12 @@
           "default": "ccremote",
           "scope": "machine",
           "description": "tmux socket name of the remote session service on this machine, used by Attach to a service session in a terminal tab."
+        },
+        "claudeSessions.sync.recentDays": {
+          "type": "number",
+          "default": 14,
+          "minimum": 0,
+          "description": "Every session of this repository with activity in the last N days goes up to Nextcloud from the machine it lives on (recent/<machine>/), favorites or not; older ones are removed there again. Other machines see them in Remote and load them with one click. 0 = only favorites."
         }
       }
     }

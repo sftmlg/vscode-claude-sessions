@@ -18,7 +18,7 @@ if (!credFile) {
 }
 
 const creds = JSON.parse(fs.readFileSync(credFile, 'utf8'));
-const { WebDav, syncFavorites, repoKey, heartbeat, requestSession, closeRequests } = require('../sync');
+const { WebDav, syncFavorites, repoKey, heartbeat, requestSession, closeRequests, loadRecent } = require('../sync');
 const sessions = require('../sessions');
 const dav = new WebDav(creds);
 const parts = [folder, repoKey(repo)];
@@ -157,6 +157,19 @@ try {
   const got = await on(book, async () => (await sessions.filesForSession(wanted))[0]);
   check('byte-identical on the requesting machine', got && sha(fs.readFileSync(got.file)) === sha(fs.readFileSync(path.join(studioDir, `${wanted}.jsonl`))));
   check('starred on both machines', JSON.parse(fs.readFileSync(A.stateFile, 'utf8')).favorites[wanted] && JSON.parse(fs.readFileSync(B.stateFile, 'utf8')).favorites[wanted]);
+
+  console.log('== 7 every recent session goes up from its machine; the other machine loads it without a request ==');
+  const recentId = '0e2e0e2e-0000-4000-8000-00000000e2e1';
+  fs.writeFileSync(path.join(studioDir, `${recentId}.jsonl`), `${lines.map((l) => JSON.stringify({ ...l, sessionId: recentId })).join('\n')}\n`);
+  const sent = await on(studio, () => syncFavorites({ ...A, recentDays: 14 }));
+  check('the studio uploads its non-favorite session', sent.recent.uploaded.includes(recentId), JSON.stringify(sent.recent.uploaded));
+  check('the favorite is not uploaded a second time', !sent.recent.uploaded.includes(wanted));
+  const listed = await on(book, () => heartbeat({ ...B, name: 'E2E Book' }));
+  check('the book sees it, with its machine', listed.uploaded[recentId] && listed.uploaded[recentId].recent && listed.uploaded[recentId].by === A.machine, JSON.stringify(listed.uploaded[recentId] || null));
+  await on(book, () => loadRecent({ ...B, id: recentId, owner: A.machine, name: 'recent-e2e' }));
+  const loaded = await on(book, async () => (await sessions.filesForSession(recentId))[0]);
+  check('loaded byte-identical on the book', loaded && sha(fs.readFileSync(loaded.file)) === sha(fs.readFileSync(path.join(studioDir, `${recentId}.jsonl`))));
+  check('starred on the book after loading', JSON.parse(fs.readFileSync(B.stateFile, 'utf8')).favorites[recentId]);
 } finally {
   const del = await fetch(dav.url(remoteRepo), { method: 'DELETE', headers: { Authorization: dav.auth } });
   check('the test folder is removed from Nextcloud', [204, 404].includes(del.status), String(del.status));

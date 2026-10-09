@@ -14,7 +14,7 @@ const USAGE = [
   '  node cli.js archive <repo-path> --name <name> [--days N] [--apply]   (preview unless --apply; running sessions are skipped)',
   '  node cli.js state [repo-path]   (favorites, names, saved tabs and whether their session files and processes exist)',
   '  node cli.js sync login <nextcloud-url> --credentials <file>   (browser login, writes an app password to <file>)',
-  '  node cli.js sync [repo-path] --credentials <file> [--folder <name>]   (same favorite sync as the plugin)',
+  '  node cli.js sync [repo-path] --credentials <file> [--folder <name>] [--recent-days N]   (same sync as the plugin: favorites both ways, every session of the last N days (14) up from this machine; 0 = favorites only)',
   '  node cli.js sync check --credentials <file>   (exit 0 when the app password is accepted, 1 when rejected)',
   '  node cli.js sync status --credentials <file> [--folder <name>]   (every repository folder in Nextcloud: favorites, files, locks, and which are missing here)',
   '  node cli.js sync machines [repo-path] --credentials <file> [--folder <name>]   (the machine register of a repository: names, last seen, last sync, sessions, open requests)',
@@ -78,7 +78,8 @@ async function main(argv) {
       return res.status === 207 ? 0 : 1;
     }
     const folderIndex = rest.indexOf('--folder');
-    const repo = path.resolve(rest.find((a, i) => !a.startsWith('--') && rest[i - 1] !== '--credentials' && rest[i - 1] !== '--folder') || process.cwd());
+    const recentIndex = rest.indexOf('--recent-days');
+    const repo = path.resolve(rest.find((a, i) => !a.startsWith('--') && !['--credentials', '--folder', '--recent-days'].includes(rest[i - 1])) || process.cwd());
     const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
     const result = await syncFavorites({
       creds: JSON.parse(fs.readFileSync(credFile, 'utf8')),
@@ -86,12 +87,14 @@ async function main(argv) {
       stateFile: path.join(repo, '.vscode', 'claude-sessions.json'),
       folder: folderIndex >= 0 ? rest[folderIndex + 1] : undefined,
       running,
+      recentDays: recentIndex >= 0 ? Number(rest[recentIndex + 1]) : 14,
     });
-    console.log(`${result.favorites} favorites · ${result.downloaded.length} downloaded · ${result.uploaded.length} uploaded · ${result.removed.length} removed · ${result.skippedRunning.length} kept because running here · ${result.locked.length} locked here · ${result.conflicts.length} locked elsewhere`);
+    console.log(`${result.favorites} favorites · ${result.downloaded.length} downloaded · ${result.uploaded.length} uploaded · ${result.recent.uploaded.length} recent uploaded · ${result.recent.pruned.length} recent removed · ${result.removed.length} removed · ${result.skippedRunning.length} kept because running here · ${result.locked.length} locked here · ${result.conflicts.length} locked elsewhere`);
     for (const f of result.forked) console.log(`forked: ${f.id} grew apart on ${f.machine}; this machine's copy is now ${f.forkId} "${f.name}"`);
     for (const d of result.diverged) console.log(`diverged: ${d.id} (${d.kept})`);
-    for (const f of result.failed) console.log(`failed: ${f.id}: ${f.error}`);
-    return result.failed.length ? 1 : 0;
+    const failed = result.failed.concat(result.recent.failed);
+    for (const f of failed) console.log(`failed: ${f.id}: ${f.error}`);
+    return failed.length ? 1 : 0;
   }
   if (command === 'state') {
     const repo = path.resolve(rest[0] || process.cwd());

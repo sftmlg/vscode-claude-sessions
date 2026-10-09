@@ -954,3 +954,49 @@ test('the remote panel may connect to peer hubs under the same tailnet domain', 
     api.deactivate();
   }
 });
+
+test('a recent session of another machine loads with one click, without a request, and is starred here', async () => {
+  const { createFakeNextcloud } = require('./fake-nextcloud');
+  const { heartbeat } = require('../sync');
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  const base = `Claude Sessions/${path.basename(workspace)}`;
+  const id = '33333333-0000-0000-0000-00000000000c';
+  const own = '33333333-0000-0000-0000-00000000000d';
+  writeSession(own, 'only on this machine', 1);
+  const body = `${JSON.stringify({ type: 'user', cwd: workspace, timestamp: new Date().toISOString(), message: { content: 'recent on the studio' } })}\n`;
+  const studioWs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-studio-')), path.basename(workspace));
+  fs.mkdirSync(path.join(studioWs, '.vscode'), { recursive: true });
+  await heartbeat({ creds: cloud.creds(), wsPath: studioWs, stateFile: path.join(studioWs, '.vscode', 'claude-sessions.json'), machine: 'studio#c', name: 'Studio C', sessions: [{ id, name: 'recent-one', lastActivity: new Date().toISOString() }] });
+  const { WebDav } = require('../sync');
+  const dav = new WebDav(cloud.creds());
+  const recentParts = ['Claude Sessions', path.basename(workspace), 'recent', 'studio_c'];
+  await dav.ensureFolder(recentParts);
+  await dav.put([...recentParts, `${id}.jsonl`], Buffer.from(body), Math.floor(Date.now() / 1000));
+  const credFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-cred-')), 'nextcloud.json');
+  fs.writeFileSync(credFile, JSON.stringify(cloud.creds()));
+  process.env.CLAUDE_SESSIONS_MACHINE = 'book#d';
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['sync.credentialsFile'] = credFile;
+  fake.config['sync.auto'] = false;
+  fake.config.machineName = 'Book D';
+  const api = fake.activate();
+  try {
+    await api.activeView.ready;
+    await fake.run('claudeSessions.syncNow');
+    const studio = (await api.remoteView.getChildren()).find((m) => m.label === 'Studio C');
+    const row = (await api.remoteView.getChildren(studio)).find((r) => r.data.remote.id === id);
+    assert.match(row.description, /^synced /);
+    await fake.run('claudeSessions.loadRemote', row);
+    assert.strictEqual(fs.readFileSync(path.join(projectDir, `${id}.jsonl`), 'utf8'), body, 'byte-identical');
+    assert.ok(api.notifications.isFavorite(id));
+    assert.ok(!cloud.files.has(`${base}/requests/${id}.json`), 'no request needed');
+    assert.ok(cloud.files.has(`${base}/${id}.jsonl`), 'as a favorite it is shared both ways from now on');
+    assert.ok(fake.messages.some((m) => /"recent-one" from Studio C is on this machine now/.test(m)), fake.messages.join(' | '));
+    assert.ok(cloud.files.has(`${base}/recent/book_d/${own}.jsonl`), 'this machine uploads its own recent sessions');
+  } finally {
+    api.deactivate();
+    delete process.env.CLAUDE_SESSIONS_MACHINE;
+    await cloud.stop();
+  }
+});

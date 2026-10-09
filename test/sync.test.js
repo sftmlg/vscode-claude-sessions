@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeNextcloud } = require('./fake-nextcloud');
-const { syncFavorites, startLogin, finishLogin, projectDir, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests } = require('../sync');
+const { syncFavorites, startLogin, finishLogin, projectDir, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent } = require('../sync');
 
 const originalHome = process.env.HOME;
 delete process.env.CLAUDE_CONFIG_DIR;
@@ -573,6 +573,97 @@ test('a lock written under the old host-based name is recognised as this machine
     assert.deepStrictEqual(r.locked, [F1]);
     assert.strictEqual(lockOf(cloud, F1).machine, 'Mac#abcd1234');
     assert.ok(r.uploaded.includes(F1));
+  } finally {
+    await cloud.stop();
+  }
+});
+
+const R1 = '44444444-aaaa-0000-0000-000000000004';
+const OLD = '55555555-aaaa-0000-0000-000000000005';
+
+test('every session of the last days goes up from its machine; favorites stay where they are, older ones are removed', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const recent = 'Claude Sessions/my-repo/recent/studio_1';
+    writeSession(a, F1, 'starred');
+    writeSession(a, R1, 'not starred, today');
+    writeSession(a, OLD, 'not starred, a month ago', Math.floor(Date.now() / 1000) - 30 * 86400);
+    writeState(a, { favorites: { [F1]: true } });
+    const opts = { creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1', recentDays: 14 };
+    const first = await syncFavorites(opts);
+    assert.deepStrictEqual(first.recent.uploaded, [R1]);
+    assert.ok(cloud.files.has(`${recent}/${R1}.jsonl`));
+    assert.ok(!cloud.files.has(`${recent}/${F1}.jsonl`), 'a favorite is not stored twice');
+    assert.ok(!cloud.files.has(`${recent}/${OLD}.jsonl`), 'older than the window: not uploaded');
+    assert.deepStrictEqual(first.uploaded, [F1], 'the favorite sync is unchanged');
+    const again = await syncFavorites(opts);
+    assert.deepStrictEqual(again.recent.uploaded, [], 'an unchanged session is not uploaded again');
+    appendLine(a, R1, 'more');
+    assert.deepStrictEqual((await syncFavorites(opts)).recent.uploaded, [R1], 'a grown session goes up again');
+    assert.strictEqual(cloud.files.get(`${recent}/${R1}.jsonl`).body.toString(), fs.readFileSync(path.join(projectDir(a.ws), `${R1}.jsonl`), 'utf8'));
+    writeState(a, { ...readState(a), favorites: { [F1]: true, [R1]: true } });
+    const starred = await syncFavorites(opts);
+    assert.deepStrictEqual(starred.recent.pruned, [R1], 'once starred it moves to the favorites');
+    assert.ok(!cloud.files.has(`${recent}/${R1}.jsonl`));
+    assert.ok(cloud.files.has(`Claude Sessions/my-repo/${R1}.jsonl`));
+    const off = await syncFavorites({ ...opts, recentDays: 0 });
+    assert.deepStrictEqual(off.recent.uploaded, [], 'recentDays 0 turns it off');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('a recent session of another machine is listed, loaded byte for byte and becomes a favorite on both', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const b = machine('b');
+    writeSession(a, R1, 'only on the studio');
+    appendLine(a, R1, 'second line');
+    writeState(a, {});
+    writeState(b, {});
+    const onA = { creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1' };
+    const onB = { creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'book#2' };
+    use(a);
+    await heartbeat({ ...onA, name: 'Mac Studio' });
+    await syncFavorites({ ...onA, recentDays: 14 });
+    use(b);
+    const seen = await heartbeat({ ...onB, name: 'MacBook' });
+    assert.deepStrictEqual(seen.uploaded[R1] && [seen.uploaded[R1].by, seen.uploaded[R1].recent], ['studio#1', true]);
+    await loadRecent({ ...onB, id: R1, owner: 'studio#1', name: 'studio-work' });
+    const original = (use(a), fs.readFileSync(path.join(projectDir(a.ws), `${R1}.jsonl`)));
+    use(b);
+    assert.ok(fs.readFileSync(path.join(projectDir(b.ws), `${R1}.jsonl`)).equals(original), 'byte-identical');
+    assert.ok(readState(b).favorites[R1]);
+    assert.strictEqual(readState(b).names[R1], 'studio-work');
+    await syncFavorites({ ...onB, recentDays: 14 });
+    use(a);
+    const back = await syncFavorites({ ...onA, recentDays: 14 });
+    assert.ok(readState(a).favorites[R1], 'the star reaches the machine it came from');
+    assert.deepStrictEqual(back.recent.pruned, [R1], 'its recent copy gives way to the favorite');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('loading refuses to overwrite a different copy on this machine', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const b = machine('b');
+    writeSession(a, R1, 'studio version');
+    writeState(a, {});
+    writeSession(b, R1, 'book version, different');
+    writeState(b, {});
+    use(a);
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'studio#1', recentDays: 14 });
+    use(b);
+    await assert.rejects(loadRecent({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, id: R1, owner: 'studio#1' }), /different copy/);
+    assert.match(fs.readFileSync(path.join(projectDir(b.ws), `${R1}.jsonl`), 'utf8'), /book version/);
   } finally {
     await cloud.stop();
   }
