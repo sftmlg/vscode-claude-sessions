@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.33.0",
+  "version": "0.34.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -370,7 +370,7 @@
       "view/item/context": [
         {
           "command": "claudeSessions.favorite",
-          "when": "viewItem =~ /^(session|savedTab|archivedSession|activeTab|activeTabInSplit)$/",
+          "when": "viewItem =~ /^(session|savedTab|archivedSession|serviceSession|activeTab|activeTabInSplit)$/",
           "group": "inline@0"
         },
         {
@@ -395,7 +395,7 @@
         },
         {
           "command": "claudeSessions.resume",
-          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/",
+          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/ || viewItem =~ /^serviceSession(\\.fav)?$/",
           "group": "inline@3"
         },
         {
@@ -405,7 +405,7 @@
         },
         {
           "command": "claudeSessions.renameSaved",
-          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/",
+          "when": "viewItem =~ /^session(\\.fav)?$/ || viewItem =~ /^savedTab(\\.fav)?$/ || viewItem =~ /^archivedSession(\\.fav)?$/ || viewItem =~ /^serviceSession(\\.fav)?$/",
           "group": "inline@5"
         },
         {

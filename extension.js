@@ -611,18 +611,21 @@ class SessionsProvider {
   }
 
   async inactiveSessions() {
-    const [metas, running] = await Promise.all([
+    const [metas, running, service] = await Promise.all([
       listRepoSessions(this.store.wsPath, settings().get('historyDays') || 30),
       readRunningSessions(),
+      this.serviceSessions ? this.serviceSessions().catch(() => new Map()) : new Map(),
     ]);
     const live = new Set([...running.values()].map((s) => s.sessionId));
     const saved = new Map(this.store.read().map((t) => [t.sessionId, t.name]));
     const names = this.store.readState().names || {};
+    const inService = (id) => service.has(id) && !service.get(id).attached;
     return metas
-      .filter((m) => !live.has(m.id))
+      .filter((m) => !live.has(m.id) || inService(m.id))
       .map((m) => ({
         id: m.id,
         meta: m,
+        service: inService(m.id) ? service.get(m.id).tmux : undefined,
         saved: saved.has(m.id),
         title: names[m.id] || saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
       }));
@@ -631,12 +634,13 @@ class SessionsProvider {
   sessionItem(s, archived) {
     const item = new vscode.TreeItem(this.label(s.id, s.title));
     item.id = `${archived ? 'archived' : 'session'}:${s.id}`;
-    item.contextValue = `${archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session'}${this.favSuffix(s.id)}`;
-    item.iconPath = new vscode.ThemeIcon(archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
+    const kind = s.service ? 'serviceSession' : archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session';
+    item.contextValue = `${kind}${this.favSuffix(s.id)}`;
+    item.iconPath = new vscode.ThemeIcon(s.service ? 'terminal-tmux' : archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
     const lock = ((this.store.readState().sync || {}).locks || {})[s.id];
     const locked = lock && Date.now() - (lock.heartbeat || 0) < LOCK_TTL_MS ? lock.machine : '';
-    item.description = `${locked ? `🔒 ${locked} · ` : ''}${sessionSummary(s.meta)}`;
-    item.tooltip = sessionTooltip(s.title, s.meta, [['Folder', s.meta.cwd], ['Locked by', locked]]);
+    item.description = `${locked ? `🔒 ${locked} · ` : ''}${s.service ? `running in ${s.service} · ` : ''}${sessionSummary(s.meta)}`;
+    item.tooltip = sessionTooltip(s.title, s.meta, [['Folder', s.meta.cwd], ['Locked by', locked], ['Running', s.service ? `in the service tmux session ${s.service}; ▶ attaches a tab to it` : '']]);
     item.data = { tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } };
     item.command = { command: 'claudeSessions.openSessionFile', title: 'Open session file', arguments: [item] };
     return item;
@@ -724,7 +728,7 @@ class RemoteProvider {
     const item = new vscode.TreeItem(`${this.isFavorite(s) ? '★' : '☆'} ${s.name}`);
     item.id = `remote:${m.id}:${s.id}`;
     const synced = st.uploaded ? `synced ${timeAgo(new Date(st.uploaded.mtimeSec * 1000).toISOString())}` : st.requested ? 'not synced · requested' : 'not synced';
-    item.description = s.lastActivity ? `${synced} · active ${timeAgo(s.lastActivity)}` : synced;
+    item.description = s.lastActivity ? `last ${timeAgo(s.lastActivity)} · ${synced}` : synced;
     item.iconPath = new vscode.ThemeIcon(st.here ? 'check' : st.requested ? 'loading~spin' : st.uploaded ? 'cloud' : 'cloud-upload');
     item.contextValue = m.self ? 'remoteOwn' : st.here ? 'remoteSession.here' : 'remoteSession';
     item.tooltip = [
@@ -753,10 +757,8 @@ class RemoteProvider {
     for (const [id, u] of Object.entries(snap.uploaded)) {
       if (u.by === m.id && !listed.has(id)) listed.set(id, { id, name: snap.names[id] || id, lastActivity: new Date(u.mtimeSec * 1000).toISOString() });
     }
-    const newest = (a, b) => (Date.parse(b.lastActivity) || 0) - (Date.parse(a.lastActivity) || 0);
-    return [...listed.values()]
-      .sort((a, b) => Number(this.isFavorite(b)) - Number(this.isFavorite(a)) || newest(a, b))
-      .map((s) => this.sessionItem(s, m));
+    const sessions = [...listed.values()].map((s) => ({ ...s, title: s.name || s.id, meta: { lastActivity: s.lastActivity || 0 } }));
+    return sortSessions(sessions, (id) => this.isFavorite(listed.get(id))).map((s) => this.sessionItem(s, m));
   }
 }
 
@@ -929,12 +931,14 @@ function activate(context) {
     if (cached && Date.now() - (cached.heartbeat || 0) < LOCK_TTL_MS) return cached;
     return stored ? { machine: 'unknown', unverified: true } : null;
   };
+  let attachToService = async () => false;
   tracker.mayResume = (sessionId) => mayResume(sessionId);
   const mayResume = async (sessionId) => {
     const live = [...(await readRunningSessions()).values()].find((r) => r.sessionId === sessionId);
     if (live) {
       const open = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === sessionId);
       if (open) open.show(false);
+      else if (await attachToService(sessionId)) return false;
       else vscode.window.showInformationMessage(`This session already runs in another process${live.cwd ? ` (${live.cwd})` : ''}; it is not started a second time. Use that process, or open it read-only in Remote sessions.`);
       return false;
     }
@@ -1455,30 +1459,61 @@ function activate(context) {
         resolve(err ? [] : String(out).split('\n').filter((n) => /^cc-[a-z0-9-]{1,40}$/.test(n)));
       });
     });
-  const endServiceSession = async (sessionId) => {
+  const attachedTerminal = (name) =>
+    vscode.window.terminals.find((t) => {
+      const o = t.creationOptions || {};
+      return o.shellPath === remoteTmux() && Array.isArray(o.shellArgs) && o.shellArgs[o.shellArgs.length - 1] === `=${name}` && o.shellArgs.includes(remoteSocket());
+    });
+  const serviceSessions = async () => {
     const panes = await new Promise((resolve) => execFile(remoteTmux(), ['-u', '-L', remoteSocket(), 'list-panes', '-a', '-F', '#{session_name} #{pane_pid}'], { timeout: 3000 }, (err, out) => resolve(err ? '' : String(out))));
     const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
+    const bySession = new Map();
     for (const [name, pid] of panes.split('\n').filter(Boolean).map((l) => l.split(' '))) {
+      if (!/^cc-[a-z0-9-]{1,40}$/.test(name)) continue;
       const s = findSession(Number(pid), children, running);
-      if (s && s.sessionId === sessionId && /^cc-[a-z0-9-]{1,40}$/.test(name)) execFile(remoteTmux(), ['-u', '-L', remoteSocket(), 'kill-session', '-t', `=${name}`], () => {});
+      if (s && s.sessionId) bySession.set(s.sessionId, { tmux: name, attached: Boolean(attachedTerminal(name)) });
     }
+    return bySession;
   };
-  const attachRemote = async () => {
-    const names = await listServiceSessions();
-    if (!names.length) {
-      vscode.window.showInformationMessage('No service sessions run on this machine. From another machine use Open remote sessions.');
-      return undefined;
-    }
-    const pick = names.length === 1 ? names[0] : await vscode.window.showQuickPick(names, { placeHolder: 'Attach to a service session in a terminal tab' });
-    if (!pick) return undefined;
-    const open = vscode.window.terminals.find((t) => t.name === pick && t.creationOptions && t.creationOptions.shellPath === remoteTmux());
+  inactiveView.serviceSessions = serviceSessions;
+  const endServiceSession = async (sessionId) => {
+    const s = (await serviceSessions()).get(sessionId);
+    if (s) execFile(remoteTmux(), ['-u', '-L', remoteSocket(), 'kill-session', '-t', `=${s.tmux}`], () => {});
+  };
+  const attachService = (name, title) => {
+    const open = attachedTerminal(name);
     if (open) {
       open.show();
       return open;
     }
-    const t = vscode.window.createTerminal({ name: pick, shellPath: remoteTmux(), shellArgs: ['-u', '-L', remoteSocket(), 'attach', '-t', `=${pick}`], iconPath: new vscode.ThemeIcon('remote') });
+    const t = vscode.window.createTerminal({ name: title || name, shellPath: remoteTmux(), shellArgs: ['-u', '-L', remoteSocket(), 'attach', '-t', `=${name}`], iconPath: new vscode.ThemeIcon('remote') });
     t.show();
+    view.refresh();
     return t;
+  };
+  const sessionTitle = async (sessionId) => {
+    const named = (store.readState().names || {})[sessionId];
+    if (named) return named;
+    const meta = await metaForSession(sessionId).catch(() => null);
+    return (meta && (meta.customTitle || meta.aiTitle)) || undefined;
+  };
+  attachToService = async (sessionId) => {
+    const s = (await serviceSessions()).get(sessionId);
+    if (!s) return false;
+    attachService(s.tmux, await sessionTitle(sessionId));
+    return true;
+  };
+  const attachRemote = async () => {
+    const [names, service] = await Promise.all([listServiceSessions(), serviceSessions()]);
+    if (!names.length) {
+      vscode.window.showInformationMessage('No service sessions run on this machine. From another machine use Open remote sessions.');
+      return undefined;
+    }
+    const titleOf = new Map(await Promise.all([...service].map(async ([id, s]) => [s.tmux, await sessionTitle(id)])));
+    const items = names.map((n) => ({ label: titleOf.get(n) || n, description: titleOf.get(n) ? n : undefined, tmux: n }));
+    const pick = items.length === 1 ? items[0] : await vscode.window.showQuickPick(items, { placeHolder: 'Attach to a service session in a terminal tab' });
+    if (!pick) return undefined;
+    return attachService(pick.tmux, titleOf.get(pick.tmux));
   };
   const openRemoteInBrowser = () => {
     const page = remotePageUrl(remoteUrl());

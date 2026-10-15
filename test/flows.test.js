@@ -43,6 +43,7 @@ const settle = () => new Promise((r) => setTimeout(r, 50));
 
 async function setup() {
   const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
+  fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
   const api = fake.activate();
   return { fake, api };
 }
@@ -612,10 +613,10 @@ test('Remote lists every machine, loads an uploaded session and requests one tha
     const rows = await api.remoteView.getChildren(machines[1]);
     const uploaded = rows.find((r) => r.data.remote.id === uploadedId);
     const pending = rows.find((r) => r.data.remote.id === pendingId);
-    assert.match(uploaded.description, /^synced .* · active /, 'the row says when it was last synced, then its last activity');
+    assert.match(uploaded.description, /^last .* · synced /, 'the row reads like Inactive: last activity, then when it was last synced');
     assert.match(uploaded.tooltip, /Last synced: /);
     assert.deepStrictEqual(rows.map((r) => r.data.remote.id), [uploadedId, pendingId], 'favorites first');
-    assert.strictEqual(pending.description, 'not synced · active just now');
+    assert.strictEqual(pending.description, 'last just now · not synced');
     assert.strictEqual(pending.contextValue, 'remoteSession');
 
     await fake.run('claudeSessions.loadRemote', uploaded);
@@ -634,7 +635,7 @@ test('Remote lists every machine, loads an uploaded session and requests one tha
     assert.ok(api.notifications.isFavorite(pendingId));
     assert.ok(fake.messages.some((m) => /Requested "pending-one" from Mac Studio/.test(m)));
     const requested = (await api.remoteView.getChildren((await api.remoteView.getChildren())[1])).find((r) => r.data.remote.id === pendingId);
-    assert.match(requested.description, /^not synced · requested · active /);
+    assert.match(requested.description, /^last .* · not synced · requested$/);
   } finally {
     api.deactivate();
     delete process.env.CLAUDE_SESSIONS_MACHINE;
@@ -943,6 +944,73 @@ test('Attach to a service session opens a terminal tab attached to that tmux ses
   }
 });
 
+test('a session running in a service tmux session shows in Inactive, and ▶ attaches a tab named after the session', async () => {
+  const { execFileSync } = require('child_process');
+  const tmux = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((f) => fs.existsSync(f));
+  if (!tmux) return;
+  const socket = `test-service-${process.pid}`;
+  const id = '99999999-0000-0000-0000-000000000011';
+  writeSession(id, 'started as grundbuch');
+  fs.appendFileSync(path.join(projectDir, `${id}.jsonl`), `${JSON.stringify({ type: 'custom-title', customTitle: 'schmid', sessionId: id })}\n`);
+  execFileSync(tmux, ['-L', socket, 'new-session', '-d', '-s', 'cc-grundbuch', '--', 'sleep', '60']);
+  const panePid = Number(String(execFileSync(tmux, ['-L', socket, 'list-panes', '-t', '=cc-grundbuch', '-F', '#{pane_pid}'])).trim());
+  const registry = path.join(registryDir, `${panePid}.json`);
+  fs.writeFileSync(registry, JSON.stringify({ pid: panePid, sessionId: id, cwd: workspace, status: 'idle' }));
+  const { fake, api } = await setup();
+  try {
+    fake.config['remote.tmuxSocket'] = socket;
+    const item = await inactiveItemFor(api, id);
+    assert.ok(item, 'listed although it runs');
+    assert.strictEqual(item.label, '☆ schmid');
+    assert.strictEqual(item.contextValue, 'serviceSession');
+    assert.match(item.description, /^running in cc-grundbuch · last /);
+
+    await fake.run('claudeSessions.resume', item);
+    const t = fake.vscode.window.terminals.find((x) => x.name === 'schmid');
+    assert.ok(t, 'a tab named after the session, not after its tmux session');
+    assert.deepStrictEqual(t.creationOptions.shellArgs, ['-u', '-L', socket, 'attach', '-t', '=cc-grundbuch']);
+    assert.deepStrictEqual(fake.messages, [], 'attached, not reported as running elsewhere');
+    assert.ok(!(await inactiveItemFor(api, id)), 'gone from Inactive once a tab here shows it');
+
+    const before = fake.vscode.window.terminals.length;
+    await fake.run('claudeSessions.resume', item);
+    assert.strictEqual(fake.vscode.window.terminals.length, before, 'the open tab is reused');
+
+    fake.quickPickAnswers.push((i) => i.tmux === 'cc-grundbuch');
+    await fake.run('claudeSessions.attachRemote');
+    assert.strictEqual(fake.vscode.window.terminals.length, before, 'Attach finds the same tab');
+  } finally {
+    fs.rmSync(registry, { force: true });
+    try { execFileSync(tmux, ['-L', socket, 'kill-server']); } catch {}
+    api.deactivate();
+  }
+});
+
+test('Remote lists a machine like Inactive: favorites alphabetically, then the rest newest first', async () => {
+  const { api } = await setup();
+  try {
+    const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+    const machine = {
+      id: 'studio#1',
+      name: 'Mac Studio',
+      lastSeen: ago(0),
+      sessions: [
+        { id: 'a', name: 'zulu', lastActivity: ago(1), favorite: true },
+        { id: 'b', name: 'old', lastActivity: ago(300) },
+        { id: 'c', name: 'alpha', lastActivity: ago(200), favorite: true },
+        { id: 'd', name: 'new', lastActivity: ago(2) },
+      ],
+    };
+    api.remoteView.snapshot = { machines: [machine], uploaded: {}, names: {}, local: new Map(), outgoing: [] };
+    const [m] = await api.remoteView.getChildren();
+    const rows = await api.remoteView.getChildren(m);
+    assert.deepStrictEqual(rows.map((r) => r.label), ['★ alpha', '★ zulu', '☆ new', '☆ old']);
+    assert.match(rows[2].description, /^last \d+ minutes? ago · not synced$/);
+  } finally {
+    api.deactivate();
+  }
+});
+
 test('the remote panel may connect to peer hubs under the same tailnet domain', async () => {
   const { fake, api } = await setup();
   try {
@@ -986,7 +1054,7 @@ test('a recent session of another machine loads with one click, without a reques
     await fake.run('claudeSessions.syncNow');
     const studio = (await api.remoteView.getChildren()).find((m) => m.label === 'Studio C');
     const row = (await api.remoteView.getChildren(studio)).find((r) => r.data.remote.id === id);
-    assert.match(row.description, /^synced /);
+    assert.match(row.description, / · synced /);
     await fake.run('claudeSessions.loadRemote', row);
     assert.strictEqual(fs.readFileSync(path.join(projectDir, `${id}.jsonl`), 'utf8'), body, 'byte-identical');
     assert.ok(api.notifications.isFavorite(id));
