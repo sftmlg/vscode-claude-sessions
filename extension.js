@@ -490,7 +490,7 @@ class Tracker {
           this.known.add(t);
           this.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
           pending.push([t, `${claudeCommand()} --resume ${tab.sessionId}`]);
-          parent = parent || t;
+          parent = t;
           first = first || t;
           created.push(t);
         }

@@ -1145,15 +1145,18 @@ test('Backups saves the open tabs only when they change and restores a backup wi
 });
 
 test('a backup restores a whole split in its order', async () => {
-  const ids = ['99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002'];
+  const ids = ['99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002', '99999999-0000-0000-0000-000000000003', '99999999-0000-0000-0000-000000000004'];
   for (const id of ids) writeSession(id, `split ${id}`);
   const { fake, api } = await setup();
   await api.activeView.ready;
   const backup = { at: '2026-10-20T10:50:00.000Z', tabs: [
     { name: 'left', sessionId: ids[0], cwd: workspace, group: 'g' },
-    { name: 'right', sessionId: ids[1], cwd: workspace, group: 'g' },
+    { name: 'middle', sessionId: ids[1], cwd: workspace, group: 'g' },
+    { name: 'right', sessionId: ids[2], cwd: workspace, group: 'g' },
+    { name: 'alone', sessionId: ids[3], cwd: workspace, group: 'h' },
   ] };
   await fake.run('claudeSessions.restoreBackup', { data: { kind: 'backup', backup } });
-  assert.deepStrictEqual(fake.panes.map((g) => g.map((x) => x.name)), [['left', 'right']]);
+  assert.deepStrictEqual(fake.panes.map((g) => g.map((x) => x.name)), [['left', 'middle', 'right'], ['alone']]);
+  assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((x) => x.name)), [['left', 'middle', 'right'], ['alone']], 'the tracked splits match what VS Code shows');
   api.deactivate();
 });
