@@ -30,6 +30,7 @@ const {
   writeStatePatch,
   filesForSession,
 } = require('./sessions');
+const { backupsFile, readBackups, takeBackup, splitsOf } = require('./backups');
 
 const AUTO_TITLE = /^[\u2800-\u28ff✳✻✽✶✢✦·*●○◐◓◑◒]\s*/u;
 const SHELL_NAMES = new Set(['', 'zsh', '-zsh', 'bash', '-bash', 'sh', 'fish', 'node', 'claude', 'login', 'Claude Code']);
@@ -40,6 +41,7 @@ const claudeBase = () => settings().get('claudeCommand') || 'claude';
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const SERVICE_RUNNER = path.join(os.homedir(), '.local', 'bin', 'claude-remote-run');
 const REATTACH_MS = 120000;
+const SHUTDOWN = vscode.TerminalExitReason ? vscode.TerminalExitReason.Shutdown : 1;
 const inService = () => settings().get('remote.runInService') !== false && fs.existsSync(SERVICE_RUNNER);
 const claudeCommand = () => (inService() ? `${shellQuote(SERVICE_RUNNER)} ${claudeBase()}` : claudeBase());
 
@@ -762,6 +764,64 @@ class RemoteProvider {
   }
 }
 
+class BackupsProvider {
+  constructor(store) {
+    this.store = store;
+    this.emitter = new vscode.EventEmitter();
+    this.onDidChangeTreeData = this.emitter.event;
+  }
+
+  file() {
+    return backupsFile(this.store.file());
+  }
+
+  refresh() {
+    this.emitter.fire();
+  }
+
+  getTreeItem(e) {
+    return e;
+  }
+
+  backupItem(b) {
+    const d = new Date(b.at);
+    const splits = splitsOf(b.tabs);
+    const item = new vscode.TreeItem(`${d.toLocaleDateString(undefined, { day: '2-digit', month: '2-digit' })} ${clock(b.at)}`, vscode.TreeItemCollapsibleState.Collapsed);
+    item.id = `backup:${b.at}`;
+    item.contextValue = 'backup';
+    item.iconPath = new vscode.ThemeIcon('history');
+    item.description = [`${b.tabs.length} tabs · ${splits.length} splits`, b.label].filter(Boolean).join(' · ');
+    item.tooltip = `${d.toLocaleString()}\n${splits.map((g) => g.map((t) => t.name).join(' | ')).join('\n')}`;
+    item.data = { kind: 'backup', backup: b };
+    return item;
+  }
+
+  tabItem(t, parent) {
+    const item = new vscode.TreeItem(t.name);
+    item.id = `${parent}:${t.sessionId}`;
+    item.iconPath = new vscode.ThemeIcon('terminal');
+    item.description = t.sessionId.slice(0, 8);
+    item.data = { kind: 'backupTab', tab: t };
+    return item;
+  }
+
+  getChildren(e) {
+    if (!e) return readBackups(this.file()).slice().reverse().map((b) => this.backupItem(b));
+    if (e.data.kind === 'backup') {
+      return splitsOf(e.data.backup.tabs).map((g, i) => {
+        if (g.length === 1) return this.tabItem(g[0], e.id);
+        const item = new vscode.TreeItem('split', vscode.TreeItemCollapsibleState.Expanded);
+        item.id = `${e.id}:split:${i}`;
+        item.iconPath = new vscode.ThemeIcon('split-horizontal');
+        item.data = { kind: 'backupSplit', tabs: g };
+        return item;
+      });
+    }
+    if (e.data.kind === 'backupSplit') return e.data.tabs.map((t) => this.tabItem(t, e.id));
+    return [];
+  }
+}
+
 const REMOTE_WEB = path.join(__dirname, 'remote', 'web');
 const REMOTE_TOKEN_SECRET = 'claudeSessions.remote.token';
 
@@ -830,6 +890,8 @@ function activate(context) {
   const activeTree = vscode.window.createTreeView('claudeSessions.active', { treeDataProvider: activeView });
   const inactiveTree = vscode.window.createTreeView('claudeSessions.inactive', { treeDataProvider: inactiveView });
   const remoteTree = vscode.window.createTreeView('claudeSessions.remote', { treeDataProvider: remoteView });
+  const backupsView = new BackupsProvider(store);
+  vscode.window.createTreeView('claudeSessions.backups', { treeDataProvider: backupsView });
   inactiveView.onSearched = (count) => {
     inactiveTree.message = `Search "${inactiveView.filter}" · ${count} matching sessions`;
   };
@@ -1503,6 +1565,40 @@ function activate(context) {
     attachService(s.tmux, await sessionTitle(sessionId));
     return true;
   };
+  const backupNow = () => {
+    try {
+      const entry = takeBackup(backupsView.file(), tracker.namedLiveTabs());
+      if (entry) {
+        tracker.log(`backup: ${entry.tabs.length} tabs`);
+        backupsView.refresh();
+      }
+      return entry;
+    } catch (err) {
+      tracker.log(`backup failed: ${err.message}`);
+      return null;
+    }
+  };
+  const restoreBackup = async (backup) => {
+    await activeView.ready;
+    const [running, service] = await Promise.all([readRunningSessions(), inService() ? serviceSessions() : new Map()]);
+    const live = new Set([...running.values()].map((r) => r.sessionId));
+    const openHere = new Set(tracker.liveTerminals().map((t) => (tracker.meta.get(t) || {}).sessionId).filter(Boolean));
+    const tabs = [];
+    const elsewhere = [];
+    let already = 0;
+    for (const t of backup.tabs) {
+      if (openHere.has(t.sessionId)) already++;
+      else if (live.has(t.sessionId)) {
+        if (service.has(t.sessionId)) tabs.push(t);
+        else elsewhere.push(t.name);
+      } else if (await mayResume(t.sessionId)) tabs.push(t);
+    }
+    if (tabs.length) await tracker.openTabs(tabs);
+    const notes = [`Restored ${tabs.length} of ${backup.tabs.length} tabs from the backup of ${new Date(backup.at).toLocaleString()}.`];
+    if (already) notes.push(`${already} were already open.`);
+    if (elsewhere.length) notes.push(`Running in another process, not started twice: ${elsewhere.join(', ')}.`);
+    vscode.window.showInformationMessage(notes.join(' '));
+  };
   const attachRemote = async () => {
     const [names, service] = await Promise.all([listServiceSessions(), serviceSessions()]);
     if (!names.length) {
@@ -1722,6 +1818,10 @@ function activate(context) {
     vscode.window.onDidOpenTerminal(placeOpened),
     vscode.window.onDidCloseTerminal((t) => {
       const m = tracker.meta.get(t);
+      if (tracker.disposed || (t.exitStatus && t.exitStatus.reason === SHUTDOWN)) {
+        tracker.meta.delete(t);
+        return;
+      }
       if (m && m.sessionId) {
         if (m.status && m.status !== 'exited' && inService()) endServiceSession(m.sessionId);
         tracker.forget(m.sessionId);
@@ -1737,6 +1837,11 @@ function activate(context) {
     }),
     { dispose: () => clearInterval(timer) },
     vscode.commands.registerCommand('claudeSessions.restore', () => tracker.restore()),
+    vscode.commands.registerCommand('claudeSessions.restoreBackup', (item) => item && item.data && item.data.backup && restoreBackup(item.data.backup)),
+    vscode.commands.registerCommand('claudeSessions.backupNow', () => {
+      if (!backupNow()) vscode.window.showInformationMessage('The open tabs match the latest backup; nothing new was saved.');
+    }),
+    vscode.commands.registerCommand('claudeSessions.openBackupsFile', () => vscode.window.showTextDocument(vscode.Uri.file(backupsView.file()))),
     vscode.commands.registerCommand('claudeSessions.openSessionFile', async (item) => {
       const id = item && item.data && item.data.tab && item.data.tab.sessionId;
       const meta = id ? await metaForSession(id) : null;
@@ -1887,6 +1992,12 @@ function activate(context) {
       }, 3000);
     });
   });
+  activeView.ready.then(() => {
+    if (tracker.disposed) return;
+    backupNow();
+    const backupTimer = setInterval(backupNow, Math.max(5, Number(settings().get('backup.intervalMinutes')) || 30) * 60 * 1000);
+    context.subscriptions.push({ dispose: () => clearInterval(backupTimer) });
+  });
   syncInterval = setInterval(() => runSync(false), syncSettings().intervalMinutes * 60 * 1000);
   heartbeatInterval = setInterval(() => runHeartbeat(false).catch((err) => tracker.log(`heartbeat failed: ${err.message}`)), syncSettings().checkSeconds * 1000);
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
@@ -1904,7 +2015,7 @@ function activate(context) {
     }
     tracker.log(`search cache ready for ${sessions.length} sessions in ${Date.now() - started} ms`);
   }, 5000);
-  return { tracker, store, notifications, activeView, inactiveView, remoteView, runHeartbeat };
+  return { tracker, store, notifications, activeView, inactiveView, remoteView, backupsView, runHeartbeat };
 }
 
 function vscodeGroupSizes(stateDb) {

@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.34.0",
+  "version": "0.35.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -245,6 +245,24 @@
         "title": "Open remote sessions in the browser",
         "category": "Claude Sessions",
         "icon": "$(link-external)"
+      },
+      {
+        "command": "claudeSessions.restoreBackup",
+        "title": "Restore this backup",
+        "category": "Claude Sessions",
+        "icon": "$(history)"
+      },
+      {
+        "command": "claudeSessions.backupNow",
+        "title": "Back up the open tabs now",
+        "category": "Claude Sessions",
+        "icon": "$(save-as)"
+      },
+      {
+        "command": "claudeSessions.openBackupsFile",
+        "title": "Open backups file",
+        "category": "Claude Sessions",
+        "icon": "$(go-to-file)"
       }
     ],
     "viewsContainers": {
@@ -265,6 +283,11 @@
         {
           "id": "claudeSessions.active",
           "name": "Active"
+        },
+        {
+          "id": "claudeSessions.backups",
+          "name": "Backups",
+          "visibility": "collapsed"
         },
         {
           "id": "claudeSessions.remote",
@@ -358,6 +381,16 @@
           "command": "claudeSessions.refreshActive",
           "when": "view == claudeSessions.active",
           "group": "navigation@9"
+        },
+        {
+          "command": "claudeSessions.backupNow",
+          "when": "view == claudeSessions.backups",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeSessions.openBackupsFile",
+          "when": "view == claudeSessions.backups",
+          "group": "navigation@2"
         }
       ],
       "editor/title": [
@@ -467,6 +500,11 @@
           "command": "claudeSessions.renameMachine",
           "when": "viewItem == remoteMachine.self",
           "group": "inline@0"
+        },
+        {
+          "command": "claudeSessions.restoreBackup",
+          "when": "viewItem == backup",
+          "group": "inline@0"
         }
       ],
       "terminal/title/context": [
@@ -557,6 +595,10 @@
         {
           "command": "claudeSessions.syncRunning",
           "when": "false"
+        },
+        {
+          "command": "claudeSessions.restoreBackup",
+          "when": "false"
         }
       ]
     },
@@ -596,6 +638,11 @@
           "type": "number",
           "default": 5,
           "description": "How often tab names and sessions are re-read."
+        },
+        "claudeSessions.backup.intervalMinutes": {
+          "type": "number",
+          "default": 30,
+          "description": "How often the open tabs (names, sessions, splits) are backed up. A backup is only written when the constellation changed; the Backups view restores any of them."
         },
         "claudeSessions.historyDays": {
           "type": "number",

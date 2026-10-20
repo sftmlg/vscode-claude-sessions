@@ -66,6 +66,11 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
       }
     }
 
+    shutdown() {
+      this.exitStatus = { code: undefined, reason: vscode.TerminalExitReason.Shutdown };
+      this.dispose();
+    }
+
     dispose() {
       if (this.disposed) return;
       this.disposed = true;
@@ -87,6 +92,7 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
       }
     },
     TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+    TerminalExitReason: { Unknown: 0, Shutdown: 1, Process: 2, User: 3, Extension: 4 },
     ThemeIcon: class {
       constructor(id) {
         this.id = id;

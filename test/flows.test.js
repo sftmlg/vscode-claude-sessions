@@ -1087,3 +1087,73 @@ test('the refresh button in Active checks the split layout again and returns foc
   assert.ok(!menu.some((m) => m.command === 'claudeSessions.refresh' && /claudeSessions\.active/.test(m.when)), 'not the plain one');
   api.deactivate();
 });
+
+test('quitting VS Code keeps the open tabs saved; closing one by hand still removes it', async () => {
+  const kept = '77777777-0000-0000-0000-000000000007';
+  const closed = '77777777-0000-0000-0000-000000000008';
+  writeSession(kept, 'kept on quit');
+  writeSession(closed, 'closed by hand');
+  const a = startClaude(kept);
+  const b = startClaude(closed);
+  const { fake, api } = await setup();
+  const ta = fake.vscode.window.createTerminal({ name: 'kept', pid: a.pid });
+  const tb = fake.vscode.window.createTerminal({ name: 'closed', pid: b.pid });
+  await api.tracker.poll();
+  const mine = () => api.store.read().map((t) => t.sessionId).filter((id) => id === kept || id === closed).sort();
+  assert.deepStrictEqual(mine(), [kept, closed].sort());
+  tb.dispose();
+  ta.shutdown();
+  await settle();
+  assert.deepStrictEqual(mine(), [kept]);
+  stopClaude(a);
+  stopClaude(b);
+  api.deactivate();
+});
+
+test('Backups saves the open tabs only when they change and restores a backup with its splits', async () => {
+  const ids = ['88888888-0000-0000-0000-000000000001', '88888888-0000-0000-0000-000000000002', '88888888-0000-0000-0000-000000000003'];
+  for (const id of ids) writeSession(id, `backup ${id}`);
+  const claude = startClaude(ids[0]);
+  const { fake, api } = await setup();
+  await api.activeView.ready;
+  fs.rmSync(api.backupsView.file(), { force: true });
+  const t = fake.vscode.window.createTerminal({ name: 'live', pid: claude.pid });
+  await api.tracker.poll();
+  await fake.run('claudeSessions.backupNow');
+  await fake.run('claudeSessions.backupNow');
+  assert.ok(fake.messages.some((m) => /match the latest backup/.test(m)), 'the second click finds nothing new');
+  const backups = await api.backupsView.getChildren();
+  assert.strictEqual(backups.length, 1);
+  assert.match(backups[0].description, /^1 tabs · 1 splits/);
+
+  const saved = api.store.read();
+  const backup = { at: '2026-10-20T10:50:00.000Z', tabs: [
+    { name: 'one', sessionId: ids[0], cwd: workspace, group: 'g1' },
+    { name: 'two', sessionId: ids[1], cwd: workspace, group: 'g1' },
+    { name: 'three', sessionId: ids[2], cwd: workspace, group: 'g2' },
+  ] };
+  await fake.run('claudeSessions.restoreBackup', { data: { kind: 'backup', backup } });
+  const names = fake.panes.map((g) => g.map((x) => x.name));
+  assert.ok(names.some((g) => g.length === 1 && g[0] === 'two'), 'the tab already open stays, its split partner opens');
+  assert.ok(names.some((g) => g.length === 1 && g[0] === 'three'));
+  assert.ok(fake.vscode.window.terminals.find((x) => x.name === 'three').sent.some((s) => s.includes(`--resume ${ids[2]}`)));
+  assert.ok(fake.messages.some((m) => /Restored 2 of 3 tabs.*1 were already open/.test(m)));
+  assert.strictEqual(fake.vscode.window.terminals.filter((x) => x === t).length, 1, 'the running session is not opened twice');
+  assert.deepStrictEqual(saved, api.store.read().filter((x) => saved.some((s) => s.sessionId === x.sessionId)), 'the saved tabs behind the green button are left alone');
+  stopClaude(claude);
+  api.deactivate();
+});
+
+test('a backup restores a whole split in its order', async () => {
+  const ids = ['99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002'];
+  for (const id of ids) writeSession(id, `split ${id}`);
+  const { fake, api } = await setup();
+  await api.activeView.ready;
+  const backup = { at: '2026-10-20T10:50:00.000Z', tabs: [
+    { name: 'left', sessionId: ids[0], cwd: workspace, group: 'g' },
+    { name: 'right', sessionId: ids[1], cwd: workspace, group: 'g' },
+  ] };
+  await fake.run('claudeSessions.restoreBackup', { data: { kind: 'backup', backup } });
+  assert.deepStrictEqual(fake.panes.map((g) => g.map((x) => x.name)), [['left', 'right']]);
+  api.deactivate();
+});

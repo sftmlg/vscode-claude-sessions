@@ -8,10 +8,11 @@ vscode, vs code, extension, claude code, terminal tabs, restore tabs, restore se
 
 ## The view
 
-Activity bar → **Claude Sessions** has three sections:
+Activity bar → **Claude Sessions** has four sections:
 
 - **Inactive** (top) — every Claude session of this repository that is not running (default: last 30 days). Favorites first in alphabetical order, then the rest newest message first. A session that runs in a tmux session of the remote service and has no tab in this window is listed too, as `running in cc-<name> · last …`; ▶ opens a tab named after the session and attached to that tmux session, without a second process. **Attach to a service session** lists the same tmux sessions by the name of the session they hold. At the bottom, the folder **archive** (collapsed) holds archived sessions; archiving only hides a session in this list, its files stay untouched.
 - **Active** (bottom) — terminal tabs of this window in tab order. Splits appear as `split` with their tabs inside. The icon on the left is the tab's state (⟳ working, ✓ idle, ⊘ exited); the tab you are working in carries a `●` after its name.
+- **Backups** (collapsed) — earlier constellations of the open tabs, newest first; see [Backups](#backups).
 - **Remote** — every machine connected to the same Nextcloud folder, this machine first, each one a collapsible entry led by when it last synced (`synced 5 minutes ago · online`). Under each machine its sessions of this repository, ordered like **Inactive** (favorites alphabetically, then the rest newest first); each row reads like **Inactive** too: its last activity (`last 3 minutes ago`), then when it was last synced to Nextcloud (`synced 5 minutes ago`, `not synced`, `not synced · requested`). The icon shows whether it is on this machine (✓), in Nextcloud (cloud) or requested; the hover adds the machine that synced it and whether it runs there. Everything refreshes on its own: the check every `sync.checkSeconds`, the relative times every minute. See [Remote sessions](#remote-sessions).
 
 Clicking an inactive or archived session opens its session file (JSONL) in the editor; clicking an active tab focuses that tab, its context menu opens the file.
@@ -165,11 +166,18 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - **Format:** lowercase words joined by hyphens, usually 1–3, at most 5.
 - **Never overwrite a name a person gave.** `rename-batch --keep-existing` skips sessions that already carry a name in this format.
 
+## Backups
+
+- **What:** the named Claude tabs of this window with their splits and order (name, session id, folder), nothing else.
+- **When:** shortly after start and then every `backup.intervalMinutes` (default 30); ⎘ in the **Backups** title bar backs up on demand. A backup is written only when the constellation differs from the newest one (another tab, another name, another split or order); no open tabs is never a backup.
+- **Where:** `claude-sessions-backups.json` next to the state file, at most 336 backups (a week at 30 minutes), the oldest drop out.
+- **Restore:** ⟲ on a backup opens its tabs in their splits. A tab already open in this window stays as it is, a session running in the service gets a tab attached to it in its place, a session running in another process is reported and not started twice. The saved tabs behind *Restore saved tabs* are not touched.
+
 ## What is saved
 
 - One file per repository: `.vscode/claude-sessions.json`.
 - It holds only named tabs that run a Claude session (name, session id, working directory, split group), plus open notifications, favorites and archive flags.
-- A tab you close is removed from it; tabs lost in a crash stay, so they can be restored.
+- A tab you close is removed from it; tabs lost in a crash stay, so they can be restored. Quitting or reloading VS Code closes no tab in this sense: the tabs stay saved and their sessions keep running in the service.
 - Whether the file is committed is up to the repository's `.gitignore`.
 
 ## How it works
@@ -195,6 +203,7 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.openIn` | `activeTerminal` | `activeTerminal` or `newTab` for the ▶ button |
 | `claudeSessions.autoCaptureLayout` | `true` | Capture splits on start and place terminals you open yourself (see Splits and order) |
 | `claudeSessions.pollSeconds` | `5` | How often names and sessions are re-read |
+| `claudeSessions.backup.intervalMinutes` | `30` | How often the open tabs are backed up, when they changed (see Backups) |
 | `claudeSessions.historyDays` | `30` | Reach of the inactive and archive lists |
 | `claudeSessions.sync.server` | empty | Nextcloud address, set by Connect Nextcloud |
 | `claudeSessions.sync.folder` | `Claude Sessions` | Folder in your Nextcloud files |
