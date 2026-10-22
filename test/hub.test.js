@@ -205,3 +205,42 @@ test('sendText types into the tab of the session: one line, multi-line as one pa
     mock.server.close();
   }
 });
+
+test('newSession opens a tab in the next grid slot and reports the id; openSession focuses an open tab; progress states reach the pushed state', async () => {
+  const mock = await mockHub();
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-hub-gs-')) });
+  fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  fake.config['hub.enabled'] = true;
+  fake.config['hub.url'] = mock.url;
+  const api = fake.activate();
+  const newId = '44444444-4444-4444-4444-444444444444';
+  try {
+    await api.activeView.ready;
+    const before = new Set(fake.vscode.window.terminals);
+    const feeder = setInterval(() => {
+      const t = fake.vscode.window.terminals.find((x) => !before.has(x) && (x.sent || []).some((s) => /claude/.test(s)));
+      if (t) api.tracker.meta.set(t, { ...api.tracker.meta.get(t), sessionId: newId, status: 'idle' });
+    }, 50);
+    mock.queue.push({ id: 'n1', type: 'newSession', name: 'from-hub', prompt: "it's a test" });
+    await api.hub.drain();
+    clearInterval(feeder);
+    const res = mock.results.find((r) => r.id === 'n1');
+    assert.deepStrictEqual(res, { id: 'n1', ok: true, sessionId: newId });
+    const created = fake.vscode.window.terminals.find((x) => !before.has(x));
+    assert.ok(created.sent.some((s) => s.includes(`'it'\\''s a test'`)), 'prompt is shell-quoted');
+    assert.strictEqual(api.tracker.groups.length, 1, 'first tab fills column 1');
+    mock.queue.push({ id: 'o1', type: 'openSession', sessionId: newId }, { id: 'o2', type: 'openSession' });
+    await api.hub.drain();
+    assert.deepStrictEqual(mock.results.filter((r) => r.id === 'o1'), [{ id: 'o1', ok: true, sessionId: newId }]);
+    assert.strictEqual(mock.results.find((r) => r.id === 'o2').ok, false);
+    const states = mock.states.flatMap((s) => (s.commands || []).filter((c) => c.id === 'n1').map((c) => c.state));
+    assert.ok(states.includes('opening'), 'opening is pushed while the command runs');
+    const last = mock.states[mock.states.length - 1];
+    assert.strictEqual(last.commands.find((c) => c.id === 'n1').state, 'ready');
+    const live = last.liveTabs.find((t) => t.sessionId === newId);
+    assert.ok(live && live.column === 0 && live.row === 0 && live.status === 'idle');
+  } finally {
+    api.deactivate();
+    mock.server.close();
+  }
+});

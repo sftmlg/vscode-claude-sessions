@@ -6,6 +6,7 @@ const os = require('os');
 const { execFile } = require('child_process');
 const updater = require('./updater');
 const { createHub } = require('./hub');
+const { cellsFromCounts, chooseSlot } = require('./placement');
 const { machineId, syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent } = require('./sync');
 const {
   readRunningSessions,
@@ -2032,6 +2033,28 @@ function activate(context) {
     if (!row) throw new Error(`${cmd.type}: session not in the Remote view of this machine`);
     return row.target;
   };
+  const openInGrid = async () => {
+    tracker.syncGroups();
+    const columns = tracker.groups.filter((g) => g.length).slice(0, 3);
+    const slot = chooseSlot(cellsFromCounts(columns.map((g) => g.length)));
+    const column = columns[slot.col];
+    if (column) return splitNextTo(column[column.length - 1]);
+    const t = vscode.window.createTerminal({ cwd: store.wsPath });
+    tracker.known.add(t);
+    tracker.groups.push([t]);
+    return t;
+  };
+
+  const hubCommands = new Map();
+  const hubProgress = (cmd, state, result) => {
+    const entry = hubCommands.get(cmd.id) || { id: cmd.id, type: cmd.type, sessionId: cmd.sessionId || null };
+    entry.state = state;
+    entry.at = Date.now();
+    if (result && result.sessionId) entry.sessionId = result.sessionId;
+    if (result && result.error) entry.error = result.error;
+    hubCommands.set(cmd.id, entry);
+    for (const [key, e] of hubCommands) if ((e.state === 'ready' || e.state === 'error') && Date.now() - e.at > 60000) hubCommands.delete(key);
+  };
   const hubExecute = async (cmd) => {
     const id = cmd.sessionId;
     const need = (ok, what) => {
@@ -2093,6 +2116,47 @@ function activate(context) {
         scheduleSync();
         return;
       }
+      case 'newSession': {
+        const prompt = typeof cmd.prompt === 'string' ? cmd.prompt.trim() : '';
+        const name = typeof cmd.name === 'string' ? cmd.name.trim() : '';
+        const cwd = typeof cmd.cwd === 'string' && cmd.cwd && fs.existsSync(cmd.cwd) ? cmd.cwd : store.wsPath;
+        const t = await openInGrid();
+        view.refresh(true);
+        tracker.meta.set(t, { name: name || t.name, nameSource: name ? 'user' : 'auto', sessionId: null, cwd });
+        t.show(false);
+        t.sendText(`cd ${shellQuote(cwd)} && ${claudeCommand()}${prompt ? ` ${shellQuote(prompt)}` : ''}`);
+        let sessionId = null;
+        for (let i = 0; i < 60 && !sessionId; i++) {
+          await sleep(500);
+          await tracker.poll();
+          sessionId = (tracker.meta.get(t) || {}).sessionId;
+        }
+        if (!sessionId) throw new Error('newSession: tab opened, but no session id appeared within 30 s');
+        if (name) await renameSession(sessionId, name);
+        scheduleSync();
+        return { sessionId };
+      }
+      case 'openSession': {
+        need(typeof id === 'string' && id, 'sessionId');
+        const open = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === id);
+        if (open) {
+          open.show(false);
+          return { sessionId: id };
+        }
+        const saved = store.read().find((t) => t.sessionId === id);
+        if (!(await mayResume(id))) throw new Error('not resumed: the session already runs or is locked on another machine');
+        const t = await openInGrid();
+        const name = (store.readState().names || {})[id] || (saved && saved.name) || id;
+        const cwd = (saved && saved.cwd && fs.existsSync(saved.cwd) && saved.cwd) || store.wsPath;
+        tracker.meta.set(t, { name, nameSource: 'user', sessionId: id, cwd, expectedSessionId: id, expectedUntil: Date.now() + 30000 });
+        t.show(false);
+        t.sendText(`cd ${shellQuote(cwd)} && ${claudeCommand()} --resume ${id}`);
+        await renameTerminal(t, name);
+        tracker.save();
+        view.refresh();
+        scheduleSync();
+        return { sessionId: id };
+      }
       default:
         throw new Error(`unknown command type ${cmd.type}`);
     }
@@ -2129,9 +2193,13 @@ function activate(context) {
     const remote = hubRemoteSessions();
     const connected = Boolean(await storedCredentials());
     const status = new Map();
+    const liveTitle = new Map();
     for (const t of tracker.liveTerminals()) {
       const m = tracker.meta.get(t);
-      if (m && m.sessionId) status.set(m.sessionId, m.status);
+      if (m && m.sessionId) {
+        status.set(m.sessionId, m.status);
+        liveTitle.set(m.sessionId, t.name);
+      }
     }
     return {
       sync: {
@@ -2149,7 +2217,9 @@ function activate(context) {
       favorites: Object.keys(state.favorites || {}),
       names: state.names || {},
       archived: Object.keys(state.archived || {}),
-      openTabs: tracker.namedLiveTabs().map((t) => ({ sessionId: t.sessionId, name: t.name, busy: status.get(t.sessionId) === 'busy', waiting: status.get(t.sessionId) === 'waiting' })),
+      openTabs: tracker.namedLiveTabs().map((t) => ({ sessionId: t.sessionId, name: t.name, busy: status.get(t.sessionId) === 'busy', waiting: status.get(t.sessionId) === 'waiting', status: status.get(t.sessionId) || null, title: liveTitle.get(t.sessionId) || t.name })),
+      liveTabs: tracker.groups.slice(0, 3).flatMap((g, column) => g.filter((t) => tracker.liveTerminals().includes(t) && (tracker.meta.get(t) || {}).sessionId).map((t, row) => ({ sessionId: tracker.meta.get(t).sessionId, title: t.name, status: tracker.meta.get(t).status || null, column, row, since: tracker.meta.get(t).statusChangedAt || null }))),
+      commands: [...hubCommands.values()].map((e) => ({ ...e })),
       backups: hubBackups().map((b, index) => ({ index, at: b.at, tabs: b.tabs.map((t) => ({ sessionId: t.sessionId, name: t.name, group: t.group })) })),
       remote: remote && remote.map(({ target, ...row }) => row),
     };
@@ -2160,6 +2230,7 @@ function activate(context) {
     repo: store.wsPath,
     buildState: hubState,
     execute: hubExecute,
+    onProgress: hubProgress,
     log: (line) => tracker.log(line),
   });
   context.subscriptions.push({ dispose: () => hub.stop() });

@@ -6,7 +6,7 @@ const POLL_MS = 2000;
 const MAX_BACKOFF_MS = 30000;
 const REQUEST_TIMEOUT_MS = 5000;
 
-function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fetchImpl = globalThis.fetch, pollMs = POLL_MS, debounceMs = PUSH_DEBOUNCE_MS }) {
+function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fetchImpl = globalThis.fetch, pollMs = POLL_MS, debounceMs = PUSH_DEBOUNCE_MS, onProgress = () => {} }) {
   let timers = [];
   let debounce = null;
   let stopped = true;
@@ -70,13 +70,21 @@ function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fe
     try {
       const commands = await call('POST', `/api/plugin/commands/take?repo=${encodeURIComponent(repo)}`);
       reached();
-      for (const cmd of Array.isArray(commands) ? commands : []) {
+      const batch = Array.isArray(commands) ? commands : [];
+      for (const cmd of batch) onProgress(cmd, 'queued');
+      for (const cmd of batch) {
         let result;
+        onProgress(cmd, 'opening');
+        await pushNow();
         try {
           const out = await execute(cmd);
-          result = out && typeof out.note === 'string' ? { ok: true, note: out.note } : { ok: true };
+          result = { ok: true };
+          if (out && typeof out.note === 'string') result.note = out.note;
+          if (out && typeof out.sessionId === 'string') result.sessionId = out.sessionId;
+          onProgress(cmd, 'ready', result);
         } catch (err) {
           result = { ok: false, error: err && err.message ? err.message : String(err) };
+          onProgress(cmd, 'error', result);
         }
         try {
           await call('POST', `/api/plugin/commands/${encodeURIComponent(cmd.id)}/result`, result);
