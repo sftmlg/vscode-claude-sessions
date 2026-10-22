@@ -127,7 +127,12 @@ function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fe
     timers = [];
   }
 
-  return { start, stop, requestPush, pushNow, pollOnce, drain };
+  async function forwardOpen(sessionId) {
+    if (!live()) return null;
+    return call('POST', `/api/plugin/open-forward?repo=${encodeURIComponent(repo)}`, { sessionId });
+  }
+
+  return { start, stop, requestPush, pushNow, pollOnce, drain, forwardOpen };
 }
 
 module.exports = { createHub };

@@ -6,6 +6,7 @@ const os = require('os');
 const { execFile } = require('child_process');
 const updater = require('./updater');
 const { createHub } = require('./hub');
+const { parseOpenUri, handleOpen } = require('./uri');
 const { cellsFromCounts, chooseSlot } = require('./placement');
 const { machineId, syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent } = require('./sync');
 const {
@@ -2268,6 +2269,7 @@ function activate(context) {
       savedTabs: store.read().map((t) => ({ sessionId: t.sessionId, name: t.name })),
       machine: { id: machineId(), name: settings().get('machineName') || (snap && snap.name) || os.hostname().split('.')[0] },
       repo: store.wsPath,
+      uriBase: `${vscode.env.uriScheme || 'vscode'}://${String((context.extension && context.extension.id) || 'sftmlg.vscode-claude-sessions').toLowerCase()}/open`,
       version: currentVersion,
       pendingVersion: installedVersion && updater.isNewer(installedVersion, currentVersion) ? installedVersion : null,
       favorites: Object.keys(state.favorites || {}),
@@ -2290,6 +2292,27 @@ function activate(context) {
     log: (line) => tracker.log(line),
   });
   context.subscriptions.push({ dispose: () => hub.stop() });
+  if (vscode.window.registerUriHandler) {
+    context.subscriptions.push(
+      vscode.window.registerUriHandler({
+        handleUri: async (uri) => {
+          const sessionId = parseOpenUri(uri);
+          if (!sessionId) return;
+          await handleOpen({
+            sessionId,
+            findTab: (sid) => tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === sid),
+            focus: async (t) => {
+              t.show(false);
+              await Promise.resolve(vscode.commands.executeCommand('workbench.action.terminal.focus')).catch(() => undefined);
+            },
+            forward: (sid) => hub.forwardOpen(sid),
+            resumeHere: (sid) => hubExecute({ type: 'openSession', sessionId: sid }),
+            info: (m) => vscode.window.showInformationMessage(m),
+          }).catch((err) => vscode.window.showWarningMessage(`Open session: ${err.message}`));
+        },
+      })
+    );
+  }
   activeView.ready.then(() => {
     if (!tracker.disposed) hub.start();
   });
