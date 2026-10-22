@@ -910,35 +910,69 @@ function activate(context) {
   const currentVersion = (context.extension && context.extension.packageJSON.version) || '0.0.0';
   let updating = false;
   let installedVersion = null;
+  let activationTimer = null;
+  const autoActivate = () => settings().get('autoActivateUpdate') !== false;
+  const tryActivate = () => {
+    clearTimeout(activationTimer);
+    activationTimer = null;
+    if (tracker.disposed || !installedVersion) return;
+    const decision = updater.activationDecision({
+      autoActivate: autoActivate(),
+      pendingVersion: installedVersion,
+      currentVersion,
+      busy: {
+        command: [...hubCommands.values()].some((e) => e.state === 'queued' || e.state === 'opening'),
+        restore: Boolean(tracker.restoring || tracker.scanning || tracker.placing),
+        sync: busy > 0,
+        picker: pickerOpen,
+      },
+    });
+    if (decision.reason.startsWith('busy')) {
+      activationTimer = setTimeout(tryActivate, 30000);
+      return;
+    }
+    if (!decision.activate) return;
+    tracker.log(`activating ${installedVersion}: restarting the extension host`);
+    vscode.commands.executeCommand('workbench.action.restartExtensionHost');
+  };
   const checkForUpdates = async (manual) => {
-    if (updating) return;
+    if (updating) return null;
     updating = true;
+    let installed = null;
     try {
       const release = await updater.latestRelease();
       if (!release || !updater.isNewer(release.version, currentVersion)) {
         if (manual) vscode.window.showInformationMessage(`Claude Sessions ${currentVersion} is up to date.`);
-        return;
+        return null;
       }
       if (release.version === installedVersion) {
         if (manual) vscode.window.showInformationMessage(`Claude Sessions ${release.version} is installed; reload to use it.`);
-        return;
+        return null;
       }
       const file = await updater.downloadRelease(release, context.globalStorageUri.fsPath);
       await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file));
       installedVersion = release.version;
-      inactiveTree.description = `updated to ${release.version} · reload to use it`;
+      installed = release.version;
+      inactiveTree.description = `updated to ${release.version} · ${autoActivate() ? 'activating' : 'reload to use it'}`;
       vscode.commands.executeCommand('setContext', 'claudeSessions.updated', true);
       tracker.log(`updated from ${currentVersion} to ${release.version}`);
-      vscode.window.showInformationMessage(`Claude Sessions ${release.version} is installed. Reload the window to use it; terminals and Claude sessions keep running.`, 'Reload').then((choice) => {
-        if (choice === 'Reload') vscode.commands.executeCommand('workbench.action.reloadWindow');
-      });
+      if (hub) hub.requestPush();
+      if (autoActivate()) {
+        activationTimer = setTimeout(tryActivate, 5000);
+      } else {
+        vscode.window.showInformationMessage(`Claude Sessions ${release.version} is installed. Reload the window to use it; terminals and Claude sessions keep running.`, 'Reload').then((choice) => {
+          if (choice === 'Reload') vscode.commands.executeCommand('workbench.action.reloadWindow');
+        });
+      }
     } catch (err) {
       tracker.log(`update check failed: ${err.message}`);
       if (manual) vscode.window.showWarningMessage(`Update check failed: ${err.message}`);
     } finally {
       updating = false;
     }
+    return installed;
   };
+  context.subscriptions.push({ dispose: () => clearTimeout(activationTimer) });
 
   const SYNC_SECRET = 'claudeSessions.nextcloud';
   let syncTimer = null;
@@ -2061,6 +2095,10 @@ function activate(context) {
       if (!ok) throw new Error(`${cmd.type}: ${what} missing or invalid`);
     };
     switch (cmd.type) {
+      case 'checkUpdate': {
+        const installed = await checkForUpdates(false);
+        return { installed, current: currentVersion };
+      }
       case 'favorite':
         need(typeof id === 'string' && id && typeof cmd.on === 'boolean', 'sessionId/on');
         notifications.setFavorite(id, cmd.on);
@@ -2214,6 +2252,7 @@ function activate(context) {
       machine: { id: machineId(), name: settings().get('machineName') || (snap && snap.name) || os.hostname().split('.')[0] },
       repo: store.wsPath,
       version: currentVersion,
+      pendingVersion: installedVersion && updater.isNewer(installedVersion, currentVersion) ? installedVersion : null,
       favorites: Object.keys(state.favorites || {}),
       names: state.names || {},
       archived: Object.keys(state.archived || {}),
@@ -2247,7 +2286,7 @@ function activate(context) {
   heartbeatInterval = setInterval(() => runHeartbeat(false).catch((err) => tracker.log(`heartbeat failed: ${err.message}`)), syncSettings().checkSeconds * 1000);
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
     setTimeout(() => checkForUpdates(false), 30000);
-    const updateTimer = setInterval(() => checkForUpdates(false), 60 * 60 * 1000);
+    const updateTimer = setInterval(() => checkForUpdates(false), 10 * 60 * 1000);
     context.subscriptions.push({ dispose: () => clearInterval(updateTimer) });
   }
   setTimeout(async () => {

@@ -81,6 +81,8 @@ function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fe
           result = { ok: true };
           if (out && typeof out.note === 'string') result.note = out.note;
           if (out && typeof out.sessionId === 'string') result.sessionId = out.sessionId;
+          if (out && 'installed' in out) result.installed = out.installed;
+          if (out && typeof out.current === 'string') result.current = out.current;
           onProgress(cmd, 'ready', result);
         } catch (err) {
           result = { ok: false, error: err && err.message ? err.message : String(err) };

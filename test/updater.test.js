@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { isNewer, latestRelease, downloadRelease } = require('../updater');
+const { isNewer, latestRelease, downloadRelease, activationDecision } = require('../updater');
 
 test('version comparison', () => {
   assert.strictEqual(isNewer('0.13.0', '0.12.9'), true);
@@ -23,4 +23,13 @@ test('latest release picks the vsix asset and downloads it', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-updater-'));
   const file = await downloadRelease(release, dir, fetch);
   assert.strictEqual(fs.readFileSync(file, 'utf8'), 'VSIX');
+});
+
+test('activation decision: only a newer pending version, enabled, and nothing busy', () => {
+  const base = { autoActivate: true, pendingVersion: '0.40.0', currentVersion: '0.39.0', busy: {} };
+  assert.deepStrictEqual(activationDecision(base), { activate: true, reason: 'safe' });
+  assert.strictEqual(activationDecision({ ...base, pendingVersion: null }).activate, false);
+  assert.strictEqual(activationDecision({ ...base, pendingVersion: '0.39.0' }).activate, false);
+  assert.strictEqual(activationDecision({ ...base, autoActivate: false }).reason, 'disabled');
+  assert.deepStrictEqual(activationDecision({ ...base, busy: { command: false, sync: true } }), { activate: false, reason: 'busy: sync' });
 });

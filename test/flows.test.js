@@ -380,6 +380,46 @@ test('an update is installed once, not again every hour until the reload', async
   }
 });
 
+test('checkUpdate installs at once, reports pendingVersion and restarts the extension host', async () => {
+  const updater = require('../updater');
+  const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease };
+  updater.latestRelease = async () => ({ version: '99.0.0' });
+  updater.downloadRelease = async () => path.join(os.tmpdir(), 'fake.vsix');
+  try {
+    const { fake, api } = await setup();
+    assert.strictEqual((await api.hubState()).pendingVersion, null);
+    const out = await api.hubExecute({ id: 'u1', type: 'checkUpdate' });
+    assert.strictEqual(out.installed, '99.0.0');
+    assert.ok(out.current && out.current !== '99.0.0');
+    assert.strictEqual((await api.hubState()).pendingVersion, '99.0.0');
+    assert.deepStrictEqual(await api.hubExecute({ id: 'u2', type: 'checkUpdate' }), { installed: null, current: out.current });
+    assert.ok(!fake.executed.some(([id]) => id === 'workbench.action.restartExtensionHost'), 'not before the grace period');
+    await new Promise((r) => setTimeout(r, 5500));
+    assert.strictEqual(fake.executed.filter(([id]) => id === 'workbench.action.restartExtensionHost').length, 1);
+    api.deactivate();
+  } finally {
+    Object.assign(updater, original);
+  }
+});
+
+test('autoActivateUpdate off installs but never restarts', async () => {
+  const updater = require('../updater');
+  const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease };
+  updater.latestRelease = async () => ({ version: '99.0.0' });
+  updater.downloadRelease = async () => path.join(os.tmpdir(), 'fake.vsix');
+  try {
+    const { fake, api } = await setup();
+    fake.config.autoActivateUpdate = false;
+    await api.hubExecute({ id: 'u3', type: 'checkUpdate' });
+    await new Promise((r) => setTimeout(r, 5500));
+    assert.ok(!fake.executed.some(([id]) => id === 'workbench.action.restartExtensionHost'));
+    assert.strictEqual((await api.hubState()).pendingVersion, '99.0.0');
+    api.deactivate();
+  } finally {
+    Object.assign(updater, original);
+  }
+});
+
 test('startup captures the splits before Active renders once', async () => {
   const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
   const api = fake.activate();

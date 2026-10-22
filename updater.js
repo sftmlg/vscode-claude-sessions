@@ -54,4 +54,12 @@ async function downloadRelease(release, dir, fetch = get) {
   return file;
 }
 
-module.exports = { isNewer, latestRelease, downloadRelease, REPO };
+function activationDecision({ autoActivate, pendingVersion, currentVersion, busy = {} }) {
+  if (!pendingVersion || !isNewer(pendingVersion, currentVersion)) return { activate: false, reason: 'nothing pending' };
+  if (autoActivate === false) return { activate: false, reason: 'disabled' };
+  const blocker = Object.keys(busy).find((k) => busy[k]);
+  if (blocker) return { activate: false, reason: `busy: ${blocker}` };
+  return { activate: true, reason: 'safe' };
+}
+
+module.exports = { activationDecision, isNewer, latestRelease, downloadRelease, REPO };
