@@ -2163,13 +2163,27 @@ function activate(context) {
         tracker.meta.set(t, { name: name || t.name, nameSource: name ? 'user' : 'auto', sessionId: null, cwd });
         t.show(false);
         t.sendText(`cd ${shellQuote(cwd)} && ${claudeCommand()}${prompt ? ` ${shellQuote(prompt)}` : ''}`);
+        const idOf = () => (tracker.meta.get(t) || {}).sessionId || null;
+        if (!prompt) {
+          (async () => {
+            for (let i = 0; i < 1800 && !idOf() && !tracker.disposed && vscode.window.terminals.includes(t); i++) await sleep(2000);
+            const late = idOf();
+            if (!late) return;
+            const entry = hubCommands.get(cmd.id);
+            if (entry) entry.sessionId = late;
+            if (name) await renameSession(late, name).catch((err) => tracker.log(`newSession: rename failed: ${err.message}`));
+            scheduleSync();
+            if (hub) hub.requestPush();
+          })();
+          return { sessionId: null, note: 'waiting for first message' };
+        }
         let sessionId = null;
-        for (let i = 0; i < 60 && !sessionId; i++) {
+        for (let i = 0; i < 180 && !sessionId; i++) {
           await sleep(500);
           await tracker.poll();
-          sessionId = (tracker.meta.get(t) || {}).sessionId;
+          sessionId = idOf();
         }
-        if (!sessionId) throw new Error('newSession: tab opened, but no session id appeared within 30 s');
+        if (!sessionId) throw new Error('newSession: tab opened, but no session id appeared within 90 s');
         if (name) await renameSession(sessionId, name);
         scheduleSync();
         return { sessionId };

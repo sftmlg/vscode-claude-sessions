@@ -244,3 +244,31 @@ test('newSession opens a tab in the next grid slot and reports the id; openSessi
     mock.server.close();
   }
 });
+
+test('newSession without a prompt finishes at once with a null id, then reports the id and applies the name', async () => {
+  const mock = await mockHub();
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-hub-gs-')) });
+  fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  fake.config['hub.enabled'] = true;
+  fake.config['hub.url'] = mock.url;
+  const api = fake.activate();
+  const lateId = '55555555-5555-5555-5555-555555555555';
+  try {
+    await api.activeView.ready;
+    const before = new Set(fake.vscode.window.terminals);
+    mock.queue.push({ id: 'n2', type: 'newSession', name: 'Hub-Test' });
+    const started = Date.now();
+    await api.hub.drain();
+    assert.ok(Date.now() - started < 5000, 'does not wait for an id');
+    assert.deepStrictEqual(mock.results.find((r) => r.id === 'n2'), { id: 'n2', ok: true, sessionId: null, note: 'waiting for first message' });
+    const created = fake.vscode.window.terminals.find((x) => !before.has(x));
+    assert.ok(created && created.sent.some((s) => /claude/.test(s) && !/claude\S*'/.test(s.replace(/^cd '[^']*' && /, ''))), 'claude started without a prompt');
+    api.tracker.meta.set(created, { ...api.tracker.meta.get(created), sessionId: lateId, status: 'idle' });
+    await new Promise((r) => setTimeout(r, 2600));
+    const entry = (await api.hubState()).commands.find((c) => c.id === 'n2');
+    assert.strictEqual(entry.sessionId, lateId);
+  } finally {
+    api.deactivate();
+    mock.server.close();
+  }
+});

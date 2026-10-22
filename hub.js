@@ -80,7 +80,7 @@ function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fe
           const out = await execute(cmd);
           result = { ok: true };
           if (out && typeof out.note === 'string') result.note = out.note;
-          if (out && typeof out.sessionId === 'string') result.sessionId = out.sessionId;
+          if (out && (typeof out.sessionId === 'string' || out.sessionId === null)) result.sessionId = out.sessionId;
           if (out && 'installed' in out) result.installed = out.installed;
           if (out && typeof out.current === 'string') result.current = out.current;
           onProgress(cmd, 'ready', result);
