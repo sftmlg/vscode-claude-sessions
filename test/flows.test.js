@@ -364,6 +364,15 @@ test('Disconnect stops the sync even when a credentials file was configured', as
   }
 });
 
+async function waitFor(fn, ms = 3000) {
+  const end = Date.now() + ms;
+  for (;;) {
+    if (await fn()) return;
+    if (Date.now() > end) throw new Error('waitFor timed out');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 test('an update is installed once, not again every hour until the reload', async () => {
   const updater = require('../updater');
   const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease };
@@ -389,15 +398,60 @@ test('checkUpdate installs at once, reports pendingVersion and restarts the exte
     const { fake, api } = await setup();
     assert.strictEqual((await api.hubState()).pendingVersion, null);
     const out = await api.hubExecute({ id: 'u1', type: 'checkUpdate' });
-    assert.strictEqual(out.installed, '99.0.0');
+    assert.strictEqual(out.started, true);
     assert.ok(out.current && out.current !== '99.0.0');
-    assert.strictEqual((await api.hubState()).pendingVersion, '99.0.0');
-    assert.deepStrictEqual(await api.hubExecute({ id: 'u2', type: 'checkUpdate' }), { installed: null, current: out.current });
+    await waitFor(async () => (await api.hubState()).pendingVersion === '99.0.0');
+    assert.strictEqual((await api.hubState()).lastUpdateCheck.result, 'installed');
+    assert.deepStrictEqual(await api.hubExecute({ id: 'u2', type: 'checkUpdate' }), { started: true, current: out.current });
     assert.ok(!fake.executed.some(([id]) => id === 'workbench.action.restartExtensionHost'), 'not before the grace period');
     await new Promise((r) => setTimeout(r, 5500));
     assert.strictEqual(fake.executed.filter(([id]) => id === 'workbench.action.restartExtensionHost').length, 1);
     api.deactivate();
   } finally {
+    Object.assign(updater, original);
+  }
+});
+
+test('checkUpdate answers at once; an install already on disk is not repeated', async () => {
+  const updater = require('../updater');
+  const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease, installedOnDisk: updater.installedOnDisk };
+  updater.latestRelease = async () => ({ version: '99.0.0' });
+  updater.downloadRelease = async () => path.join(os.tmpdir(), 'fake.vsix');
+  updater.installedOnDisk = () => true;
+  try {
+    const { fake, api } = await setup();
+    const started = Date.now();
+    const out = await api.hubExecute({ id: 'd1', type: 'checkUpdate' });
+    assert.strictEqual(out.started, true);
+    assert.ok(Date.now() - started < 500);
+    await waitFor(async () => (await api.hubState()).pendingVersion === '99.0.0');
+    assert.strictEqual(fake.executed.filter(([id]) => id === 'workbench.extensions.installExtension').length, 0, 'install skipped');
+    api.deactivate();
+  } finally {
+    Object.assign(updater, original);
+  }
+});
+
+test('a hung installExtension times out and is reported in lastUpdateCheck', async () => {
+  const updater = require('../updater');
+  const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease, installedOnDisk: updater.installedOnDisk, INSTALL_TIMEOUT_MS: updater.INSTALL_TIMEOUT_MS };
+  updater.latestRelease = async () => ({ version: '99.0.0' });
+  updater.downloadRelease = async () => path.join(os.tmpdir(), 'fake.vsix');
+  updater.installedOnDisk = () => false;
+  updater.INSTALL_TIMEOUT_MS = 50;
+  const { fake, api } = await setup();
+  const exec = fake.vscode.commands.executeCommand;
+  fake.vscode.commands.executeCommand = (id, ...rest) => (id === 'workbench.extensions.installExtension' ? new Promise(() => {}) : exec(id, ...rest));
+  try {
+    await api.hubExecute({ id: 'h1', type: 'checkUpdate' });
+    await waitFor(async () => (await api.hubState()).lastUpdateCheck);
+    const last = (await api.hubState()).lastUpdateCheck;
+    assert.strictEqual(last.result, 'error');
+    assert.match(last.error, /timed out/);
+    assert.strictEqual((await api.hubState()).pendingVersion, null);
+    api.deactivate();
+  } finally {
+    fake.vscode.commands.executeCommand = exec;
     Object.assign(updater, original);
   }
 });
@@ -411,6 +465,7 @@ test('autoActivateUpdate off installs but never restarts', async () => {
     const { fake, api } = await setup();
     fake.config.autoActivateUpdate = false;
     await api.hubExecute({ id: 'u3', type: 'checkUpdate' });
+    await waitFor(async () => (await api.hubState()).pendingVersion === '99.0.0');
     await new Promise((r) => setTimeout(r, 5500));
     assert.ok(!fake.executed.some(([id]) => id === 'workbench.action.restartExtensionHost'));
     assert.strictEqual((await api.hubState()).pendingVersion, '99.0.0');

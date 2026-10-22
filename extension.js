@@ -937,24 +937,38 @@ function activate(context) {
     tracker.log(`activating ${installedVersion}: restarting the extension host`);
     vscode.commands.executeCommand('workbench.action.restartExtensionHost');
   };
+  let lastUpdateCheck = null;
+  const extensionId = String((context.extension && context.extension.id) || 'sftmlg.vscode-claude-sessions');
+  const extensionDirs = () => [context.extensionPath && path.dirname(context.extensionPath), path.join(os.homedir(), '.vscode', 'extensions')].filter(Boolean);
   const checkForUpdates = async (manual) => {
     if (updating) return null;
     updating = true;
     let installed = null;
+    const record = (result, error) => {
+      lastUpdateCheck = { at: Date.now(), result, error: error || null };
+      if (hub) hub.requestPush();
+    };
     try {
       const release = await updater.latestRelease();
       if (!release || !updater.isNewer(release.version, currentVersion)) {
         if (manual) vscode.window.showInformationMessage(`Claude Sessions ${currentVersion} is up to date.`);
+        record('up-to-date');
         return null;
       }
       if (release.version === installedVersion) {
         if (manual) vscode.window.showInformationMessage(`Claude Sessions ${release.version} is installed; reload to use it.`);
+        record('pending');
         return null;
       }
-      const file = await updater.downloadRelease(release, context.globalStorageUri.fsPath);
-      await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file));
+      if (updater.installedOnDisk(extensionId, release.version, extensionDirs())) {
+        tracker.log(`update ${release.version} is already installed on disk; skipping the install`);
+      } else {
+        const file = await updater.downloadRelease(release, context.globalStorageUri.fsPath);
+        await updater.withTimeout(Promise.resolve(vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file))), updater.INSTALL_TIMEOUT_MS, 'install');
+      }
       installedVersion = release.version;
       installed = release.version;
+      record('installed');
       inactiveTree.description = `updated to ${release.version} · ${autoActivate() ? 'activating' : 'reload to use it'}`;
       vscode.commands.executeCommand('setContext', 'claudeSessions.updated', true);
       tracker.log(`updated from ${currentVersion} to ${release.version}`);
@@ -968,6 +982,7 @@ function activate(context) {
       }
     } catch (err) {
       tracker.log(`update check failed: ${err.message}`);
+      record('error', err.message);
       if (manual) vscode.window.showWarningMessage(`Update check failed: ${err.message}`);
     } finally {
       updating = false;
@@ -2098,8 +2113,8 @@ function activate(context) {
     };
     switch (cmd.type) {
       case 'checkUpdate': {
-        const installed = await checkForUpdates(false);
-        return { installed, current: currentVersion };
+        checkForUpdates(false).catch((err) => tracker.log(`update check failed: ${err.message}`));
+        return { started: true, current: currentVersion };
       }
       case 'favorite':
         need(typeof id === 'string' && id && typeof cmd.on === 'boolean', 'sessionId/on');
@@ -2272,6 +2287,7 @@ function activate(context) {
       uriBase: `${vscode.env.uriScheme || 'vscode'}://${String((context.extension && context.extension.id) || 'sftmlg.vscode-claude-sessions').toLowerCase()}/open`,
       version: currentVersion,
       pendingVersion: installedVersion && updater.isNewer(installedVersion, currentVersion) ? installedVersion : null,
+      lastUpdateCheck,
       favorites: Object.keys(state.favorites || {}),
       names: state.names || {},
       archived: Object.keys(state.archived || {}),

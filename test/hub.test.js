@@ -124,7 +124,7 @@ test('in the extension a queued favorite command toggles the favorite in the sta
     const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     assert.strictEqual(saved.favorites[id], true);
     assert.strictEqual(saved.names[id], 'from hub');
-    assert.deepStrictEqual(mock.results.map((r) => r.ok), [true, true, false]);
+    assert.deepStrictEqual(['c1', 'c2', 'c3'].map((cid) => mock.results.find((r) => r.id === cid).ok), [true, true, false]);
     const last = mock.states[mock.states.length - 1];
     assert.deepStrictEqual(last.favorites, [id]);
     assert.strictEqual(last.names[id], 'from hub');
@@ -288,6 +288,77 @@ test('newSession without a prompt finishes at once with a null id, then reports 
     assert.strictEqual(entry.sessionId, lateId);
   } finally {
     api.deactivate();
+    mock.server.close();
+  }
+});
+
+test('a hung command times out and does not block the next one', async () => {
+  const mock = await mockHub();
+  const hub = createHub({
+    url: () => mock.url,
+    enabled: () => true,
+    repo: '/r',
+    buildState: () => ({}),
+    timeouts: { sendText: 100 },
+    execute: async (cmd) => {
+      if (cmd.id === 'hung') await new Promise(() => {});
+    },
+  });
+  hub.start();
+  try {
+    mock.queue.push({ id: 'hung', type: 'sendText' }, { id: 'next', type: 'sendText' });
+    await hub.drain();
+    assert.deepStrictEqual(mock.results, [{ id: 'hung', ok: false, error: 'timeout' }, { id: 'next', ok: true }]);
+  } finally {
+    hub.stop();
+    mock.server.close();
+  }
+});
+
+test('a hung non-UI command does not hold up the serial lane', async () => {
+  const mock = await mockHub();
+  const hub = createHub({
+    url: () => mock.url,
+    enabled: () => true,
+    repo: '/r',
+    buildState: () => ({}),
+    timeouts: { default: 5000 },
+    execute: async (cmd) => {
+      if (cmd.type === 'checkUpdate') await new Promise(() => {});
+    },
+  });
+  hub.start();
+  try {
+    mock.queue.push({ id: 'u', type: 'checkUpdate' }, { id: 's', type: 'sendText' });
+    await hub.pollOnce();
+    const end = Date.now() + 2000;
+    while (!mock.results.some((r) => r.id === 's') && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
+    assert.deepStrictEqual(mock.results.map((r) => r.id), ['s']);
+  } finally {
+    hub.stop();
+    mock.server.close();
+  }
+});
+
+test('the watchdog restarts a take round that never completes', async () => {
+  const mock = await mockHub();
+  const logs = [];
+  let hang = true;
+  const fetchImpl = (u, o) =>
+    hang
+      ? new Promise((_, reject) => o.signal.addEventListener('abort', () => reject(new Error('aborted'))))
+      : fetch(u, o);
+  const hub = createHub({ url: () => mock.url, enabled: () => true, repo: '/r', buildState: () => ({}), execute: async () => {}, log: (l) => logs.push(l), fetchImpl, watchdogMs: 50 });
+  try {
+    hub.start();
+    hang = false;
+    await new Promise((r) => setTimeout(r, 120));
+    mock.queue.push({ id: 'w', type: 'favorite' });
+    await hub.drain();
+    assert.ok(logs.some((l) => /stuck/.test(l)));
+    assert.deepStrictEqual(mock.results, [{ id: 'w', ok: true }]);
+  } finally {
+    hub.stop();
     mock.server.close();
   }
 });

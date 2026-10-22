@@ -41,16 +41,43 @@ function get(url, redirects = 5) {
   });
 }
 
-async function latestRelease(fetch = get) {
-  const release = JSON.parse((await fetch(`https://api.github.com/repos/${REPO}/releases/latest`)).toString('utf8'));
+const LATEST_TIMEOUT_MS = 10000;
+const DOWNLOAD_TIMEOUT_MS = 60000;
+const INSTALL_TIMEOUT_MS = 60000;
+
+function withTimeout(promise, ms, what) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)} s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function installedOnDisk(extensionId, version, dirs) {
+  const prefix = `${String(extensionId).toLowerCase()}-${version}`;
+  return dirs.some((dir) => {
+    try {
+      return fs.readdirSync(dir).some((name) => {
+        const lower = name.toLowerCase();
+        return lower === prefix || lower.startsWith(`${prefix}-`);
+      });
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function latestRelease(fetch = get, timeoutMs = LATEST_TIMEOUT_MS) {
+  const body = await withTimeout(Promise.resolve(fetch(`https://api.github.com/repos/${REPO}/releases/latest`)), timeoutMs, 'release lookup');
+  const release = JSON.parse(body.toString('utf8'));
   const asset = (release.assets || []).find((a) => a.name.endsWith('.vsix'));
   return asset ? { version: release.tag_name.replace(/^v/, ''), url: asset.browser_download_url } : null;
 }
 
-async function downloadRelease(release, dir, fetch = get) {
+async function downloadRelease(release, dir, fetch = get, timeoutMs = DOWNLOAD_TIMEOUT_MS) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `vscode-claude-sessions-${release.version}.vsix`);
-  fs.writeFileSync(file, await fetch(release.url));
+  fs.writeFileSync(file, await withTimeout(Promise.resolve(fetch(release.url)), timeoutMs, 'download'));
   return file;
 }
 
@@ -62,4 +89,4 @@ function activationDecision({ autoActivate, pendingVersion, currentVersion, busy
   return { activate: true, reason: 'safe' };
 }
 
-module.exports = { activationDecision, isNewer, latestRelease, downloadRelease, REPO };
+module.exports = { activationDecision, isNewer, latestRelease, downloadRelease, installedOnDisk, withTimeout, INSTALL_TIMEOUT_MS, REPO };

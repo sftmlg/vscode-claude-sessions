@@ -33,3 +33,18 @@ test('activation decision: only a newer pending version, enabled, and nothing bu
   assert.strictEqual(activationDecision({ ...base, autoActivate: false }).reason, 'disabled');
   assert.deepStrictEqual(activationDecision({ ...base, busy: { command: false, sync: true } }), { activate: false, reason: 'busy: sync' });
 });
+
+test('installedOnDisk finds the versioned extension folder', () => {
+  const { installedOnDisk } = require('../updater');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-ext-'));
+  fs.mkdirSync(path.join(dir, 'sftmlg.vscode-claude-sessions-0.41.0'));
+  assert.strictEqual(installedOnDisk('sftmlg.vscode-claude-sessions', '0.41.0', [dir]), true);
+  assert.strictEqual(installedOnDisk('sftmlg.vscode-claude-sessions', '0.4.0', [dir]), false);
+  assert.strictEqual(installedOnDisk('sftmlg.vscode-claude-sessions', '0.41.0', [path.join(dir, 'missing')]), false);
+});
+
+test('release lookup and download time out', async () => {
+  const hang = () => new Promise(() => {});
+  await assert.rejects(latestRelease(hang, 30), /timed out/);
+  await assert.rejects(downloadRelease({ version: '1.0.0', url: 'x' }, fs.mkdtempSync(path.join(os.tmpdir(), 'claude-updater-')), hang, 30), /timed out/);
+});
