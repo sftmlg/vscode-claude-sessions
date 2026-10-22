@@ -2027,6 +2027,11 @@ function activate(context) {
     }
     return rows;
   };
+  const hubRemoteTarget = (cmd) => {
+    const row = (hubRemoteSessions() || []).find((r) => r.sessionId === cmd.sessionId && r.machine === cmd.machine);
+    if (!row) throw new Error(`${cmd.type}: session not in the Remote view of this machine`);
+    return row.target;
+  };
   const hubExecute = async (cmd) => {
     const id = cmd.sessionId;
     const need = (ok, what) => {
@@ -2056,28 +2061,95 @@ function activate(context) {
         need(backup, 'index');
         return restoreBackup(backup);
       }
-      case 'loadRemote': {
+      case 'loadRemote':
+      case 'requestRemote':
         need(typeof id === 'string' && id && typeof cmd.machine === 'string', 'sessionId/machine');
-        const row = (hubRemoteSessions() || []).find((r) => r.sessionId === id && r.machine === cmd.machine);
-        if (!row) throw new Error('loadRemote: session not in the Remote view of this machine');
-        return loadRemote({ data: { remote: row.target } });
+        return loadRemote({ data: { remote: hubRemoteTarget(cmd) } });
+      case 'syncNow':
+        if (!(await storedCredentials())) throw new Error('syncNow: Nextcloud is not connected');
+        return syncNow();
+      case 'archive':
+      case 'unarchive':
+        need(typeof id === 'string' && id, 'sessionId');
+        return setArchived(id, cmd.type === 'archive');
+      case 'restoreSavedTabs':
+        return tracker.restore();
+      case 'sendText': {
+        need(typeof id === 'string' && id && typeof cmd.text === 'string' && cmd.text.trim(), 'sessionId/text');
+        const term = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === id);
+        if (!term) throw new Error('no tab');
+        const text = cmd.text.replace(/\x1b/g, '').replace(/\r\n?/g, '\n');
+        if (text.includes('\n')) {
+          term.sendText(`\x1b[200~${text}\x1b[201~`, false);
+          term.sendText('', true);
+        } else term.sendText(text, true);
+        return (tracker.meta.get(term) || {}).status === 'busy' ? { note: 'queued while busy' } : undefined;
+      }
+      case 'resumeHere': {
+        need(typeof id === 'string' && id, 'sessionId');
+        const saved = store.read().find((t) => t.sessionId === id);
+        if (!(await mayResume(id))) throw new Error('not resumed: the session already runs or is locked on another machine');
+        await resume({ name: (store.readState().names || {})[id] || (saved && saved.name) || id, sessionId: id, cwd: (saved && saved.cwd) || store.wsPath });
+        scheduleSync();
+        return;
       }
       default:
         throw new Error(`unknown command type ${cmd.type}`);
     }
   };
-  const hubState = () => {
+  const hubInactive = async () => {
+    const state = store.readState();
+    const snap = remoteView.snapshot;
+    const sessions = inactiveView.sessionsCache || (await inactiveView.inactiveSessions());
+    const archived = state.archived || {};
+    const isFavorite = (id) => notifications.isFavorite(id);
+    const locks = (state.sync || {}).locks || {};
+    const row = (s) => {
+      const lock = locks[s.id];
+      const up = snap && snap.uploaded[s.id];
+      return {
+        sessionId: s.id,
+        name: s.title,
+        lastActivity: (s.meta && s.meta.lastActivity) || null,
+        favorite: isFavorite(s.id),
+        archived: Boolean(archived[s.id]),
+        runningElsewhere: s.service || null,
+        lock: lock && Date.now() - (lock.heartbeat || 0) < LOCK_TTL_MS ? lock.machine : null,
+        synced: up ? new Date(up.mtimeSec * 1000).toISOString() : null,
+      };
+    };
+    return sortSessions(sessions.filter((s) => !archived[s.id]), isFavorite)
+      .concat(sortSessions(sessions.filter((s) => archived[s.id]), isFavorite))
+      .slice(0, 150)
+      .map(row);
+  };
+  const hubState = async () => {
     const state = store.readState();
     const snap = remoteView.snapshot;
     const remote = hubRemoteSessions();
+    const connected = Boolean(await storedCredentials());
+    const status = new Map();
+    for (const t of tracker.liveTerminals()) {
+      const m = tracker.meta.get(t);
+      if (m && m.sessionId) status.set(m.sessionId, m.status);
+    }
     return {
+      sync: {
+        connected,
+        folder: connected ? syncSettings().folder : null,
+        lastSyncAt: (state.sync && state.sync.at) || null,
+        running: busy > 0,
+        machines: ((snap && snap.machines) || []).map((m) => ({ id: m.id, name: m.name, lastSeen: m.lastSeen, lastSync: m.lastSync || null, online: Date.now() - Date.parse(m.lastSeen) < ONLINE_MS })),
+      },
+      inactive: await hubInactive(),
+      savedTabs: store.read().map((t) => ({ sessionId: t.sessionId, name: t.name })),
       machine: { id: machineId(), name: settings().get('machineName') || (snap && snap.name) || os.hostname().split('.')[0] },
       repo: store.wsPath,
       version: currentVersion,
       favorites: Object.keys(state.favorites || {}),
       names: state.names || {},
       archived: Object.keys(state.archived || {}),
-      openTabs: tracker.namedLiveTabs().map((t) => ({ sessionId: t.sessionId, name: t.name })),
+      openTabs: tracker.namedLiveTabs().map((t) => ({ sessionId: t.sessionId, name: t.name, busy: status.get(t.sessionId) === 'busy', waiting: status.get(t.sessionId) === 'waiting' })),
       backups: hubBackups().map((b, index) => ({ index, at: b.at, tabs: b.tabs.map((t) => ({ sessionId: t.sessionId, name: t.name, group: t.group })) })),
       remote: remote && remote.map(({ target, ...row }) => row),
     };

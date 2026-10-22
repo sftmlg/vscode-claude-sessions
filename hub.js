@@ -13,7 +13,7 @@ function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fe
   let backoff = pollMs;
   let downUntil = 0;
   let pushing = null;
-  let polling = false;
+  let polling = null;
 
   const base = () => String(url() || '').replace(/\/+$/, '');
   const live = () => !stopped && enabled() && Boolean(base());
@@ -65,17 +65,16 @@ function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fe
     }, debounceMs);
   }
 
-  async function pollOnce() {
-    if (!live() || polling || Date.now() < downUntil) return;
-    polling = true;
+  async function takeCommands() {
+    if (!live() || Date.now() < downUntil) return;
     try {
       const commands = await call('POST', `/api/plugin/commands/take?repo=${encodeURIComponent(repo)}`);
       reached();
       for (const cmd of Array.isArray(commands) ? commands : []) {
         let result;
         try {
-          await execute(cmd);
-          result = { ok: true };
+          const out = await execute(cmd);
+          result = out && typeof out.note === 'string' ? { ok: true, note: out.note } : { ok: true };
         } catch (err) {
           result = { ok: false, error: err && err.message ? err.message : String(err) };
         }
@@ -88,15 +87,24 @@ function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fe
       }
     } catch (err) {
       unreachable(err);
-    } finally {
-      polling = false;
     }
+  }
+
+  function pollOnce() {
+    if (!polling) polling = takeCommands().finally(() => (polling = null));
+    return polling;
+  }
+
+  async function drain() {
+    await polling;
+    return pollOnce();
   }
 
   function start() {
     if (!stopped) return;
     stopped = false;
     pushNow();
+    pollOnce();
     timers = [setInterval(pollOnce, pollMs), setInterval(pushNow, PUSH_EVERY_MS)];
   }
 
@@ -108,7 +116,7 @@ function createHub({ url, enabled, buildState, execute, repo, log = () => {}, fe
     timers = [];
   }
 
-  return { start, stop, requestPush, pushNow, pollOnce };
+  return { start, stop, requestPush, pushNow, pollOnce, drain };
 }
 
 module.exports = { createHub };
