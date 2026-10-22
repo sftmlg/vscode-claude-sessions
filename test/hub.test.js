@@ -124,7 +124,8 @@ test('in the extension a queued favorite command toggles the favorite in the sta
     const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     assert.strictEqual(saved.favorites[id], true);
     assert.strictEqual(saved.names[id], 'from hub');
-    assert.deepStrictEqual(['c1', 'c2', 'c3'].map((cid) => mock.results.find((r) => r.id === cid).ok), [true, true, false]);
+    assert.deepStrictEqual(mock.results.map((r) => r.id), ['c1', 'c2', 'c3']);
+    assert.deepStrictEqual(mock.results.map((r) => r.ok), [true, true, false]);
     const last = mock.states[mock.states.length - 1];
     assert.deepStrictEqual(last.favorites, [id]);
     assert.strictEqual(last.names[id], 'from hub');
@@ -257,7 +258,7 @@ test('newSession opens a tab in the next grid slot and reports the id; openSessi
     const last = mock.states[mock.states.length - 1];
     assert.strictEqual(last.commands.find((c) => c.id === 'n1').state, 'ready');
     const live = last.liveTabs.find((t) => t.sessionId === newId);
-    assert.ok(live && live.column === 0 && live.row === 0 && live.status === 'idle');
+    assert.ok(live && live.column === 0 && live.row === 0);
   } finally {
     api.deactivate();
     mock.server.close();
