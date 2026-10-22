@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.35.1",
+  "version": "0.36.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -20,7 +20,7 @@
     "test": "node --test --test-force-exit test/*.test.js remote/test/*.test.js",
     "list": "node cli.js list",
     "bench": "node bench.js",
-    "verify": "node --check extension.js && node --check sessions.js && node --check cli.js && for f in remote/*.js; do node --check \"$f\" || exit 1; done && npm test",
+    "verify": "node --check extension.js && node --check sessions.js && node --check hub.js && node --check cli.js && for f in remote/*.js; do node --check \"$f\" || exit 1; done && npm test",
     "release": "./release.sh"
   },
   "contributes": {
@@ -687,6 +687,18 @@
           "default": 120,
           "minimum": 30,
           "description": "Seconds between light checks of the other machines: this machine's register entry, its locks, requests for sessions and newer uploads (read at start)."
+        },
+        "claudeSessions.hub.url": {
+          "type": "string",
+          "default": "http://127.0.0.1:8766",
+          "scope": "machine",
+          "description": "Address of the local Session Hub web app. This extension pushes its state there and takes commands from it."
+        },
+        "claudeSessions.hub.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Talk to the Session Hub. Off: no requests are made. An unreachable hub is ignored silently."
         },
         "claudeSessions.machineName": {
           "type": "string",

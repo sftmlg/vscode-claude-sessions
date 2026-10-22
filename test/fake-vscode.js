@@ -31,7 +31,7 @@ function createFakeVscode({ workspacePath, globalStoragePath }) {
   const panes = [];
   const lastActive = new Map();
   const opened = [];
-  const config = {};
+  const config = { 'hub.enabled': false };
   const secretStore = new Map();
   const messages = [];
   const webviewPanels = [];

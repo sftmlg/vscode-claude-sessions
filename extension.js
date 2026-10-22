@@ -5,7 +5,8 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 const updater = require('./updater');
-const { syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent } = require('./sync');
+const { createHub } = require('./hub');
+const { machineId, syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent } = require('./sync');
 const {
   readRunningSessions,
   processChildren,
@@ -895,11 +896,13 @@ function activate(context) {
   inactiveView.onSearched = (count) => {
     inactiveTree.message = `Search "${inactiveView.filter}" · ${count} matching sessions`;
   };
+  let hub = null;
   const view = {
     refresh: (fast = false) => {
       activeView.refresh(fast);
       inactiveView.refresh(fast);
       remoteView.refresh();
+      if (hub) hub.requestPush();
     },
     inactiveSessions: () => inactiveView.inactiveSessions(),
   };
@@ -1283,6 +1286,18 @@ function activate(context) {
     tracker.meta.set(t, { name: tab.name, nameSource: 'user', sessionId: tab.sessionId, cwd, expectedSessionId: tab.sessionId, expectedUntil: Date.now() + 30000 });
     t.show(false);
     t.sendText(`${claudeCommand()} --resume ${tab.sessionId}`);
+  };
+
+  const renameSession = async (sessionId, name) => {
+    const tabs = store.read();
+    if (tabs.some((t) => t.sessionId === sessionId)) store.write(tabs.map((t) => (t.sessionId === sessionId ? { ...t, name } : t)));
+    tracker.rememberName(sessionId, name);
+    const open = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === sessionId);
+    if (open) {
+      await renameTerminal(open, name);
+      tracker.meta.set(open, { ...tracker.meta.get(open), name, nameSource: 'user' });
+    }
+    view.refresh();
   };
 
   const resume = async (tab) => {
@@ -1885,15 +1900,7 @@ function activate(context) {
       const { tab } = item.data;
       const name = await askName(tab.name);
       if (!name) return;
-      const tabs = store.read();
-      if (tabs.some((t) => t.sessionId === tab.sessionId)) store.write(tabs.map((t) => (t.sessionId === tab.sessionId ? { ...t, name } : t)));
-      tracker.rememberName(tab.sessionId, name);
-      const open = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === tab.sessionId);
-      if (open) {
-        await renameTerminal(open, name);
-        tracker.meta.set(open, { ...tracker.meta.get(open), name, nameSource: 'user' });
-      }
-      view.refresh();
+      await renameSession(tab.sessionId, name);
     }),
     vscode.commands.registerCommand('claudeSessions.searchInactive', async () => {
       const box = vscode.window.createInputBox();
@@ -1992,6 +1999,101 @@ function activate(context) {
       }, 3000);
     });
   });
+  const hubBackups = () => readBackups(backupsView.file()).slice().reverse().slice(0, 50);
+  const hubRemoteSessions = () => {
+    const snap = remoteView.snapshot;
+    if (!snap) return null;
+    const rows = [];
+    for (const m of snap.machines) {
+      if (m.self) continue;
+      const listed = new Map((m.sessions || []).map((s) => [s.id, s]));
+      for (const [id, u] of Object.entries(snap.uploaded)) {
+        if (u.by === m.id && !listed.has(id)) listed.set(id, { id, name: snap.names[id] || id, lastActivity: new Date(u.mtimeSec * 1000).toISOString() });
+      }
+      for (const s of listed.values()) {
+        const st = remoteSessionState(s, snap);
+        rows.push({
+          machine: m.id,
+          machineName: m.name,
+          sessionId: s.id,
+          name: s.name || s.id,
+          lastActivity: s.lastActivity || null,
+          running: Boolean(s.running),
+          here: st.here,
+          synced: st.uploaded ? new Date(st.uploaded.mtimeSec * 1000).toISOString() : null,
+          target: { id: s.id, name: s.name || s.id, machine: m.id, machineName: m.name, ...st },
+        });
+      }
+    }
+    return rows;
+  };
+  const hubExecute = async (cmd) => {
+    const id = cmd.sessionId;
+    const need = (ok, what) => {
+      if (!ok) throw new Error(`${cmd.type}: ${what} missing or invalid`);
+    };
+    switch (cmd.type) {
+      case 'favorite':
+        need(typeof id === 'string' && id && typeof cmd.on === 'boolean', 'sessionId/on');
+        notifications.setFavorite(id, cmd.on);
+        scheduleSync();
+        return;
+      case 'rename':
+        need(typeof id === 'string' && id && typeof cmd.name === 'string' && cmd.name.trim(), 'sessionId/name');
+        return renameSession(id, cmd.name.trim());
+      case 'resume': {
+        need(typeof id === 'string' && id, 'sessionId');
+        const saved = store.read().find((t) => t.sessionId === id);
+        const tab = { name: (store.readState().names || {})[id] || (saved && saved.name) || id, sessionId: id, cwd: (saved && saved.cwd) || store.wsPath };
+        if (!(await mayResume(id))) throw new Error('not resumed: the session already runs or is locked on another machine');
+        resumeInNewTab(tab);
+        scheduleSync();
+        return;
+      }
+      case 'restoreBackup': {
+        need(Number.isInteger(cmd.index), 'index');
+        const backup = hubBackups()[cmd.index];
+        need(backup, 'index');
+        return restoreBackup(backup);
+      }
+      case 'loadRemote': {
+        need(typeof id === 'string' && id && typeof cmd.machine === 'string', 'sessionId/machine');
+        const row = (hubRemoteSessions() || []).find((r) => r.sessionId === id && r.machine === cmd.machine);
+        if (!row) throw new Error('loadRemote: session not in the Remote view of this machine');
+        return loadRemote({ data: { remote: row.target } });
+      }
+      default:
+        throw new Error(`unknown command type ${cmd.type}`);
+    }
+  };
+  const hubState = () => {
+    const state = store.readState();
+    const snap = remoteView.snapshot;
+    const remote = hubRemoteSessions();
+    return {
+      machine: { id: machineId(), name: settings().get('machineName') || (snap && snap.name) || os.hostname().split('.')[0] },
+      repo: store.wsPath,
+      version: currentVersion,
+      favorites: Object.keys(state.favorites || {}),
+      names: state.names || {},
+      archived: Object.keys(state.archived || {}),
+      openTabs: tracker.namedLiveTabs().map((t) => ({ sessionId: t.sessionId, name: t.name })),
+      backups: hubBackups().map((b, index) => ({ index, at: b.at, tabs: b.tabs.map((t) => ({ sessionId: t.sessionId, name: t.name, group: t.group })) })),
+      remote: remote && remote.map(({ target, ...row }) => row),
+    };
+  };
+  hub = createHub({
+    url: () => settings().get('hub.url') || 'http://127.0.0.1:8766',
+    enabled: () => settings().get('hub.enabled') !== false,
+    repo: store.wsPath,
+    buildState: hubState,
+    execute: hubExecute,
+    log: (line) => tracker.log(line),
+  });
+  context.subscriptions.push({ dispose: () => hub.stop() });
+  activeView.ready.then(() => {
+    if (!tracker.disposed) hub.start();
+  });
   activeView.ready.then(() => {
     if (tracker.disposed) return;
     backupNow();
@@ -2015,7 +2117,7 @@ function activate(context) {
     }
     tracker.log(`search cache ready for ${sessions.length} sessions in ${Date.now() - started} ms`);
   }, 5000);
-  return { tracker, store, notifications, activeView, inactiveView, remoteView, backupsView, runHeartbeat };
+  return { tracker, store, notifications, activeView, inactiveView, remoteView, backupsView, runHeartbeat, hub, hubExecute, hubState };
 }
 
 function vscodeGroupSizes(stateDb) {

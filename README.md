@@ -166,6 +166,14 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 - **Format:** lowercase words joined by hyphens, usually 1–3, at most 5.
 - **Never overwrite a name a person gave.** `rename-batch --keep-existing` skips sessions that already carry a name in this format.
 
+## Session Hub
+
+Optional bridge to the local Session Hub web app (`claudeSessions.hub.url`, default `http://127.0.0.1:8766`).
+
+- **State out:** `PUT /api/plugin/state` with machine, repository, extension version, favorites, names, archived ids, open tabs, the newest 50 backups and the Remote sessions of the other machines (`null` until Nextcloud is connected; no extra network calls). Sent on start, 2 s after the views refresh and at least every 60 s.
+- **Commands in:** every 2 s `POST /api/plugin/commands/take?repo=<workspace path>`; each command runs through the same code as the matching view action (favorite, rename, resume in a new tab, restore a backup, load a remote session), is answered with `POST /api/plugin/commands/<id>/result` (`{"ok":true}` or `{"ok":false,"error":"..."}`), and the state is pushed again. A session that already runs, or is locked on another machine, is not resumed; resume reports that as an error instead of asking.
+- **Quiet when absent:** an unreachable hub is never reported; requests back off from 2 s to 30 s and recover on their own. `claudeSessions.hub.enabled` off stops all requests.
+
 ## Backups
 
 - **What:** the named Claude tabs of this window with their splits and order (name, session id, folder), nothing else.
@@ -213,6 +221,8 @@ Default for names given automatically (by an agent or a batch run). Anyone renam
 | `claudeSessions.sync.recentDays` | `0` | 0 = content of favorites only, other sessions on demand; N = also every session of the last N days up from its machine |
 | `claudeSessions.machineName` | empty | Name of this machine in **Remote**; asked once after connecting |
 | `claudeSessions.sync.credentialsFile` | empty | App-password file used when no connection is stored |
+| `claudeSessions.hub.url` | `http://127.0.0.1:8766` | Address of the local Session Hub (see Session Hub) |
+| `claudeSessions.hub.enabled` | `true` | Push state to and take commands from the hub; off = no requests |
 | `claudeSessions.remote.url` | empty | WebSocket address of the remote service (`ws://host:port/ws`) for **Open remote sessions** |
 
 ## Command line and tests
