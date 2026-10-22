@@ -185,22 +185,41 @@ test('sendText types into the tab of the session: one line, multi-line as one pa
   fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
   fake.config['hub.enabled'] = true;
   fake.config['hub.url'] = mock.url;
+  fake.config['hub.submitDelayMs'] = 0;
+  fake.config['hub.deliveryTimeoutMs'] = 300;
+  const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-hub-cfg-'));
+  const jsonl = path.join(claudeDir, 'projects', 'p', `${id}.jsonl`);
+  fs.mkdirSync(path.dirname(jsonl), { recursive: true });
+  fs.writeFileSync(jsonl, '');
+  const previousDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = claudeDir;
   const api = fake.activate();
   try {
     await api.activeView.ready;
     const term = fake.vscode.window.createTerminal({ name: 'target' });
+    const record = term.sendText.bind(term);
+    let pasted = '';
+    term.sendText = (text, newline) => {
+      record(text, newline);
+      if (text === '\r') {
+        if (!pasted.includes('a\nb')) fs.appendFileSync(jsonl, `${JSON.stringify({ type: 'user', message: { content: pasted.replace(/\u001b\[20[01]~/g, '') } })}\n`);
+      } else pasted = text;
+    };
     api.tracker.meta.set(term, { name: 'target', nameSource: 'user', sessionId: id, status: 'idle' });
     mock.queue.push({ id: 's1', type: 'sendText', sessionId: id, text: 'hello' }, { id: 's2', type: 'sendText', sessionId: id, text: 'a\r\nb\n\nc\u001b' });
     await api.hub.drain();
     api.tracker.meta.get(term).status = 'busy';
     mock.queue.push({ id: 's3', type: 'sendText', sessionId: id, text: 'later' }, { id: 's4', type: 'sendText', sessionId: 'nobody', text: 'x' });
     await api.hub.drain();
-    assert.deepStrictEqual(term.sent, ['hello', '\u001b[200~a\nb\n\nc\u001b[201~', '', 'later']);
+    assert.deepStrictEqual(term.sent, ['\u001b[200~hello\u001b[201~', '\r', '\u001b[200~a\nb\n\nc\u001b[201~', '\r', '\u001b[200~later\u001b[201~', '\r']);
     const byId = Object.fromEntries(mock.results.map((r) => [r.id, r]));
-    assert.deepStrictEqual(byId.s1, { id: 's1', ok: true });
-    assert.deepStrictEqual(byId.s3, { id: 's3', ok: true, note: 'queued while busy' });
+    assert.deepStrictEqual(byId.s1, { id: 's1', ok: true, delivered: true });
+    assert.deepStrictEqual(byId.s2, { id: 's2', ok: true, delivered: false, note: 'not seen in the session file within the timeout' });
+    assert.deepStrictEqual(byId.s3, { id: 's3', ok: true, delivered: true, note: 'queued while busy' });
     assert.deepStrictEqual(byId.s4, { id: 's4', ok: false, error: 'no tab' });
   } finally {
+    if (previousDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousDir;
     api.deactivate();
     mock.server.close();
   }

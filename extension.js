@@ -32,6 +32,7 @@ const {
   writeStatePatch,
   filesForSession,
 } = require('./sessions');
+const { submitText, startDeliveryWatch } = require('./delivery');
 const { backupsFile, readBackups, takeBackup, splitsOf } = require('./backups');
 
 const AUTO_TITLE = /^[\u2800-\u28ff✳✻✽✶✢✦·*●○◐◓◑◒]\s*/u;
@@ -2140,11 +2141,13 @@ function activate(context) {
         const term = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === id);
         if (!term) throw new Error('no tab');
         const text = cmd.text.replace(/\x1b/g, '').replace(/\r\n?/g, '\n');
-        if (text.includes('\n')) {
-          term.sendText(`\x1b[200~${text}\x1b[201~`, false);
-          term.sendText('', true);
-        } else term.sendText(text, true);
-        return (tracker.meta.get(term) || {}).status === 'busy' ? { note: 'queued while busy' } : undefined;
+        const busy = (tracker.meta.get(term) || {}).status === 'busy';
+        const files = (await filesForSession(id)).map((f) => f.file);
+        const watch = startDeliveryWatch(files, text, { timeoutMs: settings().get('hub.deliveryTimeoutMs') ?? 10000 });
+        await submitText(term, text, { submitDelayMs: settings().get('hub.submitDelayMs') ?? 150 });
+        const delivered = await watch;
+        const note = delivered ? (busy ? 'queued while busy' : undefined) : 'not seen in the session file within the timeout';
+        return { delivered, ...(note ? { note } : {}) };
       }
       case 'resumeHere': {
         need(typeof id === 'string' && id, 'sessionId');
