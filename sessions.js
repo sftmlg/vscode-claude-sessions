@@ -339,37 +339,11 @@ function messageText(o) {
   return raw.replace(/<\/?pasted_content[^>]*>/g, '').trim();
 }
 
-async function sessionMeta(file) {
-  const st = await fsp.stat(file);
-  const cached = metaCache.get(file);
-  if (cached && cached.mtimeMs === st.mtimeMs) return cached.meta;
-  const handle = await fsp.open(file, 'r');
-  let head;
-  let tail;
-  try {
-    if (st.size <= HEAD_BYTES + TAIL_BYTES) {
-      head = await readRange(handle, 0, st.size);
-      tail = head;
-    } else {
-      head = await readRange(handle, 0, HEAD_BYTES);
-      tail = await readRange(handle, st.size - TAIL_BYTES, TAIL_BYTES);
-    }
-  } finally {
-    await handle.close();
-  }
-  let firstPrompt = null;
-  for (const line of head.split('\n')) {
-    if (!line.includes('"type":"user"')) continue;
-    try {
-      const o = JSON.parse(line);
-      const text = messageText(o);
-      if (!o.isMeta && text && !isSyntheticPrompt(text)) {
-        firstPrompt = text;
-        break;
-      }
-    } catch {}
-  }
-  const lines = tail.split('\n');
+const TITLE_RE = { custom: /"customTitle":"((?:[^"\\]|\\.)*)"/g, ai: /"aiTitle":"((?:[^"\\]|\\.)*)"/g };
+const SCAN_CHUNK = 1024 * 1024;
+
+function scanTail(text, st) {
+  const lines = text.split('\n');
   let lastUser = null;
   let lastAssistant = null;
   let lastActivity = null;
@@ -389,32 +363,111 @@ async function sessionMeta(file) {
     if (o.type === 'user' && !lastUser && !isSyntheticPrompt(text)) lastUser = { text, at: o.timestamp };
     if (o.type === 'assistant' && !lastAssistant) lastAssistant = { text, at: o.timestamp };
   }
-  const firstOf = (re) => {
-    const m = re.exec(head);
-    return m ? decodeJsonString(m[1]) : null;
-  };
-  const meta = {
-    id: path.basename(file, '.jsonl'),
-    file,
-    mtimeMs: st.mtimeMs,
-    customTitle: lastMatch(tail, /"customTitle":"((?:[^"\\]|\\.)*)"/g) || lastMatch(head, /"customTitle":"((?:[^"\\]|\\.)*)"/g),
-    aiTitle: lastMatch(tail, /"aiTitle":"((?:[^"\\]|\\.)*)"/g) || lastMatch(head, /"aiTitle":"((?:[^"\\]|\\.)*)"/g),
-    cwd: firstOf(/"cwd":"((?:[^"\\]|\\.)*)"/),
-    startedAt: firstOf(/"timestamp":"([^"]+)"/),
-    lastActivity: lastActivity || lastMatch(tail, /"timestamp":"([^"]+)"/g) || firstOf(/"timestamp":"([^"]+)"/) || new Date(st.mtimeMs).toISOString(),
-    firstPrompt,
-    lastUser: clip(lastUser),
-    lastAssistant: clip(lastAssistant),
-  };
-  if (meta.firstPrompt) meta.firstPrompt = meta.firstPrompt.slice(0, STORED_TEXT);
-  if (!meta.customTitle && !meta.aiTitle && st.size > HEAD_BYTES + TAIL_BYTES) {
-    const full = await fsp.readFile(file, 'utf8');
-    meta.customTitle = lastMatch(full, /"customTitle":"((?:[^"\\]|\\.)*)"/g);
-    meta.aiTitle = lastMatch(full, /"aiTitle":"((?:[^"\\]|\\.)*)"/g);
+  return { lastUser, lastAssistant, lastActivity };
+}
+
+async function scanTitles(handle, size) {
+  let custom = null;
+  let ai = null;
+  let carry = Buffer.alloc(0);
+  for (let pos = 0; pos < size; pos += SCAN_CHUNK) {
+    const chunk = Buffer.alloc(Math.min(SCAN_CHUNK, size - pos));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, pos);
+    const buf = Buffer.concat([carry, chunk.subarray(0, bytesRead)]);
+    const cut = pos + SCAN_CHUNK >= size ? buf.length : buf.lastIndexOf(10) + 1;
+    const text = buf.subarray(0, cut).toString('utf8');
+    carry = buf.subarray(cut);
+    custom = lastMatch(text, new RegExp(TITLE_RE.custom)) || custom;
+    ai = lastMatch(text, new RegExp(TITLE_RE.ai)) || ai;
   }
-  metaCache.set(file, { mtimeMs: st.mtimeMs, meta });
-  scheduleSave();
-  return meta;
+  return { custom, ai };
+}
+
+async function incrementalMeta(handle, st, cached) {
+  const from = cached.offset;
+  const buf = Buffer.alloc(st.size - from);
+  const { bytesRead } = await handle.read(buf, 0, buf.length, from);
+  const end = buf.subarray(0, bytesRead).lastIndexOf(10) + 1;
+  const text = buf.subarray(0, end).toString('utf8');
+  const prev = cached.meta;
+  const found = scanTail(text);
+  const meta = {
+    ...prev,
+    mtimeMs: st.mtimeMs,
+    customTitle: lastMatch(text, new RegExp(TITLE_RE.custom)) || prev.customTitle,
+    aiTitle: lastMatch(text, new RegExp(TITLE_RE.ai)) || prev.aiTitle,
+    lastActivity: found.lastActivity || lastMatch(text, /"timestamp":"([^"]+)"/g) || prev.lastActivity,
+    lastUser: clip(found.lastUser) || prev.lastUser,
+    lastAssistant: clip(found.lastAssistant) || prev.lastAssistant,
+  };
+  return { meta, offset: from + end };
+}
+
+async function sessionMeta(file) {
+  const st = await fsp.stat(file);
+  const cached = metaCache.get(file);
+  if (cached && cached.mtimeMs === st.mtimeMs && (cached.size === undefined || cached.size === st.size)) return cached.meta;
+  const headSettled = cached && cached.offset !== undefined && (cached.offset > HEAD_BYTES || (cached.meta.firstPrompt && cached.meta.cwd && cached.meta.startedAt));
+  const handle = await fsp.open(file, 'r');
+  try {
+    if (headSettled && st.size > cached.offset && st.size - cached.offset <= TAIL_BYTES) {
+      const { meta, offset } = await incrementalMeta(handle, st, cached);
+      metaCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, offset, meta });
+      scheduleSave();
+      return meta;
+    }
+    let head;
+    let tail;
+    if (st.size <= HEAD_BYTES + TAIL_BYTES) {
+      head = await readRange(handle, 0, st.size);
+      tail = head;
+    } else {
+      head = await readRange(handle, 0, HEAD_BYTES);
+      tail = await readRange(handle, st.size - TAIL_BYTES, TAIL_BYTES);
+    }
+    let firstPrompt = null;
+    for (const line of head.split('\n')) {
+      if (!line.includes('"type":"user"')) continue;
+      try {
+        const o = JSON.parse(line);
+        const text = messageText(o);
+        if (!o.isMeta && text && !isSyntheticPrompt(text)) {
+          firstPrompt = text;
+          break;
+        }
+      } catch {}
+    }
+    const { lastUser, lastAssistant, lastActivity } = scanTail(tail);
+    const firstOf = (re) => {
+      const m = re.exec(head);
+      return m ? decodeJsonString(m[1]) : null;
+    };
+    const meta = {
+      id: path.basename(file, '.jsonl'),
+      file,
+      mtimeMs: st.mtimeMs,
+      customTitle: lastMatch(tail, new RegExp(TITLE_RE.custom)) || lastMatch(head, new RegExp(TITLE_RE.custom)),
+      aiTitle: lastMatch(tail, new RegExp(TITLE_RE.ai)) || lastMatch(head, new RegExp(TITLE_RE.ai)),
+      cwd: firstOf(/"cwd":"((?:[^"\\]|\\.)*)"/),
+      startedAt: firstOf(/"timestamp":"([^"]+)"/),
+      lastActivity: lastActivity || lastMatch(tail, /"timestamp":"([^"]+)"/g) || firstOf(/"timestamp":"([^"]+)"/) || new Date(st.mtimeMs).toISOString(),
+      firstPrompt,
+      lastUser: clip(lastUser),
+      lastAssistant: clip(lastAssistant),
+    };
+    if (meta.firstPrompt) meta.firstPrompt = meta.firstPrompt.slice(0, STORED_TEXT);
+    if (!meta.customTitle && !meta.aiTitle && st.size > HEAD_BYTES + TAIL_BYTES) {
+      const titles = await scanTitles(handle, st.size);
+      meta.customTitle = titles.custom;
+      meta.aiTitle = titles.ai;
+    }
+    const offset = st.size - Buffer.byteLength(tail.slice(tail.lastIndexOf('\n') + 1));
+    metaCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, offset, meta });
+    scheduleSave();
+    return meta;
+  } finally {
+    await handle.close();
+  }
 }
 
 function peekMeta(sessionId) {
@@ -436,6 +489,18 @@ function mergeMetas(metas) {
   const starts = metas.map((m) => m.startedAt).filter(Boolean).sort();
   merged.startedAt = starts[0] || merged.startedAt;
   return merged;
+}
+
+const realpathCache = new Map();
+const REALPATH_TTL = 10 * 60000;
+
+async function cachedRealpath(file, knownIno) {
+  const ino = knownIno ?? (await fsp.lstat(file)).ino;
+  const hit = realpathCache.get(file);
+  if (hit && hit.ino === ino && Date.now() - hit.at < REALPATH_TTL) return hit.real;
+  const real = await fsp.realpath(file);
+  realpathCache.set(file, { ino, real, at: Date.now() });
+  return real;
 }
 
 async function collectSessionFiles(dirFilter) {
@@ -463,7 +528,7 @@ async function collectSessionFiles(dirFilter) {
         let real;
         let st;
         try {
-          real = await fsp.realpath(file);
+          real = await cachedRealpath(file);
           st = await fsp.stat(real);
         } catch {
           continue;
@@ -491,7 +556,6 @@ async function metasFor(files) {
 
 let allFiles = null;
 let allFilesAt = 0;
-
 async function sessionIndex(sessionId) {
   if (!allFiles || Date.now() - allFilesAt > 30000 || (sessionId && !allFiles.has(sessionId))) {
     allFiles = await collectSessionFiles(() => true);
@@ -513,8 +577,10 @@ async function filesForSession(sessionId) {
     }
     for (const p of dirs) {
       const file = path.join(projects, p, `${sessionId}.jsonl`);
+      const st = fs.lstatSync(file, { throwIfNoEntry: false });
+      if (!st) continue;
       try {
-        const real = await fsp.realpath(file);
+        const real = await cachedRealpath(file, st.ino);
         if (seen.has(real)) continue;
         seen.add(real);
         found.push({ file: real, mtimeMs: (await fsp.stat(real)).mtimeMs });
