@@ -2175,7 +2175,11 @@ function activate(context) {
         const newest = (await filesForSession(id)).sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
         if (!newest) throw new Error('no session file');
         revalidate(cmd, tailLines(newest.file));
-        term.sendText(key, false);
+        try {
+          term.sendText(key, false);
+        } catch (err) {
+          throw new Error(`typing failed: ${err.message}`);
+        }
         return { typed: true };
       }
       case 'resumeHere': {
