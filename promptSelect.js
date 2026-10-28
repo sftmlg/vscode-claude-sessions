@@ -3,8 +3,16 @@ const fs = require('fs');
 
 const TAIL_BYTES = 200000;
 
-function revisionOf(promptId, question, labels) {
-  return crypto.createHash('sha256').update(JSON.stringify([promptId, question, labels])).digest('hex').slice(0, 16);
+const str = (v) => (typeof v === 'string' ? v : '');
+
+function revisionOf(promptId, sessionId, questions) {
+  const canonical = (Array.isArray(questions) ? questions : []).map((q) => [
+    str(q && q.question),
+    str(q && q.header),
+    Boolean(q && q.multiSelect === true),
+    (Array.isArray(q && q.options) ? q.options : []).map((o) => [str(o && o.label), str(o && o.description)]),
+  ]);
+  return crypto.createHash('sha256').update(JSON.stringify([promptId, sessionId, canonical])).digest('hex').slice(0, 16);
 }
 
 function optionKeystroke(index) {
@@ -60,7 +68,7 @@ function revalidate(cmd, lines) {
   const q = questions[0];
   if (questions.length !== 1 || !q || q.multiSelect === true) throw new Error('not a single single-choice question');
   const labels = (Array.isArray(q.options) ? q.options : []).map((o) => (o && typeof o.label === 'string' ? o.label : ''));
-  if (revisionOf(use.id, typeof q.question === 'string' ? q.question : '', labels) !== cmd.revision) {
+  if (revisionOf(use.id, cmd.sessionId, questions) !== cmd.revision) {
     throw new Error('stale: the prompt revision changed');
   }
   if (labels[cmd.index] !== cmd.label) throw new Error('stale: the option at this index changed');
