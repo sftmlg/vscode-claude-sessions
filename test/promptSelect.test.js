@@ -23,4 +23,6 @@ test('revalidate passes only for the exact pending question', () => {
   const answered = [...lines, row('user', [{ type: 'tool_result', tool_use_id: 'q1', content: 'B' }])];
   assert.throws(() => revalidate(cmd(), answered), /no pending question/);
   assert.throws(() => revalidate(cmd(), [...lines, row('user', 'next')]), /no pending question/);
+  const tool = row('assistant', [{ type: 'tool_use', id: 'b1', name: 'Bash', input: {} }]);
+  assert.throws(() => revalidate(cmd(), [row('user', 'go'), tool]), /unsupported: no screen snapshot/);
 });

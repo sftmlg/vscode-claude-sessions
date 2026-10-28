@@ -53,7 +53,8 @@ function tailLines(file, bytes = TAIL_BYTES) {
 
 function revalidate(cmd, lines) {
   const use = lastOpenToolUse(lines);
-  if (!use || use.name !== 'AskUserQuestion') throw new Error('no pending question in the transcript');
+  if (!use) throw new Error('no pending question in the transcript');
+  if (use.name !== 'AskUserQuestion') throw new Error('unsupported: no screen snapshot for this terminal');
   if (use.id !== cmd.promptId) throw new Error('stale: the pending prompt changed');
   const questions = Array.isArray(use.input && use.input.questions) ? use.input.questions : [];
   const q = questions[0];
