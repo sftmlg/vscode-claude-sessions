@@ -6,6 +6,7 @@ const os = require('os');
 const { execFile } = require('child_process');
 const updater = require('./updater');
 const { createHub } = require('./hub');
+const { optionKeystroke, revalidate, tailLines } = require('./promptSelect');
 const { parseOpenUri, handleOpen } = require('./uri');
 const { cellsFromCounts, chooseSlot } = require('./placement');
 const { machineId, syncFavorites, startLogin, finishLogin, normalizeServer, readLock, LOCK_TTL_MS, heartbeat, requestSession, closeRequests, loadRecent } = require('./sync');
@@ -2164,6 +2165,22 @@ function activate(context) {
         const delivered = await watch;
         const note = delivered ? (busy ? 'queued while busy' : undefined) : 'not seen in the session file within the timeout';
         return { delivered, ...(note ? { note } : {}) };
+      }
+      case 'selectOption': {
+        need(typeof id === 'string' && id && typeof cmd.promptId === 'string' && typeof cmd.revision === 'string' && typeof cmd.label === 'string', 'sessionId/promptId/revision/label');
+        const key = optionKeystroke(cmd.index);
+        const term = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === id);
+        if (!term) throw new Error('no tab');
+        if ((tracker.meta.get(term) || {}).status !== 'waiting') throw new Error('stale: the tab is not waiting for input');
+        const newest = (await filesForSession(id)).sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+        if (!newest) throw new Error('no session file');
+        revalidate(cmd, tailLines(newest.file));
+        try {
+          term.sendText(key, false);
+        } catch (err) {
+          throw new Error(`typing failed: ${err.message}`);
+        }
+        return { typed: true };
       }
       case 'resumeHere': {
         need(typeof id === 'string' && id, 'sessionId');

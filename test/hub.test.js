@@ -79,6 +79,21 @@ test('commands are executed, answered with their result, and the state is pushed
   }
 });
 
+test('the typed receipt of a command is posted only when it is a boolean', async () => {
+  const mock = await mockHub();
+  const outcomes = { t: { typed: true }, f: { typed: false }, n: {}, s: { typed: 'yes' } };
+  const hub = createHub({ url: () => mock.url, enabled: () => true, repo: '/r', buildState: () => ({}), execute: async (cmd) => outcomes[cmd.id] });
+  hub.start();
+  try {
+    mock.queue.push({ id: 't', type: 'selectOption' }, { id: 'f', type: 'selectOption' }, { id: 'n', type: 'selectOption' }, { id: 's', type: 'selectOption' });
+    await hub.drain();
+    assert.deepStrictEqual(mock.results, [{ id: 't', ok: true, typed: true }, { id: 'f', ok: true, typed: false }, { id: 'n', ok: true }, { id: 's', ok: true }]);
+  } finally {
+    hub.stop();
+    mock.server.close();
+  }
+});
+
 test('an unreachable or failing hub is silent and backs off', async () => {
   const mock = await mockHub();
   mock.status = 404;
