@@ -658,9 +658,9 @@ async function archiveDuplicates(wsPath, days = 30) {
   return moved;
 }
 
-async function listRepoSessions(wsPath, days = 14) {
+async function listRepoSessions(wsPath, days = 14, { exact = false } = {}) {
   const encoded = wsPath.replace(/[^a-zA-Z0-9]/g, '-');
-  const byId = await collectSessionFiles((p) => p === encoded || p.startsWith(`${encoded}-`));
+  const byId = await collectSessionFiles((p) => p === encoded || (!exact && p.startsWith(`${encoded}-`)));
   const cutoff = Date.now() - Math.max(1, days) * 86400000;
   const metas = [];
   for (const files of byId.values()) {
