@@ -46,6 +46,20 @@ test('lists sessions of the repo sorted by newest message, without old ones', as
   assert.deepStrictEqual(sessions.filter((s) => !s.id.startsWith('dddd')).map((s) => s.id.slice(0, 4)), ['bbbb', 'aaaa']);
 });
 
+test('the exact option lists only the folder itself, not folders that share its prefix', async () => {
+  const subDir = path.join(home, '.claude', 'projects', `${repo}/sub`.replace(/[^a-zA-Z0-9]/g, '-'));
+  fs.mkdirSync(subDir, { recursive: true });
+  const sub = 'ffff6666-0000-0000-0000-000000000000';
+  fs.writeFileSync(path.join(subDir, `${sub}.jsonl`), `${JSON.stringify({ type: 'user', cwd: `${repo}/sub`, timestamp: iso(10), message: { content: 'in a subfolder' } })}\n`);
+  try {
+    assert.ok((await listRepoSessions(repo, 14)).some((s) => s.id === sub));
+    assert.ok(!(await listRepoSessions(repo, 14, { exact: true })).some((s) => s.id === sub));
+    assert.ok((await listRepoSessions(repo, 14, { exact: true })).some((s) => s.id.startsWith('bbbb')));
+  } finally {
+    fs.rmSync(subDir, { recursive: true, force: true });
+  }
+});
+
 test('reads title, first prompt, last real user message and last answer', async () => {
   const older = (await listRepoSessions(repo, 14)).find((s) => s.id.startsWith('aaaa'));
   assert.strictEqual(older.aiTitle, 'Older session');
