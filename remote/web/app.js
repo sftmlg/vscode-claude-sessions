@@ -402,7 +402,7 @@ function clientId() {
 function folderBlockedText(health) {
   const access = health && health.folderAccess;
   if (!access || (access.desktop !== 'blocked' && access.documents !== 'blocked')) return '';
-  return `The Mac running the service has not granted file access to node. On that Mac: System Settings › Privacy & Security › Full Disk Access › add ${health.nodePath || 'the node binary'} — sessions touching Desktop/Documents hang until then.`;
+  return `The Mac running the service has not granted file access to node. On that Mac: System Settings › Privacy & Security › Full Disk Access › add ${health.nodePath || 'the node binary'}, sessions touching Desktop/Documents hang until then.`;
 }
 
 function renderHealth(health) {

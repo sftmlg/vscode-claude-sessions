@@ -135,7 +135,7 @@ if [ -z "$SCHEME" ]; then
     SCHEME=https
   else
     SCHEME=http
-    say "WARNING: HTTPS certificates are off in the tailnet — enable them at https://login.tailscale.com/admin/dns, then re-run. Serving over http for now."
+    say "WARNING: HTTPS certificates are off in the tailnet, enable them at https://login.tailscale.com/admin/dns, then re-run. Serving over http for now."
   fi
 fi
 OTHER_SCHEME="http"

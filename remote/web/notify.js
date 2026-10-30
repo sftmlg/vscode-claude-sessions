@@ -1,7 +1,7 @@
-export const PUSH_UNAVAILABLE = 'needs HTTPS — enable certificates in the tailnet';
+export const PUSH_UNAVAILABLE = 'needs HTTPS, enable certificates in the tailnet';
 
 export function pushRefusal(code) {
-  if (code === 'bad-endpoint') return "This browser's push service is not supported — use Chrome, Safari or Firefox.";
+  if (code === 'bad-endpoint') return "This browser's push service is not supported, use Chrome, Safari or Firefox.";
   return `The hub refused notifications for this browser (${code || 'unknown'}).`;
 }
 

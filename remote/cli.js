@@ -113,7 +113,7 @@ function folderWarning(body) {
   const access = body && body.folderAccess;
   if (!access || (access.desktop !== 'blocked' && access.documents !== 'blocked')) return null;
   const blocked = ['desktop', 'documents'].filter((k) => access[k] === 'blocked').map((k) => k[0].toUpperCase() + k.slice(1)).join(' and ');
-  return `node has no access to ${blocked}. On this Mac: System Settings › Privacy & Security › Full Disk Access › add ${body.nodePath || 'the node binary'} — sessions touching Desktop/Documents hang until then.`;
+  return `node has no access to ${blocked}. On this Mac: System Settings › Privacy & Security › Full Disk Access › add ${body.nodePath || 'the node binary'}, sessions touching Desktop/Documents hang until then.`;
 }
 
 async function status(config) {

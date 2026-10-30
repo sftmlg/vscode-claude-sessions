@@ -333,7 +333,7 @@ test('stars from the editor show on rows and results; filters narrow the list', 
 
 test('notifications: one switch per device, disabled with a reason over plain http; links open the session', async () => {
   const { pushSupported, keyBytes, sessionFromUrl, PUSH_UNAVAILABLE } = await import(path.join(WEB, 'notify.js'));
-  assert.strictEqual(PUSH_UNAVAILABLE, 'needs HTTPS — enable certificates in the tailnet');
+  assert.strictEqual(PUSH_UNAVAILABLE, 'needs HTTPS, enable certificates in the tailnet');
   assert.strictEqual(pushSupported({ isSecureContext: false, navigator: { serviceWorker: {} }, PushManager: 1, Notification: 1 }), false);
   assert.strictEqual(pushSupported({ isSecureContext: true, navigator: { serviceWorker: {} }, PushManager: 1, Notification: 1 }), true);
   assert.deepStrictEqual([...keyBytes('AQID')], [1, 2, 3]);
@@ -540,7 +540,7 @@ test('a device row names where it was last seen from, never an object', async ()
 
 test('a refused push subscription explains itself and is undone in the browser', async () => {
   const { pushRefusal } = await import(path.join(WEB, 'notify.js'));
-  assert.strictEqual(pushRefusal('bad-endpoint'), "This browser's push service is not supported — use Chrome, Safari or Firefox.");
+  assert.strictEqual(pushRefusal('bad-endpoint'), "This browser's push service is not supported, use Chrome, Safari or Firefox.");
   assert.match(pushRefusal('other'), /refused/);
   const app = fs.readFileSync(path.join(WEB, 'app.js'), 'utf8');
   assert.match(app, /m\.ref === 'push'/);

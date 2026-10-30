@@ -674,7 +674,7 @@ async function listRepoSessions(wsPath, days = 14, { exact = false } = {}) {
 const TAB_STATES = {
   busy: { icon: 'loading~spin', hover: '⟳ Working' },
   waiting: { icon: 'bell-dot', hover: '🔔 Waiting for your input' },
-  idle: { icon: 'pass-filled', hover: '✓ Idle — finished, nothing running' },
+  idle: { icon: 'pass-filled', hover: '✓ Idle, finished, nothing running' },
   exited: { icon: 'circle-slash', hover: '⊘ Claude has exited in this tab' },
 };
 

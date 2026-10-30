@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Usage: nextcloud-e2e.mjs --credentials <file> [--repo <path>] [--folder <name>] — exit 0 all checks passed, 1 a check failed, 2 usage.
+// Usage: nextcloud-e2e.mjs --credentials <file> [--repo <path>] [--folder <name>], exit 0 all checks passed, 1 a check failed, 2 usage.
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
