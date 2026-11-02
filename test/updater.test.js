@@ -48,3 +48,28 @@ test('release lookup and download time out', async () => {
   await assert.rejects(latestRelease(hang, 30), /timed out/);
   await assert.rejects(downloadRelease({ version: '1.0.0', url: 'x' }, fs.mkdtempSync(path.join(os.tmpdir(), 'claude-updater-')), hang, 30), /timed out/);
 });
+
+test('a restart that came back on the old version is recognised, a stale or loaded one is not', () => {
+  const { recordRestart, failedRestart } = require('../updater');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-restart-'));
+  assert.strictEqual(failedRestart(dir, '0.42.0'), null);
+  recordRestart(dir, '0.43.0');
+  assert.strictEqual(failedRestart(dir, '0.42.0'), '0.43.0');
+  assert.strictEqual(failedRestart(dir, '0.43.0'), null);
+  assert.strictEqual(failedRestart(dir, '0.42.0', Date.now() + 10 * 60 * 1000), null);
+});
+
+test('activation decision refuses a version whose restart did not load it', () => {
+  const base = { autoActivate: true, pendingVersion: '0.43.0', currentVersion: '0.42.0', busy: {} };
+  assert.deepStrictEqual(activationDecision({ ...base, failedVersion: '0.43.0' }), { activate: false, reason: 'restart did not load it' });
+  assert.strictEqual(activationDecision({ ...base, failedVersion: '0.41.0' }).activate, true);
+});
+
+test('only one window claims the install of a version', () => {
+  const { claimInstall } = require('../updater');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-claim-'));
+  assert.strictEqual(claimInstall(dir, '0.43.0'), true);
+  assert.strictEqual(claimInstall(dir, '0.43.0'), false);
+  assert.strictEqual(claimInstall(dir, '0.44.0'), true);
+  assert.strictEqual(claimInstall(dir, '0.43.0', Date.now() + 10 * 60 * 1000), true, 'a stale claim is taken over');
+});

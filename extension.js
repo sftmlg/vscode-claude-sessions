@@ -914,7 +914,15 @@ function activate(context) {
   let updating = false;
   let installedVersion = null;
   let activationTimer = null;
+  const storageDir = context.globalStorageUri && context.globalStorageUri.fsPath;
+  const failedVersion = storageDir ? updater.failedRestart(storageDir, currentVersion) : null;
   const autoActivate = () => settings().get('autoActivateUpdate') !== false;
+  const askForReload = (version) => {
+    inactiveTree.description = `updated to ${version} · reload to use it`;
+    vscode.window.showInformationMessage(`Claude Sessions ${version} is installed. Reload the window to use it; terminals and Claude sessions keep running.`, 'Reload').then((choice) => {
+      if (choice === 'Reload') vscode.commands.executeCommand('workbench.action.reloadWindow');
+    });
+  };
   const tryActivate = () => {
     clearTimeout(activationTimer);
     activationTimer = null;
@@ -923,6 +931,7 @@ function activate(context) {
       autoActivate: autoActivate(),
       pendingVersion: installedVersion,
       currentVersion,
+      failedVersion,
       busy: {
         command: [...hubCommands.values()].some((e) => e.state === 'queued' || e.state === 'opening'),
         restore: Boolean(tracker.restoring || tracker.scanning || tracker.placing),
@@ -934,8 +943,13 @@ function activate(context) {
       activationTimer = setTimeout(tryActivate, 30000);
       return;
     }
+    if (decision.reason === 'restart did not load it') {
+      tracker.log(`the restart to ${installedVersion} kept ${currentVersion} running; not restarting again, reload the window to use it`);
+      askForReload(installedVersion);
+    }
     if (!decision.activate) return;
     tracker.log(`activating ${installedVersion}: restarting the extension host`);
+    if (storageDir) updater.recordRestart(storageDir, installedVersion);
     vscode.commands.executeCommand('workbench.action.restartExtensionHost');
   };
   let lastUpdateCheck = null;
@@ -963,6 +977,10 @@ function activate(context) {
       }
       if (updater.installedOnDisk(extensionId, release.version, extensionDirs())) {
         tracker.log(`update ${release.version} is already installed on disk; skipping the install`);
+      } else if (storageDir && !updater.claimInstall(storageDir, release.version)) {
+        tracker.log(`another window is installing ${release.version}; checking again later`);
+        record('pending');
+        return null;
       } else {
         const file = await updater.downloadRelease(release, context.globalStorageUri.fsPath);
         await updater.withTimeout(Promise.resolve(vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file))), updater.INSTALL_TIMEOUT_MS, 'install');
@@ -977,9 +995,7 @@ function activate(context) {
       if (autoActivate()) {
         activationTimer = setTimeout(tryActivate, 5000);
       } else {
-        vscode.window.showInformationMessage(`Claude Sessions ${release.version} is installed. Reload the window to use it; terminals and Claude sessions keep running.`, 'Reload').then((choice) => {
-          if (choice === 'Reload') vscode.commands.executeCommand('workbench.action.reloadWindow');
-        });
+        askForReload(release.version);
       }
     } catch (err) {
       tracker.log(`update check failed: ${err.message}`);
