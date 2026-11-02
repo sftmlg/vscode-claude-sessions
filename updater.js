@@ -81,12 +81,45 @@ async function downloadRelease(release, dir, fetch = get, timeoutMs = DOWNLOAD_T
   return file;
 }
 
-function activationDecision({ autoActivate, pendingVersion, currentVersion, busy = {} }) {
+const RESTART_FILE = 'restart-attempt.json';
+const RESTART_WINDOW_MS = 2 * 60 * 1000;
+const CLAIM_STALE_MS = 5 * 60 * 1000;
+
+function recordRestart(dir, version, now = Date.now()) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, RESTART_FILE), JSON.stringify({ version, at: now }));
+}
+
+function failedRestart(dir, currentVersion, now = Date.now()) {
+  try {
+    const attempt = JSON.parse(fs.readFileSync(path.join(dir, RESTART_FILE), 'utf8'));
+    return isNewer(attempt.version, currentVersion) && now - attempt.at < RESTART_WINDOW_MS ? attempt.version : null;
+  } catch {
+    return null;
+  }
+}
+
+function claimInstall(dir, version, now = Date.now()) {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `install-${version}.claim`);
+  try {
+    fs.writeFileSync(file, String(now), { flag: 'wx' });
+    return true;
+  } catch {
+    const at = Number(fs.readFileSync(file, 'utf8')) || 0;
+    if (now - at < CLAIM_STALE_MS) return false;
+    fs.writeFileSync(file, String(now));
+    return true;
+  }
+}
+
+function activationDecision({ autoActivate, pendingVersion, currentVersion, failedVersion = null, busy = {} }) {
   if (!pendingVersion || !isNewer(pendingVersion, currentVersion)) return { activate: false, reason: 'nothing pending' };
   if (autoActivate === false) return { activate: false, reason: 'disabled' };
+  if (failedVersion && failedVersion === pendingVersion) return { activate: false, reason: 'restart did not load it' };
   const blocker = Object.keys(busy).find((k) => busy[k]);
   if (blocker) return { activate: false, reason: `busy: ${blocker}` };
   return { activate: true, reason: 'safe' };
 }
 
-module.exports = { activationDecision, isNewer, latestRelease, downloadRelease, installedOnDisk, withTimeout, INSTALL_TIMEOUT_MS, REPO };
+module.exports = { activationDecision, recordRestart, failedRestart, claimInstall, isNewer, latestRelease, downloadRelease, installedOnDisk, withTimeout, INSTALL_TIMEOUT_MS, REPO };

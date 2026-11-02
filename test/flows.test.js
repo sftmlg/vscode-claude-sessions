@@ -475,6 +475,70 @@ test('autoActivateUpdate off installs but never restarts', async () => {
   }
 });
 
+test('a restart that came back on the old version is not repeated; the window asks for a reload instead', async () => {
+  const updater = require('../updater');
+  const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease, installedOnDisk: updater.installedOnDisk };
+  updater.latestRelease = async () => ({ version: '99.0.0' });
+  updater.installedOnDisk = () => true;
+  const gs = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-'));
+  updater.recordRestart(gs, '99.0.0');
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: gs });
+  fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  const api = fake.activate();
+  try {
+    await api.hubExecute({ id: 'r1', type: 'checkUpdate' });
+    await waitFor(async () => (await api.hubState()).pendingVersion === '99.0.0');
+    await new Promise((r) => setTimeout(r, 5500));
+    assert.ok(!fake.executed.some(([id]) => id === 'workbench.action.restartExtensionHost'), 'no second restart');
+    assert.ok(fake.messages.some((m) => /Reload the window/.test(m)));
+    api.deactivate();
+  } finally {
+    Object.assign(updater, original);
+  }
+});
+
+test('a restart is recorded before the extension host restarts', async () => {
+  const updater = require('../updater');
+  const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease, installedOnDisk: updater.installedOnDisk };
+  updater.latestRelease = async () => ({ version: '99.0.0' });
+  updater.installedOnDisk = () => true;
+  const gs = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-'));
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: gs });
+  fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  const api = fake.activate();
+  try {
+    await api.hubExecute({ id: 'r2', type: 'checkUpdate' });
+    await new Promise((r) => setTimeout(r, 5500));
+    assert.strictEqual(fake.executed.filter(([id]) => id === 'workbench.action.restartExtensionHost').length, 1);
+    assert.strictEqual(updater.failedRestart(gs, '0.0.1'), '99.0.0');
+    api.deactivate();
+  } finally {
+    Object.assign(updater, original);
+  }
+});
+
+test('a window that loses the install claim does not install the same version', async () => {
+  const updater = require('../updater');
+  const original = { latestRelease: updater.latestRelease, downloadRelease: updater.downloadRelease, installedOnDisk: updater.installedOnDisk };
+  updater.latestRelease = async () => ({ version: '99.0.0' });
+  updater.downloadRelease = async () => path.join(os.tmpdir(), 'fake.vsix');
+  updater.installedOnDisk = () => false;
+  const gs = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-'));
+  updater.claimInstall(gs, '99.0.0');
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: gs });
+  fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  const api = fake.activate();
+  try {
+    await api.hubExecute({ id: 'c1', type: 'checkUpdate' });
+    await waitFor(async () => (await api.hubState()).lastUpdateCheck);
+    assert.strictEqual(fake.executed.filter(([id]) => id === 'workbench.extensions.installExtension').length, 0);
+    assert.strictEqual((await api.hubState()).pendingVersion, null);
+    api.deactivate();
+  } finally {
+    Object.assign(updater, original);
+  }
+});
+
 test('startup captures the splits before Active renders once', async () => {
   const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-')) });
   const api = fake.activate();

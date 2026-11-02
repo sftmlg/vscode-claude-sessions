@@ -204,7 +204,7 @@ test('without tailnet certificates the default is http with a warning, with them
     const s = sandbox(noCerts);
     const r = s.install('--no-check');
     assert.strictEqual(r.status, 0, r.stderr + r.stdout);
-    assert.match(r.stdout, /WARNING: HTTPS certificates are off in the tailnet .*https:\/\/login\.tailscale\.com\/admin\/dns/);
+    assert.match(r.stdout, /WARNING: HTTPS certificates are off in the tailnet,? .*https:\/\/login\.tailscale\.com\/admin\/dns/);
     const cfg = JSON.parse(fs.readFileSync(path.join(s.home, '.config', 'claude-remote', 'config.json'), 'utf8'));
     assert.strictEqual(cfg.publicScheme, 'http', String(certs));
     assert.ok(cfg.peers.every((p) => p.url.startsWith('ws://')));
