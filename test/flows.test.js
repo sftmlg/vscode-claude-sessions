@@ -579,6 +579,26 @@ test('a burst of refreshes redraws a view once', async () => {
   api.deactivate();
 });
 
+test('switching between terminals redraws Active but leaves Inactive alone', async () => {
+  const { fake, api } = await setup();
+  const a = fake.vscode.window.createTerminal({ name: 'a' });
+  const b = fake.vscode.window.createTerminal({ name: 'b' });
+  a.show();
+  await api.activeView.ready;
+  await new Promise((r) => setTimeout(r, 200));
+  let active = 0;
+  let inactive = 0;
+  api.activeView.onDidChangeTreeData(() => active++);
+  api.inactiveView.onDidChangeTreeData(() => inactive++);
+  for (let i = 0; i < 6; i++) {
+    (i % 2 ? a : b).show();
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  assert.ok(active > 0, 'Active follows the focus');
+  assert.strictEqual(inactive, 0, 'focus changes do not rebuild Inactive');
+  api.deactivate();
+});
+
 test('a provisional registry id without a session file never replaces the resumed session', async () => {
   const real = '44444444-0000-0000-0000-000000000004';
   const provisional = '44444444-0000-0000-0000-00000000000f';

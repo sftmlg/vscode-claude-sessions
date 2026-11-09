@@ -560,6 +560,11 @@ class SessionsProvider {
     return e;
   }
 
+  resolveTreeItem(item, e) {
+    if (e && e.session && !e.tooltip) e.tooltip = sessionTooltip(e.session.title, e.session.meta, e.tooltipRows);
+    return e || item;
+  }
+
   label(sessionId, name) {
     return sessionId ? `${this.notifications.isFavorite(sessionId) ? '★' : '☆'} ${name}` : name;
   }
@@ -638,16 +643,18 @@ class SessionsProvider {
       }));
   }
 
-  sessionItem(s, archived) {
-    const item = new vscode.TreeItem(this.label(s.id, s.title));
+  sessionItem(s, archived, state = this.store.readState()) {
+    const favorite = Boolean((state.favorites || {})[s.id]);
+    const item = new vscode.TreeItem(`${favorite ? '★' : '☆'} ${s.title}`);
     item.id = `${archived ? 'archived' : 'session'}:${s.id}`;
     const kind = s.service ? 'serviceSession' : archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session';
-    item.contextValue = `${kind}${this.favSuffix(s.id)}`;
+    item.contextValue = `${kind}${favorite ? '.fav' : ''}`;
     item.iconPath = new vscode.ThemeIcon(s.service ? 'terminal-tmux' : archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
-    const lock = ((this.store.readState().sync || {}).locks || {})[s.id];
+    const lock = ((state.sync || {}).locks || {})[s.id];
     const locked = lock && Date.now() - (lock.heartbeat || 0) < LOCK_TTL_MS ? lock.machine : '';
     item.description = `${locked ? `🔒 ${locked} · ` : ''}${s.service ? `running in ${s.service} · ` : ''}${sessionSummary(s.meta)}`;
-    item.tooltip = sessionTooltip(s.title, s.meta, [['Folder', s.meta.cwd], ['Locked by', locked], ['Running', s.service ? `in the service tmux session ${s.service}; ▶ attaches a tab to it` : '']]);
+    item.tooltipRows = [['Folder', s.meta.cwd], ['Locked by', locked], ['Running', s.service ? `in the service tmux session ${s.service}; ▶ attaches a tab to it` : '']];
+    item.session = s;
     item.data = { tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } };
     item.command = { command: 'claudeSessions.openSessionFile', title: 'Open session file', arguments: [item] };
     return item;
@@ -660,18 +667,23 @@ class SessionsProvider {
       if (e.data.terminals) return Promise.all(e.data.terminals.map((t) => this.activeTabItem(t, true)));
       return [];
     }
-    if (e && e.data.kind === 'archiveFolder') return this.archive.map((s) => this.sessionItem(s, true));
+    if (e && e.data.kind === 'archiveFolder') {
+      const state = this.store.readState();
+      return this.archive.map((s) => this.sessionItem(s, true, state));
+    }
     if (e) return [];
     const full = this.needsFull || !this.sessionsCache;
     this.needsFull = false;
     const sessions = full ? await this.inactiveSessions() : this.sessionsCache;
     this.sessionsCache = sessions;
-    const archived = this.store.readState().archived || {};
-    const isFavorite = (id) => this.notifications.isFavorite(id);
+    const state = this.store.readState();
+    const archived = state.archived || {};
+    const favorites = state.favorites || {};
+    const isFavorite = (id) => Boolean(favorites[id]);
     if (this.filter) {
       const hits = await searchSessions(sessions, this.filter);
       if (this.onSearched) this.onSearched(hits.length);
-      return hits.map((s) => this.sessionItem(s, Boolean(archived[s.id])));
+      return hits.map((s) => this.sessionItem(s, Boolean(archived[s.id]), state));
     }
     const inactive = sortSessions(sessions.filter((s) => !archived[s.id]), isFavorite);
     this.archive = sortSessions(sessions.filter((s) => archived[s.id]), isFavorite);
@@ -680,7 +692,7 @@ class SessionsProvider {
     folder.contextValue = 'archiveFolder';
     folder.iconPath = new vscode.ThemeIcon('archive');
     folder.data = { kind: 'archiveFolder' };
-    return inactive.map((s) => this.sessionItem(s, false)).concat([folder]);
+    return inactive.map((s) => this.sessionItem(s, false, state)).concat([folder]);
   }
 }
 
@@ -902,9 +914,9 @@ function activate(context) {
   };
   let hub = null;
   const view = {
-    refresh: (fast = false) => {
+    refresh: (fast = false, { inactive = !fast } = {}) => {
       activeView.refresh(fast);
-      inactiveView.refresh(fast);
+      if (inactive) inactiveView.refresh(fast);
       remoteView.refresh();
       if (hub) hub.requestPush();
     },
@@ -1585,7 +1597,7 @@ function activate(context) {
     if (value) archived[sessionId] = true;
     else delete archived[sessionId];
     store.writeState({ archived });
-    view.refresh(true);
+    view.refresh(true, { inactive: true });
   };
 
   let remotePanel = null;
@@ -1736,7 +1748,7 @@ function activate(context) {
     return remotePanel;
   };
 
-  const minuteTimer = setInterval(() => view.refresh(true), 60000);
+  const minuteTimer = setInterval(() => view.refresh(true, { inactive: true }), 60000);
   updateBadge();
 
   const log = vscode.window.createOutputChannel('Claude Sessions');
@@ -1798,11 +1810,13 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.favorite', (item) => {
       const id = item.data.tab && item.data.tab.sessionId;
       if (id) notifications.setFavorite(id, true);
+      inactiveView.refresh(true);
       scheduleSync();
     }),
     vscode.commands.registerCommand('claudeSessions.unfavorite', (item) => {
       const id = item.data.tab && item.data.tab.sessionId;
       if (id) notifications.setFavorite(id, false);
+      inactiveView.refresh(true);
       scheduleSync();
     }),
     vscode.commands.registerCommand('claudeSessions.connectNextcloud', () => connectNextcloud()),
