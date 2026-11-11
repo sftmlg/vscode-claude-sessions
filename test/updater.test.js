@@ -25,6 +25,18 @@ test('latest release picks the vsix asset and downloads it', async () => {
   assert.strictEqual(fs.readFileSync(file, 'utf8'), 'VSIX');
 });
 
+test('a rate-limited API still finds the latest release through the releases page redirect', async () => {
+  const limited = async (url) => {
+    throw new Error(`GET ${url} returned 403`);
+  };
+  const redirect = async (url) => (url === 'https://github.com/sftmlg/vscode-claude-sessions/releases/latest' ? 'https://github.com/sftmlg/vscode-claude-sessions/releases/tag/v0.46.0' : '');
+  assert.deepStrictEqual(await latestRelease(limited, 1000, redirect), {
+    version: '0.46.0',
+    url: 'https://github.com/sftmlg/vscode-claude-sessions/releases/download/v0.46.0/vscode-claude-sessions-0.46.0.vsix',
+  });
+  await assert.rejects(latestRelease(limited, 1000, async () => 'https://github.com/sftmlg/vscode-claude-sessions/releases'), /returned 403/);
+});
+
 test('activation decision: only a newer pending version, enabled, and nothing busy', () => {
   const base = { autoActivate: true, pendingVersion: '0.40.0', currentVersion: '0.39.0', busy: {} };
   assert.deepStrictEqual(activationDecision(base), { activate: true, reason: 'safe' });
@@ -45,7 +57,7 @@ test('installedOnDisk finds the versioned extension folder', () => {
 
 test('release lookup and download time out', async () => {
   const hang = () => new Promise(() => {});
-  await assert.rejects(latestRelease(hang, 30), /timed out/);
+  await assert.rejects(latestRelease(hang, 30, hang), /timed out/);
   await assert.rejects(downloadRelease({ version: '1.0.0', url: 'x' }, fs.mkdtempSync(path.join(os.tmpdir(), 'claude-updater-')), hang, 30), /timed out/);
 });
 

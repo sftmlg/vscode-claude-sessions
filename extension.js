@@ -46,6 +46,7 @@ const claudeBase = () => settings().get('claudeCommand') || 'claude';
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const SERVICE_RUNNER = path.join(os.homedir(), '.local', 'bin', 'claude-remote-run');
 const REATTACH_MS = 120000;
+const FOCUS_WAIT_MS = 1000;
 const SHUTDOWN = vscode.TerminalExitReason ? vscode.TerminalExitReason.Shutdown : 1;
 const inService = () => settings().get('remote.runInService') !== false && fs.existsSync(SERVICE_RUNNER);
 const claudeCommand = () => (inService() ? `${shellQuote(SERVICE_RUNNER)} ${claudeBase()}` : claudeBase());
@@ -364,10 +365,11 @@ class Tracker {
     this.onChange.fire();
   }
 
-  async waitForActive(previous, ms = 250) {
+  async waitForActive(previous, ms = FOCUS_WAIT_MS) {
     if (vscode.window.activeTerminal !== previous) return;
     await new Promise((resolve) => {
       const sub = vscode.window.onDidChangeActiveTerminal(() => {
+        if (vscode.window.activeTerminal === previous) return;
         sub.dispose();
         resolve();
       });
@@ -399,7 +401,7 @@ class Tracker {
     const own = this.groups.find((g) => g.includes(t));
     if (!own || own.length > 1) return;
     this.scanning = true;
-    this.stepMs = 250;
+    this.stepMs = FOCUS_WAIT_MS;
     try {
       await this.command('workbench.action.terminal.focusPreviousPane');
       const neighbour = vscode.window.activeTerminal;
@@ -419,7 +421,7 @@ class Tracker {
   }
 
 
-  async scanLayout(stepMs = 250) {
+  async scanLayout(stepMs = FOCUS_WAIT_MS) {
     const live = this.liveTerminals();
     if (!live.length || this.scanning || this.disposed) return;
     this.scanning = true;
@@ -643,6 +645,34 @@ class SessionsProvider {
       }));
   }
 
+  rebuild() {
+    if (this.rebuilding) {
+      this.rebuildAgain = true;
+      return this.rebuilding;
+    }
+    const started = Date.now();
+    const hadCache = Boolean(this.sessionsCache);
+    this.rebuilding = this.inactiveSessions()
+      .then((sessions) => {
+        this.sessionsCache = sessions;
+        if (this.tracker.log) this.tracker.log(`inactive list: ${sessions.length} sessions in ${Date.now() - started} ms`);
+        if (hadCache) this.emitter.fire();
+        return sessions;
+      })
+      .catch((err) => {
+        if (this.tracker.log) this.tracker.log(`inactive list failed: ${err.message}`);
+        throw err;
+      })
+      .finally(() => {
+        this.rebuilding = null;
+        if (this.rebuildAgain) {
+          this.rebuildAgain = false;
+          this.rebuild().catch(() => {});
+        }
+      });
+    return this.rebuilding;
+  }
+
   sessionItem(s, archived, state = this.store.readState()) {
     const favorite = Boolean((state.favorites || {})[s.id]);
     const item = new vscode.TreeItem(`${favorite ? '★' : '☆'} ${s.title}`);
@@ -672,10 +702,12 @@ class SessionsProvider {
       return this.archive.map((s) => this.sessionItem(s, true, state));
     }
     if (e) return [];
-    const full = this.needsFull || !this.sessionsCache;
-    this.needsFull = false;
-    const sessions = full ? await this.inactiveSessions() : this.sessionsCache;
-    this.sessionsCache = sessions;
+    let sessions = this.sessionsCache;
+    if (this.needsFull || !sessions) {
+      this.needsFull = false;
+      if (sessions) this.rebuild().catch(() => {});
+      else sessions = await this.rebuild();
+    }
     const state = this.store.readState();
     const archived = state.archived || {};
     const favorites = state.favorites || {};
