@@ -127,7 +127,10 @@ async function loadTextCache() {
   if (!cacheDir) return;
   try {
     const data = JSON.parse(await fsp.readFile(path.join(cacheDir, 'text-cache.json'), 'utf8'));
-    for (const [file, entry] of Object.entries(data)) if (!conversationCache.has(file)) conversationCache.set(file, entry);
+    for (const [file, entry] of Object.entries(data)) {
+      if (conversationCache.has(file) || !entry || typeof entry.text !== 'string') continue;
+      conversationCache.set(file, entry.text.length > TEXT_CAP ? { ...entry, text: entry.text.slice(-TEXT_CAP) } : entry);
+    }
   } catch {}
 }
 
@@ -186,29 +189,87 @@ function foldText(text) {
 
 const conversationCache = new Map();
 
-async function conversationText(file) {
+const LINE_CAP = 1024 * 1024;
+const TEXT_CAP = 1024 * 1024;
+const YIELD_MS = 8;
+const MESSAGE_MARKERS = ['"type":"user"', '"type":"assistant"'];
+
+async function scanLines(file, from, markers, onLine) {
+  const handle = await fsp.open(file, 'r');
+  let offset = from;
+  try {
+    const chunk = Buffer.alloc(SCAN_CHUNK);
+    let carry = Buffer.alloc(0);
+    let skipping = false;
+    let pos = from;
+    let lastYield = Date.now();
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, pos);
+      if (!bytesRead) break;
+      pos += bytesRead;
+      const buf = carry.length ? Buffer.concat([carry, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead);
+      let start = 0;
+      for (let nl = buf.indexOf(10); nl !== -1; nl = buf.indexOf(10, start)) {
+        const line = buf.subarray(start, nl);
+        start = nl + 1;
+        offset = pos - (buf.length - start);
+        if (skipping) {
+          skipping = false;
+          continue;
+        }
+        if (line.length > LINE_CAP || !markers.some((m) => line.includes(m))) continue;
+        if (onLine(line.toString('utf8')) === true) return offset;
+        if (Date.now() - lastYield > YIELD_MS) {
+          await new Promise((r) => setImmediate(r));
+          lastYield = Date.now();
+        }
+      }
+      carry = Buffer.from(buf.subarray(start));
+      if (carry.length > LINE_CAP) {
+        carry = Buffer.alloc(0);
+        skipping = true;
+      }
+      await new Promise((r) => setImmediate(r));
+      lastYield = Date.now();
+    }
+    return offset;
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseMessage(line) {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+const textScans = new Map();
+
+function conversationText(file) {
+  if (!textScans.has(file)) textScans.set(file, indexConversation(file).finally(() => textScans.delete(file)));
+  return textScans.get(file);
+}
+
+async function indexConversation(file) {
   const st = await fsp.stat(file);
   const cached = conversationCache.get(file);
-  if (cached && cached.mtimeMs === st.mtimeMs) return cached.text;
-  const raw = await fsp.readFile(file, 'utf8');
-  const parts = [];
-  let n = 0;
-  for (const line of raw.split('\n')) {
-    if (++n % 2000 === 0) await sleep(0);
-    if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"') && !line.includes('"customTitle"')) continue;
-    let o;
-    try {
-      o = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (o.customTitle) parts.push(o.customTitle);
-    if (o.type !== 'user' && o.type !== 'assistant') continue;
+  if (cached && cached.mtimeMs === st.mtimeMs && (cached.size === undefined || cached.size === st.size)) return cached.text;
+  const append = cached && cached.offset !== undefined && st.size >= cached.offset;
+  const parts = append && cached.text ? [cached.text] : [];
+  const offset = await scanLines(file, append ? cached.offset : 0, [...MESSAGE_MARKERS, '"customTitle"'], (line) => {
+    const o = parseMessage(line);
+    if (!o) return;
+    if (o.customTitle) parts.push(foldText(o.customTitle));
+    if (o.type !== 'user' && o.type !== 'assistant') return;
     const text = messageText(o);
-    if (text && !(o.type === 'user' && isSyntheticPrompt(text))) parts.push(text);
-  }
-  const text = foldText(parts.join('\n'));
-  conversationCache.set(file, { mtimeMs: st.mtimeMs, text });
+    if (text && !(o.type === 'user' && isSyntheticPrompt(text))) parts.push(foldText(text));
+  });
+  let text = parts.join('\n');
+  if (text.length > TEXT_CAP) text = text.slice(-TEXT_CAP);
+  conversationCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, offset, text });
   scheduleSave('text');
   return text;
 }
@@ -281,24 +342,18 @@ function matchSnippet(s, query) {
 async function deepSnippet(file, query) {
   const terms = foldText(query).split(/\s+/).filter(Boolean);
   if (!terms.length) return '';
-  const raw = await fsp.readFile(file, 'utf8');
-  let n = 0;
-  for (const line of raw.split('\n')) {
-    if (++n % 2000 === 0) await sleep(0);
-    if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) continue;
-    let o;
-    try {
-      o = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (o.type !== 'user' && o.type !== 'assistant') continue;
+  let snippet = '';
+  await scanLines(file, 0, MESSAGE_MARKERS, (line) => {
+    const o = parseMessage(line);
+    if (!o || (o.type !== 'user' && o.type !== 'assistant')) return;
     const text = messageText(o);
-    if (!text || (o.type === 'user' && isSyntheticPrompt(text))) continue;
+    if (!text || (o.type === 'user' && isSyntheticPrompt(text))) return;
     const folded = foldText(text);
-    if (terms.some((t) => folded.includes(t))) return snippetAround(text, terms);
-  }
-  return '';
+    if (!terms.some((t) => folded.includes(t))) return;
+    snippet = snippetAround(text, terms);
+    return true;
+  });
+  return snippet;
 }
 
 const RELATIVE_HOURS = 48;
