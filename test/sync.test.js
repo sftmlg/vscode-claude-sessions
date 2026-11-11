@@ -127,6 +127,35 @@ test('a session running on this machine is never overwritten by a download', asy
   }
 });
 
+test('a newer remote copy kept back while running here is downloaded once the session stops', async () => {
+  const cloud = createFakeNextcloud();
+  await cloud.start();
+  try {
+    const a = machine('a');
+    const b = machine('b');
+    const t0 = Math.floor(Date.now() / 1000) - 3600;
+    writeSession(a, F1, 'shared start', t0);
+    writeState(a, { favorites: { [F1]: true } });
+    use(a);
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'mac-a' });
+    writeState(b, { favorites: { [F1]: true } });
+    use(b);
+    await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'mac-b' });
+    use(a);
+    appendLine(a, F1, 'continued on a');
+    await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'mac-a' });
+
+    use(b);
+    const busy = await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'mac-b', running: new Set([F1]) });
+    assert.deepStrictEqual(busy.skippedRunning, [F1]);
+    const done = await syncFavorites({ creds: cloud.creds(), wsPath: b.ws, stateFile: b.stateFile, machine: 'mac-b' });
+    assert.deepStrictEqual(done.downloaded, [F1], 'the skipped copy is not marked as already in sync');
+    assert.match(fs.readFileSync(path.join(projectDir(b.ws), `${F1}.jsonl`), 'utf8'), /continued on a/);
+  } finally {
+    await cloud.stop();
+  }
+});
+
 test('the login flow hands out an app password only after the browser login', async () => {
   const cloud = createFakeNextcloud();
   await cloud.start();
@@ -410,6 +439,30 @@ test('the machine a session runs on locks it; the other machine reads it but nev
     const released = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'mac-a' });
     assert.deepStrictEqual(released.released, [F1]);
     assert.strictEqual(lockOf(cloud, F1), null, 'the lock goes once the session stops');
+  } finally {
+    await cloud.stop();
+  }
+});
+
+test('a large session running here is not re-uploaded every hour, only when stale or stopped', async () => {
+  const { cloud, a } = await seeded();
+  try {
+    use(a);
+    appendLine(a, F1, 'grows while it runs');
+    const key = `Claude Sessions/my-repo/${F1}.jsonl`;
+    const before = cloud.files.get(key).body;
+    const busy = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'mac-a', deferBytes: 0 });
+    assert.deepStrictEqual(busy.deferredRunning, [F1]);
+    assert.ok(!busy.uploaded.includes(F1));
+    assert.deepStrictEqual(cloud.files.get(key).body, before, 'the remote copy is left as it was');
+
+    const later = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, running: new Set([F1]), machine: 'mac-a', deferBytes: 0, now: Date.now() + 7 * 60 * 60 * 1000 });
+    assert.deepStrictEqual(later.uploaded, [F1], 'a copy older than six hours is refreshed');
+
+    appendLine(a, F1, 'last words');
+    const stopped = await syncFavorites({ creds: cloud.creds(), wsPath: a.ws, stateFile: a.stateFile, machine: 'mac-a', deferBytes: 0 });
+    assert.deepStrictEqual(stopped.uploaded, [F1], 'the full session goes up once it stops');
+    assert.match(cloud.files.get(key).body.toString(), /last words/);
   } finally {
     await cloud.stop();
   }

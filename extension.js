@@ -1119,7 +1119,7 @@ function activate(context) {
     try {
       const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
       const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running, recentDays: syncSettings().recentDays });
-      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.recent.uploaded.length ? ` · ${result.recent.uploaded.length} recent up` : ''}${result.recent.pruned.length ? ` · ${result.recent.pruned.length} recent removed` : ''}${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
+      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.recent.uploaded.length ? ` · ${result.recent.uploaded.length} recent up` : ''}${result.recent.pruned.length ? ` · ${result.recent.pruned.length} recent removed` : ''}${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.deferredRunning.length ? ` · ${result.deferredRunning.length} running here, upload deferred` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
       const names = store.readState().names || {};
       for (const f of result.failed.concat(result.recent.failed)) tracker.log(`sync: "${names[f.id] || f.id}" not synced: ${f.error}`);
       if (result.failed.length && manual) vscode.window.showWarningMessage(`Nextcloud sync: ${result.failed.map((f) => `"${names[f.id] || f.id}"`).join(', ')} could not be synced; the others were. Details in the output channel Claude Sessions.`);
@@ -2386,6 +2386,14 @@ function activate(context) {
     context.subscriptions.push({ dispose: () => clearInterval(backupTimer) });
   });
   syncInterval = setInterval(() => runSync(false), syncSettings().intervalMinutes * 60 * 1000);
+  let lagSeen = Date.now();
+  const lagTimer = setInterval(() => {
+    const now = Date.now();
+    const lag = now - lagSeen - 1000;
+    lagSeen = now;
+    if (lag > 1000) tracker.log(`stall: extension host blocked for ${lag} ms`);
+  }, 1000);
+  context.subscriptions.push({ dispose: () => clearInterval(lagTimer) });
   heartbeatInterval = setInterval(() => runHeartbeat(false).catch((err) => tracker.log(`heartbeat failed: ${err.message}`)), syncSettings().checkSeconds * 1000);
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
     setTimeout(() => checkForUpdates(false), 30000);
