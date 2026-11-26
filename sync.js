@@ -9,6 +9,8 @@ const { filesForSession, readStateFile, writeStatePatch, listRepoSessions } = re
 const SESSION_FILE = /^[0-9a-zA-Z-]+\.jsonl$/;
 // Proxies in front of Nextcloud cap request bodies (Cloudflare: 100 MB); larger files go up in chunks of this size.
 const CHUNK_BYTES = 32 * 1024 * 1024;
+const RUNNING_UPLOAD_MS = 6 * 60 * 60 * 1000;
+const RUNNING_DEFER_BYTES = 64 * 1024 * 1024;
 
 function repoKey(wsPath) {
   return path.basename(path.resolve(wsPath));
@@ -279,7 +281,7 @@ async function syncFavorites(options) {
   }
 }
 
-async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), machine = machineId(), legacy = legacyMachineId(), now = Date.now(), fetchImpl, chunkBytes, recentDays = 0 }) {
+async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions', running = new Set(), machine = machineId(), legacy = legacyMachineId(), now = Date.now(), fetchImpl, chunkBytes, recentDays = 0, deferBytes = RUNNING_DEFER_BYTES }) {
   const isMine = (lock) => Boolean(lock) && (lock.machine === machine || lock.machine === legacy);
   const dav = new WebDav(creds, fetchImpl, { chunkBytes });
   const folderParts = [folder, repoKey(wsPath)];
@@ -287,7 +289,7 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   await dav.ensureFolder(lockParts);
   const remote = await dav.list(folderParts);
   const remoteLocks = await dav.list(lockParts);
-  const result = { downloaded: [], uploaded: [], failed: [], skippedRunning: [], locked: [], released: [], conflicts: [], diverged: [], forked: [], favorites: 0 };
+  const result = { downloaded: [], uploaded: [], failed: [], skippedRunning: [], deferredRunning: [], locked: [], released: [], conflicts: [], diverged: [], forked: [], favorites: 0 };
 
   let remoteState = {};
   if (remote.has('state.json')) {
@@ -369,6 +371,10 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
     const cached = localCache[id];
     const unchanged = cached && cached.size === local.size && cached.mtimeMs === local.mtimeMs;
     if (unchanged && rec && cached.hash === rec.hash) return;
+    if (running.has(id) && local.size > deferBytes && !heldElsewhere(id) && now - entry.mtimeSec * 1000 < RUNNING_UPLOAD_MS) {
+      result.deferredRunning.push(id);
+      return;
+    }
     const localBody = completeLines(await fsp.readFile(local.file));
     const localHash = sha256(localBody);
     if (rec && localHash === rec.hash) return;
@@ -455,7 +461,12 @@ async function syncLocked({ creds, wsPath, stateFile, folder = 'Claude Sessions'
   for (const id of merged) if (!localFav.has(id) && !toggledOff.includes(id)) localNow[id] = true;
   for (const f of forks) localNow[f.forkId] = true;
   const files = {};
+  const pending = new Set([...result.deferredRunning, ...result.skippedRunning]);
   for (const id of final) {
+    if (pending.has(id)) {
+      if (localCache[id]) files[id] = localCache[id];
+      continue;
+    }
     const local = await newestFile(id);
     if (local && manifest[id]) files[id] = { size: local.size, mtimeMs: local.mtimeMs, hash: manifest[id].hash };
   }

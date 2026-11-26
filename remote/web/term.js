@@ -110,7 +110,6 @@ export function createTerm(el) {
   let ratio = null;
   let scrollLocked = false;
   let cols = 80;
-  let rows = 24;
 
   function scale() {
     if (!ratio) ratio = charRatio();
@@ -127,7 +126,6 @@ export function createTerm(el) {
     term,
     reset(c, r, bytes) {
       cols = c;
-      rows = r;
       term.reset();
       if (term.cols !== c || term.rows !== r) term.resize(c, r);
       scale();

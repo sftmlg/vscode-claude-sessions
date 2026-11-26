@@ -2,7 +2,7 @@
   "name": "vscode-claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Keeps Claude Code sessions in VS Code terminal tabs restorable: tab names, order and splits are saved per repository and restored with one click.",
-  "version": "0.44.0",
+  "version": "0.46.0",
   "publisher": "sftmlg",
   "license": "MIT",
   "repository": {
@@ -17,10 +17,11 @@
     "onStartupFinished"
   ],
   "scripts": {
-    "test": "node --test --test-force-exit test/*.test.js remote/test/*.test.js",
+    "test": "node --test --test-force-exit test/*.test.js remote/test/*.test.js && node --test --test-force-exit test/alone/*.test.js",
     "list": "node cli.js list",
     "bench": "node bench.js",
-    "verify": "node --check extension.js && node --check sessions.js && node --check hub.js && node --check promptSelect.js && node --check cli.js && for f in remote/*.js; do node --check \"$f\" || exit 1; done && npm test",
+    "lint": "scripts/check-foundation.sh && biome check --diagnostic-level=error .",
+    "verify": "npm run lint && node --check extension.js && node --check sessions.js && node --check hub.js && node --check promptSelect.js && node --check cli.js && for f in remote/*.js; do node --check \"$f\" || exit 1; done && npm test",
     "release": "./release.sh"
   },
   "contributes": {
@@ -752,5 +753,9 @@
   },
   "dependencies": {
     "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.7",
+    "lefthook": "2.2.4"
   }
 }

@@ -58,9 +58,18 @@ async function activeItemFor(api, terminal) {
   return flat.find((i) => i.data && i.data.terminal === terminal);
 }
 
+async function shownInactive(api) {
+  let items = await api.inactiveView.getChildren();
+  while (api.inactiveView.rebuilding) {
+    await api.inactiveView.rebuilding;
+    items = await api.inactiveView.getChildren();
+  }
+  return items;
+}
+
 async function inactiveItemFor(api, sessionId) {
   api.inactiveView.needsFull = true;
-  const items = await api.inactiveView.getChildren();
+  const items = await shownInactive(api);
   return items.find((i) => i.data && i.data.tab && i.data.tab.sessionId === sessionId);
 }
 
@@ -110,7 +119,7 @@ test('a close followed by a fast refresh still lists the closed session', async 
   t.dispose();
   api.inactiveView.refresh();
   api.inactiveView.refresh(true);
-  const items = await api.inactiveView.getChildren();
+  const items = await shownInactive(api);
   assert.ok(items.some((i) => i.data && i.data.tab && i.data.tab.sessionId === id));
   api.deactivate();
 });
@@ -253,12 +262,12 @@ test('a session that ends a little after its tab closed still moves to Inactive'
   t.dispose();
   await api.tracker.poll();
   await new Promise((r) => setTimeout(r, 80));
-  const during = await api.inactiveView.getChildren();
+  const during = await shownInactive(api);
   assert.ok(!during.some((i) => i.data && i.data.tab && i.data.tab.sessionId === id), 'still running, not yet inactive');
   stopClaude(claude);
   await api.tracker.poll();
   await new Promise((r) => setTimeout(r, 80));
-  const after = await api.inactiveView.getChildren();
+  const after = await shownInactive(api);
   assert.ok(after.some((i) => i.data && i.data.tab && i.data.tab.sessionId === id), 'listed once it ended');
   api.deactivate();
 });
@@ -576,6 +585,26 @@ test('a burst of refreshes redraws a view once', async () => {
   await new Promise((r) => setTimeout(r, 120));
   assert.strictEqual(fired, 1);
   assert.strictEqual(api.inactiveView.needsFull, true, 'a full refresh in the burst is kept');
+  api.deactivate();
+});
+
+test('switching between terminals redraws Active but leaves Inactive alone', async () => {
+  const { fake, api } = await setup();
+  const a = fake.vscode.window.createTerminal({ name: 'a' });
+  const b = fake.vscode.window.createTerminal({ name: 'b' });
+  a.show();
+  await api.activeView.ready;
+  await new Promise((r) => setTimeout(r, 200));
+  let active = 0;
+  let inactive = 0;
+  api.activeView.onDidChangeTreeData(() => active++);
+  api.inactiveView.onDidChangeTreeData(() => inactive++);
+  for (let i = 0; i < 6; i++) {
+    (i % 2 ? a : b).show();
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  assert.ok(active > 0, 'Active follows the focus');
+  assert.strictEqual(inactive, 0, 'focus changes do not rebuild Inactive');
   api.deactivate();
 });
 
@@ -1318,4 +1347,122 @@ test('a backup restores a whole split in its order', async () => {
   assert.deepStrictEqual(fake.panes.map((g) => g.map((x) => x.name)), [['left', 'middle', 'right'], ['alone']]);
   assert.deepStrictEqual(api.tracker.groups.map((g) => g.map((x) => x.name)), [['left', 'middle', 'right'], ['alone']], 'the tracked splits match what VS Code shows');
   api.deactivate();
+});
+
+test('Refresh keeps the Inactive list on screen and swaps in the rebuilt list when it is ready', async () => {
+  const first = 'bbbbbbbb-0000-0000-0000-00000000001b';
+  const later = 'bbbbbbbb-0000-0000-0000-00000000002b';
+  writeSession(first, 'already listed');
+  const { api } = await setup();
+  try {
+    const before = await shownInactive(api);
+    assert.ok(before.some((i) => i.data && i.data.tab && i.data.tab.sessionId === first));
+    writeSession(later, 'new since the last list');
+    const slow = api.inactiveView.inactiveSessions.bind(api.inactiveView);
+    api.inactiveView.inactiveSessions = async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      return slow();
+    };
+    let fired = 0;
+    api.inactiveView.onDidChangeTreeData(() => fired++);
+    api.inactiveView.refresh();
+    await settle();
+    const started = Date.now();
+    const during = await api.inactiveView.getChildren();
+    assert.ok(Date.now() - started < 100, 'the list comes back at once instead of waiting for the rebuild');
+    assert.ok(during.some((i) => i.data && i.data.tab && i.data.tab.sessionId === first), 'the previous list stays visible');
+    const firedBefore = fired;
+    await api.inactiveView.rebuilding;
+    assert.ok(fired > firedBefore, 'the view is told to redraw once the rebuild is done');
+    const after = await api.inactiveView.getChildren();
+    assert.ok(after.some((i) => i.data && i.data.tab && i.data.tab.sessionId === later), 'the rebuilt list has the new session');
+  } finally {
+    api.deactivate();
+  }
+});
+
+test('the layout scan waits for the focus to really move, not for a late event about the old tab', async () => {
+  const { fake, api } = await setup();
+  try {
+    const a = fake.vscode.window.createTerminal({ name: 'a' });
+    const b = fake.vscode.window.createTerminal({ name: 'b' });
+    a.show();
+    const started = Date.now();
+    const waiting = api.tracker.waitForActive(a, 600);
+    setTimeout(() => {
+      fake.vscode.window.activeTerminal = b;
+      a.show();
+    }, 10);
+    setTimeout(() => b.show(), 200);
+    await waiting;
+    assert.ok(Date.now() - started >= 150, 'a repeated event for the same tab does not end the wait');
+    assert.strictEqual(fake.vscode.window.activeTerminal, b);
+  } finally {
+    api.deactivate();
+  }
+});
+
+const listedIds = (items) => items.filter((i) => i.data && i.data.tab).map((i) => i.data.tab.sessionId);
+
+test('after a restart Inactive shows the last list at once and swaps in the rebuilt one', async () => {
+  const gs = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-'));
+  const known = 'cccccccc-0000-0000-0000-00000000001c';
+  const added = 'cccccccc-0000-0000-0000-00000000002c';
+  writeSession(known, 'listed before the restart');
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: gs });
+  fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  const api = fake.activate();
+  try {
+    assert.ok(listedIds(await shownInactive(api)).includes(known));
+    for (let i = 0; i < 50 && !fs.readdirSync(gs).some((f) => /^inactive-.*\.json$/.test(f)); i++) await settle();
+  } finally {
+    api.deactivate();
+  }
+  writeSession(added, 'new while the window was closed');
+  const again = createFakeVscode({ workspacePath: workspace, globalStoragePath: gs });
+  again.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  const restarted = again.activate();
+  try {
+    const started = Date.now();
+    const first = await restarted.inactiveView.getChildren();
+    assert.ok(Date.now() - started < 100, 'the saved list comes back without waiting for a rebuild');
+    assert.ok(listedIds(first).includes(known), 'the list from before the restart is on screen');
+    assert.ok(!listedIds(first).includes(added));
+    assert.ok(listedIds(await shownInactive(restarted)).includes(added), 'the rebuilt list replaces it');
+  } finally {
+    restarted.deactivate();
+  }
+});
+
+test('without a saved list, Inactive shows the first sessions read instead of an empty view', async () => {
+  const ids = Array.from({ length: 40 }, (_, i) => `dddddddd-0000-0000-0000-${String(i).padStart(12, '0')}`);
+  for (const [i, id] of ids.entries()) writeSession(id, `cold start ${i}`, i);
+  const { api } = await setup();
+  try {
+    const first = listedIds(await api.inactiveView.getChildren());
+    assert.ok(first.length >= 1, 'something is listed right away');
+    assert.ok(first.length < ids.length, `the first answer is partial (${first.length})`);
+    const full = listedIds(await shownInactive(api));
+    for (const id of ids) assert.ok(full.includes(id), id);
+  } finally {
+    api.deactivate();
+  }
+});
+
+test('Inactive lists sessions started by a person and leaves out headless automated runs', async () => {
+  const person = 'eeeeeeee-0000-0000-0000-00000000001e';
+  const robot = 'eeeeeeee-0000-0000-0000-00000000002e';
+  const at = new Date().toISOString();
+  const write = (id, entrypoint, text) =>
+    fs.writeFileSync(path.join(projectDir, `${id}.jsonl`), `${JSON.stringify({ type: 'user', cwd: workspace, timestamp: at, entrypoint, message: { content: text } })}\n`);
+  write(person, 'cli', 'typed by a person');
+  write(robot, 'sdk-cli', 'ROLE: helper run');
+  const { api } = await setup();
+  try {
+    const shown = listedIds(await shownInactive(api));
+    assert.ok(shown.includes(person));
+    assert.ok(!shown.includes(robot));
+  } finally {
+    api.deactivate();
+  }
 });

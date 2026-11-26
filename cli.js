@@ -2,11 +2,13 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions, archiveDuplicates, searchSessions, readState } = require('./sessions');
+const { listRepoSessions, sessionSummary, oneLine, renameSession, metaForSession, SLUG_RE, archiveInState, pickByName, readRunningSessions, archiveDuplicates, searchSessions, readState, classifyRepo, cleanupAutomated } = require('./sessions');
 
 const USAGE = [
   'Usage:',
-  '  node cli.js list [repo-path] [--days N] [--json]',
+  '  node cli.js list [repo-path] [--days N] [--json] [--all]   (--all also lists automated sessions)',
+  '  node cli.js classify [repo-path] [--days N] [--json]   (counts of interactive and automated sessions, by entrypoint and size)',
+  '  node cli.js cleanup [repo-path] [--older-than DAYS] [--apply]   (moves automated sessions older than DAYS, default 7, to projects-archive; dry run unless --apply; running, favorite and named sessions stay)',
   '  node cli.js search <query> [repo-path] [--days N]   (all words must occur; ranked by title hits, then frequency, then recency)',
   '  node cli.js rename <session-id> <name>',
   '  node cli.js archive-duplicates [repo-path] [--days N]   (keeps the newest session per name)',
@@ -191,9 +193,52 @@ async function main(argv) {
     const counts = moved.reduce((acc, m) => ({ ...acc, [m.name]: (acc[m.name] || 0) + 1 }), {});
     Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
-      .forEach(([name, n]) => console.log(`${String(n).padStart(4)}  ${name}`));
+      .forEach(([name, n]) => {
+        console.log(`${String(n).padStart(4)}  ${name}`);
+      });
     console.log(`${moved.length} older duplicates archived`);
     return 0;
+  }
+  if (command === 'classify') {
+    const daysIndex = rest.indexOf('--days');
+    const days = daysIndex >= 0 ? Number(rest[daysIndex + 1]) : 30;
+    const repo = path.resolve(rest.find((a, i) => !a.startsWith('--') && rest[i - 1] !== '--days') || process.cwd());
+    const t0 = Date.now();
+    const rows = await classifyRepo(repo, days);
+    if (rest.includes('--json')) {
+      console.log(JSON.stringify(rows, null, 2));
+      return 0;
+    }
+    const groups = new Map();
+    for (const r of rows) {
+      const key = `${r.kind.padEnd(9)} entrypoint ${r.entrypoint || '-'}${r.lastEntrypoint && r.lastEntrypoint !== r.entrypoint ? ` -> ${r.lastEntrypoint}` : ''}`;
+      const g = groups.get(key) || { n: 0, bytes: 0 };
+      groups.set(key, { n: g.n + 1, bytes: g.bytes + r.bytes });
+    }
+    for (const [key, g] of [...groups].sort((a, b) => b[1].n - a[1].n)) console.log(`${String(g.n).padStart(6)}  ${(g.bytes / 1e6).toFixed(0).padStart(7)} MB  ${key}`);
+    console.log(`${rows.length} sessions in ${repo} (last ${days} days) classified in ${Date.now() - t0} ms`);
+    return 0;
+  }
+  if (command === 'cleanup') {
+    const ageIndex = rest.indexOf('--older-than');
+    const olderThanDays = ageIndex >= 0 ? Number(rest[ageIndex + 1]) : 7;
+    if (!(olderThanDays >= 0)) {
+      console.error('--older-than needs a number of days');
+      return 1;
+    }
+    const apply = rest.includes('--apply');
+    const repo = path.resolve(rest.find((a, i) => !a.startsWith('--') && rest[i - 1] !== '--older-than') || process.cwd());
+    const r = await cleanupAutomated(repo, { olderThanDays, apply });
+    const mb = (r.candidates.reduce((n, c) => n + c.bytes, 0) / 1e6).toFixed(0);
+    console.log(`${r.scanned} sessions in ${repo}`);
+    console.log(`kept: ${r.recent} active within ${olderThanDays} days · ${r.ours} interactive · ${r.running} running · ${r.favorite} favorites · ${r.named} named`);
+    if (!apply) {
+      console.log(`would move ${r.candidates.length} automated sessions (${mb} MB) older than ${olderThanDays} days; run again with --apply`);
+      return 0;
+    }
+    console.log(`moved ${r.moved.length} files of ${r.candidates.length} automated sessions (${mb} MB) to ${r.archiveDirs.join(', ') || '(nothing moved)'}`);
+    for (const f of r.failed) console.error(`not moved ${f.file}: ${f.error}`);
+    return r.failed.length ? 1 : 0;
   }
   if (command === 'search' && rest.length >= 1) {
     const daysIndex = rest.indexOf('--days');
@@ -217,7 +262,7 @@ async function main(argv) {
   const days = daysIndex >= 0 ? Number(rest[daysIndex + 1]) : 14;
   const json = rest.includes('--json');
   const repo = path.resolve(rest.find((a, i) => !a.startsWith('--') && rest[i - 1] !== '--days') || process.cwd());
-  const sessions = await listRepoSessions(repo, days);
+  const sessions = await listRepoSessions(repo, days, { all: rest.includes('--all') });
   if (json) {
     console.log(JSON.stringify(sessions.map(({ file, ...s }) => s), null, 2));
     return 0;

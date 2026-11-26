@@ -79,7 +79,7 @@ function checkSubscription(sub, hosts) {
 }
 
 function cleanText(value, max) {
-  return String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').slice(0, max);
+  return String(value == null ? '' : value).replace(/[\p{Cc}\u2028\u2029]/gu, ' ').slice(0, max);
 }
 
 function cleanUrl(value) {

@@ -732,7 +732,7 @@ function setBusy(button, on) {
     button.textContent = button.dataset.label;
   }
   button.setAttribute('aria-busy', String(on));
-  button['disabled'] = on;
+  button.toggleAttribute('disabled', on);
 }
 
 function inert(node, reason) {
@@ -1566,10 +1566,12 @@ function init() {
     e.preventDefault();
     conn.send({ t: 'pair', deviceName: $('device-name').value.trim() || 'device' });
   });
-  window.addEventListener('online', () => hosts.forEach((h) => h.connect()));
+  window.addEventListener('online', () => {
+    for (const h of hosts) h.connect();
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') return releaseClaim(true);
-    hosts.forEach((h) => h.connect());
+    for (const h of hosts) h.connect();
     if (state.reclaim && state.current && state.tab === 'terminal' && conn.authed) {
       state.reclaim = false;
       state.claim = true;

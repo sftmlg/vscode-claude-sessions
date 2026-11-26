@@ -67,11 +67,34 @@ function installedOnDisk(extensionId, version, dirs) {
   });
 }
 
-async function latestRelease(fetch = get, timeoutMs = LATEST_TIMEOUT_MS) {
-  const body = await withTimeout(Promise.resolve(fetch(`https://api.github.com/repos/${REPO}/releases/latest`)), timeoutMs, 'release lookup');
-  const release = JSON.parse(body.toString('utf8'));
-  const asset = (release.assets || []).find((a) => a.name.endsWith('.vsix'));
-  return asset ? { version: release.tag_name.replace(/^v/, ''), url: asset.browser_download_url } : null;
+function redirectTarget(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: 'HEAD', headers: { 'User-Agent': 'vscode-claude-sessions' } }, (res) => {
+      res.resume();
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) return resolve(res.headers.location);
+      reject(new Error(`HEAD ${url} returned ${res.statusCode}`));
+    });
+    req.setTimeout(20000, () => req.destroy(new Error(`HEAD ${url} timed out`)));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function latestRelease(fetch = get, timeoutMs = LATEST_TIMEOUT_MS, redirect = redirectTarget) {
+  let apiError;
+  try {
+    const body = await withTimeout(Promise.resolve(fetch(`https://api.github.com/repos/${REPO}/releases/latest`)), timeoutMs, 'release lookup');
+    const release = JSON.parse(body.toString('utf8'));
+    const asset = (release.assets || []).find((a) => a.name.endsWith('.vsix'));
+    return asset ? { version: release.tag_name.replace(/^v/, ''), url: asset.browser_download_url } : null;
+  } catch (err) {
+    apiError = err;
+  }
+  const location = await withTimeout(Promise.resolve(redirect(`https://github.com/${REPO}/releases/latest`)), timeoutMs, 'release lookup').catch(() => '');
+  const tag = (String(location).match(/\/releases\/tag\/(v?\d+\.\d+\.\d+)$/) || [])[1];
+  if (!tag) throw apiError;
+  const version = tag.replace(/^v/, '');
+  return { version, url: `https://github.com/${REPO}/releases/download/${tag}/vscode-claude-sessions-${version}.vsix` };
 }
 
 async function downloadRelease(release, dir, fetch = get, timeoutMs = DOWNLOAD_TIMEOUT_MS) {

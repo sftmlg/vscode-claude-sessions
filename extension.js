@@ -3,6 +3,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const updater = require('./updater');
 const { createHub } = require('./hub');
@@ -46,6 +47,8 @@ const claudeBase = () => settings().get('claudeCommand') || 'claude';
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const SERVICE_RUNNER = path.join(os.homedir(), '.local', 'bin', 'claude-remote-run');
 const REATTACH_MS = 120000;
+const FOCUS_WAIT_MS = 1000;
+const PROGRESS_MS = 300;
 const SHUTDOWN = vscode.TerminalExitReason ? vscode.TerminalExitReason.Shutdown : 1;
 const inService = () => settings().get('remote.runInService') !== false && fs.existsSync(SERVICE_RUNNER);
 const claudeCommand = () => (inService() ? `${shellQuote(SERVICE_RUNNER)} ${claudeBase()}` : claudeBase());
@@ -73,7 +76,7 @@ function sessionTooltip(title, meta, rows = []) {
     facts.push(['Session', meta.id]);
   }
   md.appendMarkdown('| | |\n|---|---|\n');
-  facts.filter(([, v]) => v).forEach(([k, v]) => md.appendMarkdown(`| **${k}** | ${escapeMd(v)} |\n`));
+  for (const [k, v] of facts.filter(([, value]) => value)) md.appendMarkdown(`| **${k}** | ${escapeMd(v)} |\n`);
   if (meta && meta.lastUser) {
     md.appendMarkdown(`\n---\n\n**Last message** · ${timeAgo(meta.lastUser.at)}\n\n${escapeMd(oneLine(meta.lastUser.text, 400))}\n`);
   }
@@ -243,9 +246,13 @@ class Tracker {
   }
 
   rememberName(sessionId, name) {
+    this.rememberNames({ [sessionId]: name });
+  }
+
+  rememberNames(updates) {
     const names = this.store.readState().names || {};
-    if (names[sessionId] === name) return;
-    this.store.writeState({ names: { ...names, [sessionId]: name } });
+    const changed = Object.entries(updates).filter(([id, name]) => names[id] !== name);
+    if (changed.length) this.store.writeState({ names: { ...names, ...Object.fromEntries(changed) } });
   }
 
   setTerminalFocus(value) {
@@ -297,6 +304,7 @@ class Tracker {
   async pollOnce() {
     this.syncGroups();
     const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
+    const userNames = {};
     for (const t of this.liveTerminals()) {
       const m = this.meta.get(t) || { name: '', nameSource: 'auto', sessionId: null, cwd: null };
       const pid = await withTimeout(t.processId, 1000).catch(() => undefined);
@@ -321,7 +329,7 @@ class Tracker {
         m.cwd = si ? si.fsPath : pid ? await cwdOfPid(pid) : null;
       }
       this.observeName(t, m);
-      if (m.nameSource === 'user' && m.sessionId && m.name) this.rememberName(m.sessionId, m.name);
+      if (m.nameSource === 'user' && m.sessionId && m.name) userNames[m.sessionId] = m.name;
       const status = s ? s.status || 'idle' : m.sessionId ? 'exited' : null;
       if (status === 'busy' && m.status !== 'busy' && vscode.window.activeTerminal === t && vscode.window.state.focused && !this.editorFocusedSince(m.statusChangedAt)) this.setTerminalFocus(true);
       if (status !== m.status) m.statusChangedAt = Date.now();
@@ -334,6 +342,7 @@ class Tracker {
       m.status = status;
       this.meta.set(t, m);
     }
+    this.rememberNames(userNames);
     const signature = JSON.stringify(this.groups.map((g) => g.map((t) => [(this.meta.get(t) || {}).name, (this.meta.get(t) || {}).sessionId, (this.meta.get(t) || {}).status])));
     const live = JSON.stringify([...running.values()].map((r) => r.sessionId).sort());
     if (signature !== this.lastSignature || live !== this.lastLive) {
@@ -364,10 +373,11 @@ class Tracker {
     this.onChange.fire();
   }
 
-  async waitForActive(previous, ms = 250) {
+  async waitForActive(previous, ms = FOCUS_WAIT_MS) {
     if (vscode.window.activeTerminal !== previous) return;
     await new Promise((resolve) => {
       const sub = vscode.window.onDidChangeActiveTerminal(() => {
+        if (vscode.window.activeTerminal === previous) return;
         sub.dispose();
         resolve();
       });
@@ -389,7 +399,11 @@ class Tracker {
     if (!sizes || sizes.reduce((a, b) => a + b, 0) !== live.length) return false;
     if (this.groups.some((g) => g.length > 1)) return false;
     let i = 0;
-    this.groups = sizes.map((n) => live.slice(i, (i += n)));
+    this.groups = sizes.map((n) => {
+      const group = live.slice(i, i + n);
+      i += n;
+      return group;
+    });
     return true;
   }
 
@@ -399,7 +413,7 @@ class Tracker {
     const own = this.groups.find((g) => g.includes(t));
     if (!own || own.length > 1) return;
     this.scanning = true;
-    this.stepMs = 250;
+    this.stepMs = FOCUS_WAIT_MS;
     try {
       await this.command('workbench.action.terminal.focusPreviousPane');
       const neighbour = vscode.window.activeTerminal;
@@ -419,7 +433,7 @@ class Tracker {
   }
 
 
-  async scanLayout(stepMs = 250) {
+  async scanLayout(stepMs = FOCUS_WAIT_MS) {
     const live = this.liveTerminals();
     if (!live.length || this.scanning || this.disposed) return;
     this.scanning = true;
@@ -446,7 +460,7 @@ class Tracker {
           const anchor = leaders.length === 1 ? members.indexOf(leaders[0]) : members.reduce((best, t, i) => (creationIndex.get(t) < creationIndex.get(members[best]) ? i : best), 0);
           members = members.slice(anchor).concat(members.slice(0, anchor));
         }
-        members.forEach((t) => seen.add(t));
+        for (const t of members) seen.add(t);
         groups.push(members);
         await this.command('workbench.action.terminal.focusNext');
       }
@@ -560,6 +574,11 @@ class SessionsProvider {
     return e;
   }
 
+  resolveTreeItem(item, e) {
+    if (e && e.session && !e.tooltip) e.tooltip = sessionTooltip(e.session.title, e.session.meta, e.tooltipRows);
+    return e || item;
+  }
+
   label(sessionId, name) {
     return sessionId ? `${this.notifications.isFavorite(sessionId) ? '★' : '☆'} ${name}` : name;
   }
@@ -584,7 +603,7 @@ class SessionsProvider {
     item.iconPath = notice
       ? new vscode.ThemeIcon(notice.kind === 'waiting' ? 'bell-dot' : 'bell', new vscode.ThemeColor('charts.yellow'))
       : new vscode.ThemeIcon(look.icon);
-    let meta = m.sessionId ? peekMeta(m.sessionId) : null;
+    const meta = m.sessionId ? peekMeta(m.sessionId) : null;
     if (m.sessionId && !meta && !this.loadingMeta.has(m.sessionId)) {
       this.loadingMeta.add(m.sessionId);
       metaForSession(m.sessionId)
@@ -617,37 +636,105 @@ class SessionsProvider {
     );
   }
 
-  async inactiveSessions() {
-    const [metas, running, service] = await Promise.all([
-      listRepoSessions(this.store.wsPath, settings().get('historyDays') || 30),
+  async inactiveSessions(onProgress) {
+    const [running, service] = await Promise.all([
       readRunningSessions(),
       this.serviceSessions ? this.serviceSessions().catch(() => new Map()) : new Map(),
     ]);
-    const live = new Set([...running.values()].map((s) => s.sessionId));
+    const inService = (id) => service.has(id) && !service.get(id).attached;
+    const skip = new Set([...running.values()].map((s) => s.sessionId).filter((id) => !inService(id)));
     const saved = new Map(this.store.read().map((t) => [t.sessionId, t.name]));
     const names = this.store.readState().names || {};
-    const inService = (id) => service.has(id) && !service.get(id).attached;
-    return metas
-      .filter((m) => !live.has(m.id) || inService(m.id))
-      .map((m) => ({
-        id: m.id,
-        meta: m,
-        service: inService(m.id) ? service.get(m.id).tmux : undefined,
-        saved: saved.has(m.id),
-        title: names[m.id] || saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
-      }));
+    const toSession = (m) => ({
+      id: m.id,
+      meta: m,
+      service: inService(m.id) ? service.get(m.id).tmux : undefined,
+      saved: saved.has(m.id),
+      title: names[m.id] || saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
+    });
+    const metas = await listRepoSessions(this.store.wsPath, settings().get('historyDays') || 30, {
+      skip,
+      onProgress: onProgress && ((partial) => onProgress(() => partial.map(toSession))),
+    });
+    return metas.map(toSession);
   }
 
-  sessionItem(s, archived) {
-    const item = new vscode.TreeItem(this.label(s.id, s.title));
+  loadSnapshot(file) {
+    this.snapshotFile = file;
+    try {
+      const sessions = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (Array.isArray(sessions) && !this.sessionsCache) {
+        this.sessionsCache = sessions;
+        this.needsFull = true;
+      }
+    } catch {}
+  }
+
+  saveSnapshot(sessions) {
+    if (!this.snapshotFile) return;
+    const tmp = `${this.snapshotFile}.${process.pid}.tmp`;
+    fs.promises
+      .mkdir(path.dirname(this.snapshotFile), { recursive: true })
+      .then(() => fs.promises.writeFile(tmp, JSON.stringify(sessions)))
+      .then(() => fs.promises.rename(tmp, this.snapshotFile))
+      .catch(() => {});
+  }
+
+  rebuild() {
+    if (this.rebuilding) {
+      this.rebuildAgain = true;
+      return this.rebuilding;
+    }
+    const started = Date.now();
+    const hadCache = Boolean(this.sessionsCache);
+    let shownAt = 0;
+    const first = {};
+    this.firstBatch = new Promise((resolve) => {
+      first.resolve = resolve;
+    });
+    const progress = (partial) => {
+      if (hadCache || Date.now() - shownAt < PROGRESS_MS) return;
+      shownAt = Date.now();
+      this.sessionsCache = partial();
+      first.resolve(this.sessionsCache);
+      this.emitter.fire();
+    };
+    this.rebuilding = this.inactiveSessions(progress)
+      .then((sessions) => {
+        const shownPartial = Boolean(shownAt);
+        this.sessionsCache = sessions;
+        first.resolve(sessions);
+        this.saveSnapshot(sessions);
+        if (this.tracker.log) this.tracker.log(`inactive list: ${sessions.length} sessions in ${Date.now() - started} ms`);
+        if (hadCache || shownPartial) this.emitter.fire();
+        return sessions;
+      })
+      .catch((err) => {
+        if (this.tracker.log) this.tracker.log(`inactive list failed: ${err.message}`);
+        throw err;
+      })
+      .finally(() => {
+        this.rebuilding = null;
+        if (this.rebuildAgain) {
+          this.rebuildAgain = false;
+          this.rebuild().catch(() => {});
+        }
+      });
+    return this.rebuilding;
+  }
+
+  sessionItem(s, archived, state = this.store.readState()) {
+    const favorite = Boolean((state.favorites || {})[s.id]);
+    const item = new vscode.TreeItem(`${favorite ? '★' : '☆'} ${s.title}`);
     item.id = `${archived ? 'archived' : 'session'}:${s.id}`;
     const kind = s.service ? 'serviceSession' : archived ? 'archivedSession' : s.saved ? 'savedTab' : 'session';
-    item.contextValue = `${kind}${this.favSuffix(s.id)}`;
+    item.contextValue = `${kind}${favorite ? '.fav' : ''}`;
     item.iconPath = new vscode.ThemeIcon(s.service ? 'terminal-tmux' : archived ? 'archive' : s.saved ? 'bookmark' : 'comment-discussion');
-    const lock = ((this.store.readState().sync || {}).locks || {})[s.id];
+    const lock = ((state.sync || {}).locks || {})[s.id];
     const locked = lock && Date.now() - (lock.heartbeat || 0) < LOCK_TTL_MS ? lock.machine : '';
     item.description = `${locked ? `🔒 ${locked} · ` : ''}${s.service ? `running in ${s.service} · ` : ''}${sessionSummary(s.meta)}`;
-    item.tooltip = sessionTooltip(s.title, s.meta, [['Folder', s.meta.cwd], ['Locked by', locked], ['Running', s.service ? `in the service tmux session ${s.service}; ▶ attaches a tab to it` : '']]);
+    item.tooltipRows = [['Folder', s.meta.cwd], ['Locked by', locked], ['Running', s.service ? `in the service tmux session ${s.service}; ▶ attaches a tab to it` : '']];
+    item.session = s;
     item.data = { tab: { name: s.title, sessionId: s.id, cwd: s.meta.cwd } };
     item.command = { command: 'claudeSessions.openSessionFile', title: 'Open session file', arguments: [item] };
     return item;
@@ -660,18 +747,26 @@ class SessionsProvider {
       if (e.data.terminals) return Promise.all(e.data.terminals.map((t) => this.activeTabItem(t, true)));
       return [];
     }
-    if (e && e.data.kind === 'archiveFolder') return this.archive.map((s) => this.sessionItem(s, true));
+    if (e && e.data.kind === 'archiveFolder') {
+      const state = this.store.readState();
+      return this.archive.map((s) => this.sessionItem(s, true, state));
+    }
     if (e) return [];
-    const full = this.needsFull || !this.sessionsCache;
-    this.needsFull = false;
-    const sessions = full ? await this.inactiveSessions() : this.sessionsCache;
-    this.sessionsCache = sessions;
-    const archived = this.store.readState().archived || {};
-    const isFavorite = (id) => this.notifications.isFavorite(id);
+    let sessions = this.sessionsCache;
+    if (this.needsFull || !sessions) {
+      this.needsFull = false;
+      const build = this.rebuild();
+      build.catch(() => {});
+      if (!sessions) sessions = await Promise.race([build, this.firstBatch]);
+    }
+    const state = this.store.readState();
+    const archived = state.archived || {};
+    const favorites = state.favorites || {};
+    const isFavorite = (id) => Boolean(favorites[id]);
     if (this.filter) {
       const hits = await searchSessions(sessions, this.filter);
       if (this.onSearched) this.onSearched(hits.length);
-      return hits.map((s) => this.sessionItem(s, Boolean(archived[s.id])));
+      return hits.map((s) => this.sessionItem(s, Boolean(archived[s.id]), state));
     }
     const inactive = sortSessions(sessions.filter((s) => !archived[s.id]), isFavorite);
     this.archive = sortSessions(sessions.filter((s) => archived[s.id]), isFavorite);
@@ -680,7 +775,7 @@ class SessionsProvider {
     folder.contextValue = 'archiveFolder';
     folder.iconPath = new vscode.ThemeIcon('archive');
     folder.data = { kind: 'archiveFolder' };
-    return inactive.map((s) => this.sessionItem(s, false)).concat([folder]);
+    return inactive.map((s) => this.sessionItem(s, false, state)).concat([folder]);
   }
 }
 
@@ -891,6 +986,7 @@ function activate(context) {
   if (store.readState().priorities) store.writeState({ priorities: undefined });
   const activeView = new SessionsProvider('active', store, tracker, notifications);
   const inactiveView = new SessionsProvider('inactive', store, tracker, notifications);
+  if (context.globalStorageUri) inactiveView.loadSnapshot(path.join(context.globalStorageUri.fsPath, `inactive-${crypto.createHash('sha1').update(folder.uri.fsPath).digest('hex').slice(0, 12)}.json`));
   const remoteView = new RemoteProvider(notifications);
   const activeTree = vscode.window.createTreeView('claudeSessions.active', { treeDataProvider: activeView });
   const inactiveTree = vscode.window.createTreeView('claudeSessions.inactive', { treeDataProvider: inactiveView });
@@ -902,9 +998,9 @@ function activate(context) {
   };
   let hub = null;
   const view = {
-    refresh: (fast = false) => {
+    refresh: (fast = false, { inactive = !fast } = {}) => {
       activeView.refresh(fast);
-      inactiveView.refresh(fast);
+      if (inactive) inactiveView.refresh(fast);
       remoteView.refresh();
       if (hub) hub.requestPush();
     },
@@ -1107,7 +1203,7 @@ function activate(context) {
     try {
       const running = new Set([...(await readRunningSessions()).values()].map((r) => r.sessionId));
       const result = await syncFavorites({ creds: JSON.parse(stored), wsPath: store.wsPath, stateFile: store.file(), folder: syncSettings().folder, running, recentDays: syncSettings().recentDays });
-      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.recent.uploaded.length ? ` · ${result.recent.uploaded.length} recent up` : ''}${result.recent.pruned.length ? ` · ${result.recent.pruned.length} recent removed` : ''}${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
+      const summary = `${result.favorites} favorites · ${result.downloaded.length} down · ${result.uploaded.length} up${result.recent.uploaded.length ? ` · ${result.recent.uploaded.length} recent up` : ''}${result.recent.pruned.length ? ` · ${result.recent.pruned.length} recent removed` : ''}${result.skippedRunning.length ? ` · ${result.skippedRunning.length} running here, kept` : ''}${result.deferredRunning.length ? ` · ${result.deferredRunning.length} running here, upload deferred` : ''}${result.conflicts.length ? ` · ${result.conflicts.length} locked elsewhere` : ''}${result.forked.length ? ` · ${result.forked.length} forked` : ''}${result.diverged.length ? ` · ${result.diverged.length} diverged, running here` : ''}${result.failed.length ? ` · ${result.failed.length} failed` : ''}`;
       const names = store.readState().names || {};
       for (const f of result.failed.concat(result.recent.failed)) tracker.log(`sync: "${names[f.id] || f.id}" not synced: ${f.error}`);
       if (result.failed.length && manual) vscode.window.showWarningMessage(`Nextcloud sync: ${result.failed.map((f) => `"${names[f.id] || f.id}"`).join(', ')} could not be synced; the others were. Details in the output channel Claude Sessions.`);
@@ -1585,7 +1681,7 @@ function activate(context) {
     if (value) archived[sessionId] = true;
     else delete archived[sessionId];
     store.writeState({ archived });
-    view.refresh(true);
+    view.refresh(true, { inactive: true });
   };
 
   let remotePanel = null;
@@ -1736,7 +1832,7 @@ function activate(context) {
     return remotePanel;
   };
 
-  const minuteTimer = setInterval(() => view.refresh(true), 60000);
+  const minuteTimer = setInterval(() => view.refresh(true, { inactive: true }), 60000);
   updateBadge();
 
   const log = vscode.window.createOutputChannel('Claude Sessions');
@@ -1798,11 +1894,13 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.favorite', (item) => {
       const id = item.data.tab && item.data.tab.sessionId;
       if (id) notifications.setFavorite(id, true);
+      inactiveView.refresh(true);
       scheduleSync();
     }),
     vscode.commands.registerCommand('claudeSessions.unfavorite', (item) => {
       const id = item.data.tab && item.data.tab.sessionId;
       if (id) notifications.setFavorite(id, false);
+      inactiveView.refresh(true);
       scheduleSync();
     }),
     vscode.commands.registerCommand('claudeSessions.connectNextcloud', () => connectNextcloud()),
@@ -2173,7 +2271,7 @@ function activate(context) {
         need(typeof id === 'string' && id && typeof cmd.text === 'string' && cmd.text.trim(), 'sessionId/text');
         const term = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === id);
         if (!term) throw new Error('no tab');
-        const text = cmd.text.replace(/\x1b/g, '').replace(/\r\n?/g, '\n');
+        const text = cmd.text.replaceAll('\x1b', '').replace(/\r\n?/g, '\n');
         const busy = (tracker.meta.get(term) || {}).status === 'busy';
         const files = (await filesForSession(id)).map((f) => f.file);
         const watch = startDeliveryWatch(files, text, { timeoutMs: settings().get('hub.deliveryTimeoutMs') ?? 10000 });
@@ -2372,6 +2470,14 @@ function activate(context) {
     context.subscriptions.push({ dispose: () => clearInterval(backupTimer) });
   });
   syncInterval = setInterval(() => runSync(false), syncSettings().intervalMinutes * 60 * 1000);
+  let lagSeen = Date.now();
+  const lagTimer = setInterval(() => {
+    const now = Date.now();
+    const lag = now - lagSeen - 1000;
+    lagSeen = now;
+    if (lag > 1000) tracker.log(`stall: extension host blocked for ${lag} ms`);
+  }, 1000);
+  context.subscriptions.push({ dispose: () => clearInterval(lagTimer) });
   heartbeatInterval = setInterval(() => runHeartbeat(false).catch((err) => tracker.log(`heartbeat failed: ${err.message}`)), syncSettings().checkSeconds * 1000);
   if (settings().get('autoUpdate') !== false && context.globalStorageUri) {
     setTimeout(() => checkForUpdates(false), 30000);

@@ -91,7 +91,7 @@ test('tmux integration on a throwaway socket', async (t) => {
     assert.strictEqual(snap.cols, 100);
     assert.strictEqual(snap.rows, 20);
     assert.strictEqual(snap.lines.length, 20);
-    assert.deepStrictEqual(snap.lines.map((l) => l.replace(/\x1b\[[0-9;]*m/g, '').trimEnd()), capture(ctx, 'cc-args').split('\n').slice(0, 20).map((l) => l.trimEnd()));
+    assert.deepStrictEqual(snap.lines.map((l) => l.replace(/\p{Cc}\[[0-9;]*m/gu, '').trimEnd()), capture(ctx, 'cc-args').split('\n').slice(0, 20).map((l) => l.trimEnd()));
     await tmux.paste(ctx, 'cc-args', 'msg-2', 'stream ü');
     await waitFor(() => outputs.join('').includes('got:stream ü'), { what: 'streamed output' });
     await assert.rejects(cc.command('no-such-command'), /unknown command/);
