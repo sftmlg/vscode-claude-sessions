@@ -223,7 +223,7 @@ test('hub end to end on a throwaway tmux socket', async (t) => {
     await new Promise((r) => setTimeout(r, 300));
     assert.strictEqual(capture(ctx, 'cc-int').split('got:hello').length - 1, 1);
     const seqs = c.frames.filter((f) => f.sessionId === 'cc-int').map((f) => f.seq);
-    seqs.forEach((s, i) => i && assert.strictEqual(s, seqs[i - 1] + 1));
+    for (let i = 1; i < seqs.length; i++) assert.strictEqual(seqs[i], seqs[i - 1] + 1);
   });
 
   await t.test('a burst of sends and keys reaches the pane in order, one line each', async () => {

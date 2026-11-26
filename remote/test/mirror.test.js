@@ -52,7 +52,7 @@ test('mirror integration on a throwaway socket', async (t) => {
     for (let i = 0; i < 5; i++) await tmux.paste(ctx, 'cc-m', `b${i}`, `line ${i}`);
     await waitFor(() => a.text().includes('got:line 4'), { what: 'output' });
     const seqs = a.frames.map((f) => f.seq);
-    seqs.forEach((s, i) => i && assert.strictEqual(s, seqs[i - 1] + 1));
+    for (let i = 1; i < seqs.length; i++) assert.strictEqual(seqs[i], seqs[i - 1] + 1);
     assert.ok(a.frames.length - 1 < 10, `expected coalescing, got ${a.frames.length - 1} frames`);
   });
 

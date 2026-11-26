@@ -79,8 +79,7 @@
   function renderInline(doc, parent, text) {
     const re = /(`+)([\s\S]*?)\1|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
     let last = 0;
-    let m;
-    while ((m = re.exec(text))) {
+    for (let m = re.exec(text); m; m = re.exec(text)) {
       if (m.index > last) parent.appendChild(doc.createTextNode(text.slice(last, m.index)));
       if (m[2] !== undefined) parent.appendChild(el(doc, 'code', 'chat-code', m[2]));
       else if (m[3] !== undefined) parent.appendChild(el(doc, 'strong', null, m[3]));

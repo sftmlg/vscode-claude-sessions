@@ -99,7 +99,8 @@ class FakeNode {
   }
 
   addEventListener(type, fn) {
-    (this.listeners[type] = this.listeners[type] || []).push(fn);
+    this.listeners[type] = this.listeners[type] || [];
+    this.listeners[type].push(fn);
   }
 
   dispatch(type) {
@@ -163,8 +164,12 @@ function fakeApi(events, { pageEvents, live, reset, agentEvents } = {}) {
     onReset: (cb) => {
       resetHandlers.push(cb);
     },
-    emitLive: (msg) => liveHandlers.forEach((cb) => cb(msg)),
-    emitReset: (msg) => resetHandlers.forEach((cb) => cb(msg)),
+    emitLive: (msg) => {
+      for (const cb of liveHandlers) cb(msg);
+    },
+    emitReset: (msg) => {
+      for (const cb of resetHandlers) cb(msg);
+    },
   };
   if (agentEvents) api.requestAgentEvents = async (sessionId, toolUseId, opts) => agentEvents(sessionId, toolUseId, opts);
   return api;

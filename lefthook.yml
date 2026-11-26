@@ -1,0 +1,19 @@
+pre-commit:
+  parallel: true
+  commands:
+    foundation:
+      run: scripts/check-foundation.sh
+    lint:
+      glob: '*.{js,mjs,json}'
+      run: npx --no-install biome check --no-errors-on-unmatched --files-ignore-unknown=true --diagnostic-level=error {staged_files}
+
+commit-msg:
+  commands:
+    conventional-commit:
+      run: |
+        msg=$(head -1 {1})
+        if ! echo "$msg" | grep -qE '^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)(\(.+\))?: .{1,}'; then
+          echo "Invalid commit message: $msg"
+          echo "Must follow Conventional Commits, e.g. fix(inactive): keep the list on screen"
+          exit 1
+        fi

@@ -175,7 +175,7 @@ test('device names are stripped of control characters and capped', () => {
   const a = createAuth(tmpConfig());
   const { code } = a.createPairing(`a\x1b[31mb\u2028${'z'.repeat(200)}`);
   const d = a.approvePairing(code);
-  assert.ok(!/[\x00-\x1f\u2028]/.test(d.name));
+  assert.ok(!/[\p{Cc}\u2028]/u.test(d.name));
   assert.strictEqual(d.name.length, 64);
   const { code: c2 } = a.createPairing(undefined);
   assert.strictEqual(a.approvePairing(c2).name, 'device');

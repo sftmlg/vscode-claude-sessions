@@ -142,7 +142,9 @@ export class OutboxSender {
         this.waiting = false;
         this.pump();
       }, this.retryMs * later);
-      return { handled: true, later: m.error, first: !item.deferred && (item.deferred = true) };
+      const first = !item.deferred;
+      item.deferred = true;
+      return { handled: true, later: m.error, first };
     }
     this.outbox.remove(m.id);
     this.pump();

@@ -21,7 +21,10 @@ test('a repeat while the first delivery is in flight waits for it instead of run
   const q = new Queue(null);
   let runs = 0;
   let release;
-  const first = q.run('m', () => new Promise((r) => ((release = r), runs++)));
+  const first = q.run('m', () => new Promise((r) => {
+    release = r;
+    runs++;
+  }));
   const second = q.run('m', async () => (runs++, { ok: true }));
   assert.strictEqual(q.seen('m'), true);
   release({ ok: true });

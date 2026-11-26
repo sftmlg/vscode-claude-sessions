@@ -15,8 +15,8 @@ const registryDir = path.join(home, '.claude', 'sessions');
 fs.mkdirSync(projectDir, { recursive: true });
 fs.mkdirSync(registryDir, { recursive: true });
 
-const { createFakeVscode } = require('./fake-vscode');
-const { scoredSearch } = require('../sessions');
+const { createFakeVscode } = require('../fake-vscode');
+const { scoredSearch } = require('../../sessions');
 
 const SESSIONS = 300;
 const RUNNING = 32;

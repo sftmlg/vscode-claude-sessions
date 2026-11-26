@@ -56,7 +56,7 @@ function safeEqual(a, b) {
 
 function cleanName(name) {
   const s = typeof name === 'string' ? name : '';
-  const cleaned = s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '').trim().slice(0, NAME_MAX);
+  const cleaned = s.replace(/[\p{Cc}\u2028\u2029]/gu, '').trim().slice(0, NAME_MAX);
   return cleaned || 'device';
 }
 

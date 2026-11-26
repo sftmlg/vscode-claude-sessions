@@ -18,7 +18,7 @@ function assertName(name) {
 const paneTarget = (name) => `=${assertName(name)}:`;
 
 function stripControls(text) {
-  return String(text).replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+  return String(text).replace(/\r\n?/g, '\n').replace(/[^\P{Cc}\t\n]/gu, '');
 }
 
 function run(ctx, args, { input } = {}) {
@@ -126,8 +126,7 @@ class ControlClient extends EventEmitter {
 
   onData(chunk) {
     let buf = this.partial.length ? Buffer.concat([this.partial, chunk]) : chunk;
-    let at;
-    while ((at = buf.indexOf(0x0a)) >= 0) {
+    for (let at = buf.indexOf(0x0a); at >= 0; at = buf.indexOf(0x0a)) {
       this.onLine(buf.subarray(0, at));
       buf = buf.subarray(at + 1);
     }

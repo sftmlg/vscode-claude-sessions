@@ -218,7 +218,7 @@ test('sendText types into the tab of the session: one line, multi-line as one pa
     term.sendText = (text, newline) => {
       record(text, newline);
       if (text === '\r') {
-        if (!pasted.includes('a\nb')) fs.appendFileSync(jsonl, `${JSON.stringify({ type: 'user', message: { content: pasted.replace(/\u001b\[20[01]~/g, '') } })}\n`);
+        if (!pasted.includes('a\nb')) fs.appendFileSync(jsonl, `${JSON.stringify({ type: 'user', message: { content: pasted.replace(/\p{Cc}\[20[01]~/gu, '') } })}\n`);
       } else pasted = text;
     };
     api.tracker.meta.set(term, { name: 'target', nameSource: 'user', sessionId: id, status: 'idle' });

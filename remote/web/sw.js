@@ -63,5 +63,7 @@ self.addEventListener('notificationclick', (event) => {
 });
 
 self.addEventListener('pushsubscriptionchange', (event) => {
-  event.waitUntil(appWindows().then((windows) => windows.forEach((w) => w.postMessage({ t: 'pushSubscriptionChange' }))));
+  event.waitUntil(appWindows().then((windows) => {
+    for (const w of windows) w.postMessage({ t: 'pushSubscriptionChange' });
+  }));
 });

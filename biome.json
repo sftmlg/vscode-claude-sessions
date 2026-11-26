@@ -1,0 +1,8 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.7/schema.json",
+  "extends": ["./docs/foundation/biome.json"],
+  "files": { "includes": ["!!docs/foundation", "!!dist", "!!remote/web/vendor"] },
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "linter": { "rules": { "style": { "useBlockStatements": "warn" } } }
+}

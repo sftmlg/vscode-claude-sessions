@@ -11,3 +11,7 @@ remote/launchd/**
 remote/test/**
 remote/measurements/**
 node_modules/ws/**
+docs/**
+scripts/**
+biome.json
+lefthook.yml
