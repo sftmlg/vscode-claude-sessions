@@ -3,6 +3,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const updater = require('./updater');
 const { createHub } = require('./hub');
@@ -47,6 +48,7 @@ const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const SERVICE_RUNNER = path.join(os.homedir(), '.local', 'bin', 'claude-remote-run');
 const REATTACH_MS = 120000;
 const FOCUS_WAIT_MS = 1000;
+const PROGRESS_MS = 300;
 const SHUTDOWN = vscode.TerminalExitReason ? vscode.TerminalExitReason.Shutdown : 1;
 const inService = () => settings().get('remote.runInService') !== false && fs.existsSync(SERVICE_RUNNER);
 const claudeCommand = () => (inService() ? `${shellQuote(SERVICE_RUNNER)} ${claudeBase()}` : claudeBase());
@@ -74,7 +76,7 @@ function sessionTooltip(title, meta, rows = []) {
     facts.push(['Session', meta.id]);
   }
   md.appendMarkdown('| | |\n|---|---|\n');
-  facts.filter(([, v]) => v).forEach(([k, v]) => md.appendMarkdown(`| **${k}** | ${escapeMd(v)} |\n`));
+  for (const [k, v] of facts.filter(([, value]) => value)) md.appendMarkdown(`| **${k}** | ${escapeMd(v)} |\n`);
   if (meta && meta.lastUser) {
     md.appendMarkdown(`\n---\n\n**Last message** · ${timeAgo(meta.lastUser.at)}\n\n${escapeMd(oneLine(meta.lastUser.text, 400))}\n`);
   }
@@ -244,9 +246,13 @@ class Tracker {
   }
 
   rememberName(sessionId, name) {
+    this.rememberNames({ [sessionId]: name });
+  }
+
+  rememberNames(updates) {
     const names = this.store.readState().names || {};
-    if (names[sessionId] === name) return;
-    this.store.writeState({ names: { ...names, [sessionId]: name } });
+    const changed = Object.entries(updates).filter(([id, name]) => names[id] !== name);
+    if (changed.length) this.store.writeState({ names: { ...names, ...Object.fromEntries(changed) } });
   }
 
   setTerminalFocus(value) {
@@ -298,6 +304,7 @@ class Tracker {
   async pollOnce() {
     this.syncGroups();
     const [running, children] = await Promise.all([readRunningSessions(), processChildren()]);
+    const userNames = {};
     for (const t of this.liveTerminals()) {
       const m = this.meta.get(t) || { name: '', nameSource: 'auto', sessionId: null, cwd: null };
       const pid = await withTimeout(t.processId, 1000).catch(() => undefined);
@@ -322,7 +329,7 @@ class Tracker {
         m.cwd = si ? si.fsPath : pid ? await cwdOfPid(pid) : null;
       }
       this.observeName(t, m);
-      if (m.nameSource === 'user' && m.sessionId && m.name) this.rememberName(m.sessionId, m.name);
+      if (m.nameSource === 'user' && m.sessionId && m.name) userNames[m.sessionId] = m.name;
       const status = s ? s.status || 'idle' : m.sessionId ? 'exited' : null;
       if (status === 'busy' && m.status !== 'busy' && vscode.window.activeTerminal === t && vscode.window.state.focused && !this.editorFocusedSince(m.statusChangedAt)) this.setTerminalFocus(true);
       if (status !== m.status) m.statusChangedAt = Date.now();
@@ -335,6 +342,7 @@ class Tracker {
       m.status = status;
       this.meta.set(t, m);
     }
+    this.rememberNames(userNames);
     const signature = JSON.stringify(this.groups.map((g) => g.map((t) => [(this.meta.get(t) || {}).name, (this.meta.get(t) || {}).sessionId, (this.meta.get(t) || {}).status])));
     const live = JSON.stringify([...running.values()].map((r) => r.sessionId).sort());
     if (signature !== this.lastSignature || live !== this.lastLive) {
@@ -391,7 +399,11 @@ class Tracker {
     if (!sizes || sizes.reduce((a, b) => a + b, 0) !== live.length) return false;
     if (this.groups.some((g) => g.length > 1)) return false;
     let i = 0;
-    this.groups = sizes.map((n) => live.slice(i, (i += n)));
+    this.groups = sizes.map((n) => {
+      const group = live.slice(i, i + n);
+      i += n;
+      return group;
+    });
     return true;
   }
 
@@ -448,7 +460,7 @@ class Tracker {
           const anchor = leaders.length === 1 ? members.indexOf(leaders[0]) : members.reduce((best, t, i) => (creationIndex.get(t) < creationIndex.get(members[best]) ? i : best), 0);
           members = members.slice(anchor).concat(members.slice(0, anchor));
         }
-        members.forEach((t) => seen.add(t));
+        for (const t of members) seen.add(t);
         groups.push(members);
         await this.command('workbench.action.terminal.focusNext');
       }
@@ -591,7 +603,7 @@ class SessionsProvider {
     item.iconPath = notice
       ? new vscode.ThemeIcon(notice.kind === 'waiting' ? 'bell-dot' : 'bell', new vscode.ThemeColor('charts.yellow'))
       : new vscode.ThemeIcon(look.icon);
-    let meta = m.sessionId ? peekMeta(m.sessionId) : null;
+    const meta = m.sessionId ? peekMeta(m.sessionId) : null;
     if (m.sessionId && !meta && !this.loadingMeta.has(m.sessionId)) {
       this.loadingMeta.add(m.sessionId);
       metaForSession(m.sessionId)
@@ -624,25 +636,48 @@ class SessionsProvider {
     );
   }
 
-  async inactiveSessions() {
-    const [metas, running, service] = await Promise.all([
-      listRepoSessions(this.store.wsPath, settings().get('historyDays') || 30),
+  async inactiveSessions(onProgress) {
+    const [running, service] = await Promise.all([
       readRunningSessions(),
       this.serviceSessions ? this.serviceSessions().catch(() => new Map()) : new Map(),
     ]);
-    const live = new Set([...running.values()].map((s) => s.sessionId));
+    const inService = (id) => service.has(id) && !service.get(id).attached;
+    const skip = new Set([...running.values()].map((s) => s.sessionId).filter((id) => !inService(id)));
     const saved = new Map(this.store.read().map((t) => [t.sessionId, t.name]));
     const names = this.store.readState().names || {};
-    const inService = (id) => service.has(id) && !service.get(id).attached;
-    return metas
-      .filter((m) => !live.has(m.id) || inService(m.id))
-      .map((m) => ({
-        id: m.id,
-        meta: m,
-        service: inService(m.id) ? service.get(m.id).tmux : undefined,
-        saved: saved.has(m.id),
-        title: names[m.id] || saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
-      }));
+    const toSession = (m) => ({
+      id: m.id,
+      meta: m,
+      service: inService(m.id) ? service.get(m.id).tmux : undefined,
+      saved: saved.has(m.id),
+      title: names[m.id] || saved.get(m.id) || m.customTitle || m.aiTitle || oneLine(m.firstPrompt || (m.lastUser && m.lastUser.text), 60) || m.id,
+    });
+    const metas = await listRepoSessions(this.store.wsPath, settings().get('historyDays') || 30, {
+      skip,
+      onProgress: onProgress && ((partial) => onProgress(() => partial.map(toSession))),
+    });
+    return metas.map(toSession);
+  }
+
+  loadSnapshot(file) {
+    this.snapshotFile = file;
+    try {
+      const sessions = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (Array.isArray(sessions) && !this.sessionsCache) {
+        this.sessionsCache = sessions;
+        this.needsFull = true;
+      }
+    } catch {}
+  }
+
+  saveSnapshot(sessions) {
+    if (!this.snapshotFile) return;
+    const tmp = `${this.snapshotFile}.${process.pid}.tmp`;
+    fs.promises
+      .mkdir(path.dirname(this.snapshotFile), { recursive: true })
+      .then(() => fs.promises.writeFile(tmp, JSON.stringify(sessions)))
+      .then(() => fs.promises.rename(tmp, this.snapshotFile))
+      .catch(() => {});
   }
 
   rebuild() {
@@ -652,11 +687,26 @@ class SessionsProvider {
     }
     const started = Date.now();
     const hadCache = Boolean(this.sessionsCache);
-    this.rebuilding = this.inactiveSessions()
+    let shownAt = 0;
+    const first = {};
+    this.firstBatch = new Promise((resolve) => {
+      first.resolve = resolve;
+    });
+    const progress = (partial) => {
+      if (hadCache || Date.now() - shownAt < PROGRESS_MS) return;
+      shownAt = Date.now();
+      this.sessionsCache = partial();
+      first.resolve(this.sessionsCache);
+      this.emitter.fire();
+    };
+    this.rebuilding = this.inactiveSessions(progress)
       .then((sessions) => {
+        const shownPartial = Boolean(shownAt);
         this.sessionsCache = sessions;
+        first.resolve(sessions);
+        this.saveSnapshot(sessions);
         if (this.tracker.log) this.tracker.log(`inactive list: ${sessions.length} sessions in ${Date.now() - started} ms`);
-        if (hadCache) this.emitter.fire();
+        if (hadCache || shownPartial) this.emitter.fire();
         return sessions;
       })
       .catch((err) => {
@@ -705,8 +755,9 @@ class SessionsProvider {
     let sessions = this.sessionsCache;
     if (this.needsFull || !sessions) {
       this.needsFull = false;
-      if (sessions) this.rebuild().catch(() => {});
-      else sessions = await this.rebuild();
+      const build = this.rebuild();
+      build.catch(() => {});
+      if (!sessions) sessions = await Promise.race([build, this.firstBatch]);
     }
     const state = this.store.readState();
     const archived = state.archived || {};
@@ -935,6 +986,7 @@ function activate(context) {
   if (store.readState().priorities) store.writeState({ priorities: undefined });
   const activeView = new SessionsProvider('active', store, tracker, notifications);
   const inactiveView = new SessionsProvider('inactive', store, tracker, notifications);
+  if (context.globalStorageUri) inactiveView.loadSnapshot(path.join(context.globalStorageUri.fsPath, `inactive-${crypto.createHash('sha1').update(folder.uri.fsPath).digest('hex').slice(0, 12)}.json`));
   const remoteView = new RemoteProvider(notifications);
   const activeTree = vscode.window.createTreeView('claudeSessions.active', { treeDataProvider: activeView });
   const inactiveTree = vscode.window.createTreeView('claudeSessions.inactive', { treeDataProvider: inactiveView });
@@ -2219,7 +2271,7 @@ function activate(context) {
         need(typeof id === 'string' && id && typeof cmd.text === 'string' && cmd.text.trim(), 'sessionId/text');
         const term = tracker.liveTerminals().find((t) => (tracker.meta.get(t) || {}).sessionId === id);
         if (!term) throw new Error('no tab');
-        const text = cmd.text.replace(/\x1b/g, '').replace(/\r\n?/g, '\n');
+        const text = cmd.text.replaceAll('\x1b', '').replace(/\r\n?/g, '\n');
         const busy = (tracker.meta.get(term) || {}).status === 'busy';
         const files = (await filesForSession(id)).map((f) => f.file);
         const watch = startDeliveryWatch(files, text, { timeoutMs: settings().get('hub.deliveryTimeoutMs') ?? 10000 });

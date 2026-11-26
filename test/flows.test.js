@@ -1401,3 +1401,68 @@ test('the layout scan waits for the focus to really move, not for a late event a
     api.deactivate();
   }
 });
+
+const listedIds = (items) => items.filter((i) => i.data && i.data.tab).map((i) => i.data.tab.sessionId);
+
+test('after a restart Inactive shows the last list at once and swaps in the rebuilt one', async () => {
+  const gs = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-flows-gs-'));
+  const known = 'cccccccc-0000-0000-0000-00000000001c';
+  const added = 'cccccccc-0000-0000-0000-00000000002c';
+  writeSession(known, 'listed before the restart');
+  const fake = createFakeVscode({ workspacePath: workspace, globalStoragePath: gs });
+  fake.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  const api = fake.activate();
+  try {
+    assert.ok(listedIds(await shownInactive(api)).includes(known));
+    for (let i = 0; i < 50 && !fs.readdirSync(gs).some((f) => /^inactive-.*\.json$/.test(f)); i++) await settle();
+  } finally {
+    api.deactivate();
+  }
+  writeSession(added, 'new while the window was closed');
+  const again = createFakeVscode({ workspacePath: workspace, globalStoragePath: gs });
+  again.config['remote.tmuxSocket'] = `test-no-service-${process.pid}`;
+  const restarted = again.activate();
+  try {
+    const started = Date.now();
+    const first = await restarted.inactiveView.getChildren();
+    assert.ok(Date.now() - started < 100, 'the saved list comes back without waiting for a rebuild');
+    assert.ok(listedIds(first).includes(known), 'the list from before the restart is on screen');
+    assert.ok(!listedIds(first).includes(added));
+    assert.ok(listedIds(await shownInactive(restarted)).includes(added), 'the rebuilt list replaces it');
+  } finally {
+    restarted.deactivate();
+  }
+});
+
+test('without a saved list, Inactive shows the first sessions read instead of an empty view', async () => {
+  const ids = Array.from({ length: 40 }, (_, i) => `dddddddd-0000-0000-0000-${String(i).padStart(12, '0')}`);
+  for (const [i, id] of ids.entries()) writeSession(id, `cold start ${i}`, i);
+  const { api } = await setup();
+  try {
+    const first = listedIds(await api.inactiveView.getChildren());
+    assert.ok(first.length >= 1, 'something is listed right away');
+    assert.ok(first.length < ids.length, `the first answer is partial (${first.length})`);
+    const full = listedIds(await shownInactive(api));
+    for (const id of ids) assert.ok(full.includes(id), id);
+  } finally {
+    api.deactivate();
+  }
+});
+
+test('Inactive lists sessions started by a person and leaves out headless automated runs', async () => {
+  const person = 'eeeeeeee-0000-0000-0000-00000000001e';
+  const robot = 'eeeeeeee-0000-0000-0000-00000000002e';
+  const at = new Date().toISOString();
+  const write = (id, entrypoint, text) =>
+    fs.writeFileSync(path.join(projectDir, `${id}.jsonl`), `${JSON.stringify({ type: 'user', cwd: workspace, timestamp: at, entrypoint, message: { content: text } })}\n`);
+  write(person, 'cli', 'typed by a person');
+  write(robot, 'sdk-cli', 'ROLE: helper run');
+  const { api } = await setup();
+  try {
+    const shown = listedIds(await shownInactive(api));
+    assert.ok(shown.includes(person));
+    assert.ok(!shown.includes(robot));
+  } finally {
+    api.deactivate();
+  }
+});

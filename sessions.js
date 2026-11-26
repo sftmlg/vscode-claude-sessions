@@ -112,15 +112,19 @@ function withTimeout(promise, ms) {
 }
 
 const metaCache = new Map();
+const kindCache = new Map();
 let cacheDir = null;
 const saveTimers = {};
 
 function loadCache(dir) {
   cacheDir = dir;
-  try {
-    const data = JSON.parse(fs.readFileSync(path.join(dir, 'meta-cache.json'), 'utf8'));
-    for (const [file, entry] of Object.entries(data)) metaCache.set(file, entry);
-  } catch {}
+  for (const [name, map] of [['kind-cache.json', kindCache], ['meta-cache.json', metaCache]]) {
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+      for (const [file, entry] of Object.entries(data)) map.set(file, entry);
+    } catch {}
+  }
+  for (const [file, entry] of kindCache) if (sessionKind(entry) === 'automated') metaCache.delete(file);
 }
 
 async function loadTextCache() {
@@ -128,6 +132,10 @@ async function loadTextCache() {
   try {
     const data = JSON.parse(await fsp.readFile(path.join(cacheDir, 'text-cache.json'), 'utf8'));
     for (const [file, entry] of Object.entries(data)) {
+      if (sessionKind(kindCache.get(file)) === 'automated') {
+        scheduleSave('text');
+        continue;
+      }
       if (conversationCache.has(file) || !entry || typeof entry.text !== 'string') continue;
       conversationCache.set(file, entry.text.length > TEXT_CAP ? { ...entry, text: entry.text.slice(-TEXT_CAP) } : entry);
     }
@@ -136,7 +144,7 @@ async function loadTextCache() {
 
 function scheduleSave(kind = 'meta') {
   if (!cacheDir || saveTimers[kind]) return;
-  const [file, map, delay] = kind === 'text' ? ['text-cache.json', conversationCache, 60000] : ['meta-cache.json', metaCache, 5000];
+  const [file, map, delay] = { text: ['text-cache.json', conversationCache, 60000], kind: ['kind-cache.json', kindCache, 5000], meta: ['meta-cache.json', metaCache, 5000] }[kind];
   saveTimers[kind] = setTimeout(async () => {
     saveTimers[kind] = null;
     try {
@@ -376,9 +384,8 @@ function sessionSummary(meta) {
 
 
 function lastMatch(text, re) {
-  let m;
   let v = null;
-  while ((m = re.exec(text))) v = m[1];
+  for (let m = re.exec(text); m; m = re.exec(text)) v = m[1];
   return v === null ? null : decodeJsonString(v);
 }
 
@@ -546,6 +553,75 @@ function mergeMetas(metas) {
   return merged;
 }
 
+const CLASSIFY_CHUNK = 64 * 1024;
+const CLASSIFY_HEAD_MAX = 4 * 1024 * 1024;
+const ENTRYPOINT_RE = /"entrypoint":"([^"\\]*)"/;
+const SIDECHAIN_RE = /"isSidechain":(true|false)/;
+const CWD_RE = /"cwd":"((?:[^"\\]|\\.)*)"/;
+
+function sessionKind(fields) {
+  if (!fields) return 'unknown';
+  if (fields.isSidechain === true) return 'automated';
+  const seen = [fields.entrypoint, fields.lastEntrypoint].filter(Boolean);
+  if (!seen.length) return 'unknown';
+  return seen.some((e) => !e.startsWith('sdk-')) ? 'ours' : 'automated';
+}
+
+async function scanHead(handle, size) {
+  const end = Math.min(size, CLASSIFY_HEAD_MAX);
+  let text = '';
+  for (let pos = 0; pos < end; pos += CLASSIFY_CHUNK) {
+    text = text.slice(-1024) + (await readRange(handle, pos, Math.min(CLASSIFY_CHUNK, end - pos)));
+    const m = ENTRYPOINT_RE.exec(text);
+    if (m) {
+      const side = SIDECHAIN_RE.exec(text);
+      const cwd = CWD_RE.exec(text);
+      return { entrypoint: m[1], isSidechain: side ? side[1] === 'true' : undefined, cwd: cwd ? decodeJsonString(cwd[1]) : undefined, scanned: Math.min(end, pos + CLASSIFY_CHUNK) };
+    }
+  }
+  return { entrypoint: null, scanned: end };
+}
+
+async function classifyFile(file, st) {
+  const hit = kindCache.get(file);
+  const sameFile = hit && hit.ino === st.ino;
+  if (sameFile && hit.mtimeMs === st.mtimeMs) return { kind: sessionKind(hit), ...hit };
+  const handle = await fsp.open(file, 'r');
+  try {
+    const head = sameFile && (hit.entrypoint || hit.scanned >= CLASSIFY_HEAD_MAX) ? hit : await scanHead(handle, st.size);
+    const entry = { ino: st.ino, mtimeMs: st.mtimeMs, entrypoint: head.entrypoint, isSidechain: head.isSidechain, cwd: head.cwd, scanned: head.scanned };
+    if (sameFile && hit.lastEntrypoint) entry.lastEntrypoint = hit.lastEntrypoint;
+    if (sessionKind(entry) === 'automated' && st.size > head.scanned) {
+      const tail = await readRange(handle, Math.max(0, st.size - CLASSIFY_CHUNK), Math.min(st.size, CLASSIFY_CHUNK));
+      const last = lastMatch(tail, new RegExp(ENTRYPOINT_RE, 'g'));
+      if (last && sessionKind({ entrypoint: entry.lastEntrypoint }) !== 'ours') entry.lastEntrypoint = last;
+    }
+    kindCache.set(file, entry);
+    scheduleSave('kind');
+    return { kind: sessionKind(entry), ...entry };
+  } finally {
+    await handle.close();
+  }
+}
+
+function forgetFile(file) {
+  if (metaCache.delete(file)) scheduleSave('meta');
+  if (conversationCache.delete(file)) scheduleSave('text');
+}
+
+async function isOurSession(files) {
+  let ours = false;
+  for (const f of files) {
+    try {
+      if ((await classifyFile(f.file, f)).kind !== 'automated') ours = true;
+      else forgetFile(f.file);
+    } catch {
+      ours = true;
+    }
+  }
+  return ours;
+}
+
 const realpathCache = new Map();
 const REALPATH_TTL = 10 * 60000;
 
@@ -558,41 +634,70 @@ async function cachedRealpath(file, knownIno) {
   return real;
 }
 
-async function collectSessionFiles(dirFilter) {
-  const byId = new Map();
-  const seen = new Set();
+async function projectRoots() {
+  const roots = [];
   for (const d of claudeDirs()) {
-    const projects = path.join(d, 'projects');
-    let dirs = [];
     try {
-      dirs = await fsp.readdir(projects);
+      const real = await fsp.realpath(path.join(d, 'projects'));
+      if (!roots.includes(real)) roots.push(real);
+    } catch {}
+  }
+  return roots;
+}
+
+async function projectDirs(dirFilter) {
+  const dirs = [];
+  const seen = new Set();
+  for (const projects of await projectRoots()) {
+    let names = [];
+    try {
+      names = await fsp.readdir(projects);
     } catch {
       continue;
     }
-    for (const p of dirs) {
+    for (const p of names) {
       if (!dirFilter(p)) continue;
-      let files = [];
       try {
-        files = await fsp.readdir(path.join(projects, p));
-      } catch {
-        continue;
-      }
-      for (const f of files) {
-        if (!f.endsWith('.jsonl')) continue;
-        const file = path.join(projects, p, f);
-        let real;
-        let st;
-        try {
-          real = await cachedRealpath(file);
-          st = await fsp.stat(real);
-        } catch {
-          continue;
+        const real = await fsp.realpath(path.join(projects, p));
+        if (!seen.has(real)) {
+          seen.add(real);
+          dirs.push(real);
         }
-        if (seen.has(real)) continue;
-        seen.add(real);
-        const id = f.slice(0, -6);
-        if (!byId.has(id)) byId.set(id, []);
-        byId.get(id).push({ file: real, mtimeMs: st.mtimeMs });
+      } catch {}
+    }
+  }
+  return dirs;
+}
+
+const STAT_BATCH = 64;
+
+async function collectSessionFiles(dirFilter) {
+  const byId = new Map();
+  const seen = new Set();
+  for (const dir of await projectDirs(dirFilter)) {
+    let entries = [];
+    try {
+      entries = (await fsp.readdir(dir, { withFileTypes: true })).filter((e) => e.name.endsWith('.jsonl') && (e.isFile() || e.isSymbolicLink()));
+    } catch {
+      continue;
+    }
+    for (let i = 0; i < entries.length; i += STAT_BATCH) {
+      const batch = await Promise.all(
+        entries.slice(i, i + STAT_BATCH).map(async (e) => {
+          const file = path.join(dir, e.name);
+          try {
+            const real = e.isSymbolicLink() ? await cachedRealpath(file) : file;
+            return { id: e.name.slice(0, -6), real, st: await fsp.stat(real) };
+          } catch {
+            return null;
+          }
+        })
+      );
+      for (const hit of batch) {
+        if (!hit || seen.has(hit.real)) continue;
+        seen.add(hit.real);
+        if (!byId.has(hit.id)) byId.set(hit.id, []);
+        byId.get(hit.id).push({ file: hit.real, mtimeMs: hit.st.mtimeMs, ino: hit.st.ino, size: hit.st.size });
       }
     }
   }
@@ -622,24 +727,31 @@ async function sessionIndex(sessionId) {
 async function filesForSession(sessionId) {
   const found = [];
   const seen = new Set();
-  for (const d of claudeDirs()) {
-    const projects = path.join(d, 'projects');
+  for (const projects of await projectRoots()) {
     let dirs = [];
     try {
       dirs = await fsp.readdir(projects);
     } catch {
       continue;
     }
-    for (const p of dirs) {
-      const file = path.join(projects, p, `${sessionId}.jsonl`);
-      const st = fs.lstatSync(file, { throwIfNoEntry: false });
-      if (!st) continue;
-      try {
-        const real = await cachedRealpath(file, st.ino);
-        if (seen.has(real)) continue;
-        seen.add(real);
-        found.push({ file: real, mtimeMs: (await fsp.stat(real)).mtimeMs });
-      } catch {}
+    for (let i = 0; i < dirs.length; i += STAT_BATCH) {
+      const hits = await Promise.all(
+        dirs.slice(i, i + STAT_BATCH).map(async (p) => {
+          const file = path.join(projects, p, `${sessionId}.jsonl`);
+          try {
+            const st = await fsp.lstat(file);
+            const real = await cachedRealpath(file, st.ino);
+            return { real, mtimeMs: (await fsp.stat(real)).mtimeMs };
+          } catch {
+            return null;
+          }
+        })
+      );
+      for (const hit of hits) {
+        if (!hit || seen.has(hit.real)) continue;
+        seen.add(hit.real);
+        found.push({ file: hit.real, mtimeMs: hit.mtimeMs });
+      }
     }
   }
   return found;
@@ -713,17 +825,114 @@ async function archiveDuplicates(wsPath, days = 30) {
   return moved;
 }
 
-async function listRepoSessions(wsPath, days = 14, { exact = false } = {}) {
-  const encoded = wsPath.replace(/[^a-zA-Z0-9]/g, '-');
-  const byId = await collectSessionFiles((p) => p === encoded || (!exact && p.startsWith(`${encoded}-`)));
+const encodeRepo = (wsPath) => wsPath.replace(/[^a-zA-Z0-9]/g, '-');
+const repoFilter = (wsPath, exact) => {
+  const encoded = encodeRepo(wsPath);
+  return (p) => p === encoded || (!exact && p.startsWith(`${encoded}-`));
+};
+const newest = (files) => Math.max(...files.map((f) => f.mtimeMs));
+const yieldTurn = () => new Promise((r) => setImmediate(r));
+
+async function listRepoSessions(wsPath, days = 14, { exact = false, all = false, skip, onProgress } = {}) {
+  const byId = await collectSessionFiles(repoFilter(wsPath, exact));
   const cutoff = Date.now() - Math.max(1, days) * 86400000;
+  const recent = [...byId].filter(([id, files]) => !(skip && skip.has(id)) && newest(files) >= cutoff).sort((a, b) => newest(b[1]) - newest(a[1]));
   const metas = [];
-  for (const files of byId.values()) {
-    if (!files.some((f) => f.mtimeMs >= cutoff)) continue;
-    const meta = await metasFor(files);
-    if (meta && Date.parse(meta.lastActivity) >= cutoff) metas.push(meta);
+  let lastYield = Date.now();
+  for (const [, files] of recent) {
+    if (all || (await isOurSession(files))) {
+      const meta = await metasFor(files);
+      if (meta && Date.parse(meta.lastActivity) >= cutoff) {
+        metas.push(meta);
+        if (onProgress) onProgress(metas);
+      }
+    }
+    if (Date.now() - lastYield > YIELD_MS) {
+      await yieldTurn();
+      lastYield = Date.now();
+    }
   }
   return metas.sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
+}
+
+async function classifyRepo(wsPath, days = 30, { exact = false } = {}) {
+  const byId = await collectSessionFiles(repoFilter(wsPath, exact));
+  const cutoff = Date.now() - Math.max(1, days) * 86400000;
+  const rows = [];
+  for (const [id, files] of byId) {
+    if (newest(files) < cutoff) continue;
+    const kinds = [];
+    for (const f of files) kinds.push(await classifyFile(f.file, f).catch(() => ({ kind: 'unknown' })));
+    const pick = kinds.find((k) => k.kind !== 'automated') || kinds[0];
+    rows.push({ id, kind: pick.kind, entrypoint: pick.entrypoint || null, lastEntrypoint: pick.lastEntrypoint || null, bytes: files.reduce((n, f) => n + f.size, 0) });
+  }
+  return rows;
+}
+
+async function hasCustomTitle(file) {
+  const handle = await fsp.open(file, 'r');
+  try {
+    return Boolean((await scanTitles(handle, (await handle.stat()).size)).custom);
+  } finally {
+    await handle.close();
+  }
+}
+
+function archiveRootFor(file) {
+  return path.join(path.dirname(path.dirname(path.dirname(file))), 'projects-archive');
+}
+
+async function cleanupAutomated(wsPath, { olderThanDays = 7, apply = false, exact = false } = {}) {
+  const byId = await collectSessionFiles(repoFilter(wsPath, exact));
+  const cutoff = Date.now() - olderThanDays * 86400000;
+  const states = new Map();
+  const stateOf = (dir) => {
+    if (!states.has(dir)) states.set(dir, readState(dir));
+    return states.get(dir);
+  };
+  const marked = (id, key, files) => [wsPath, ...files.map((f) => (kindCache.get(f.file) || {}).cwd).filter(Boolean)].some((dir) => (stateOf(dir)[key] || {})[id]);
+  const liveIds = async () => new Set([...(await readRunningSessions()).values()].map((s) => s.sessionId));
+  let live = await liveIds();
+  const report = { scanned: byId.size, ours: 0, recent: 0, running: 0, favorite: 0, named: 0, candidates: [], moved: [], failed: [], archiveDirs: [] };
+  for (const [id, files] of byId) {
+    if (newest(files) >= cutoff) {
+      report.recent++;
+      continue;
+    }
+    if (await isOurSession(files)) {
+      report.ours++;
+      continue;
+    }
+    if (live.has(id)) report.running++;
+    else if (marked(id, 'favorites', files)) report.favorite++;
+    else if (marked(id, 'names', files) || (await Promise.all(files.map((f) => hasCustomTitle(f.file).catch(() => true)))).some(Boolean)) report.named++;
+    else report.candidates.push({ id, files: files.map((f) => f.file), bytes: files.reduce((n, f) => n + f.size, 0) });
+  }
+  if (!apply) return report;
+  live = await liveIds();
+  for (const c of report.candidates) {
+    if (live.has(c.id)) {
+      report.running++;
+      continue;
+    }
+    for (const file of c.files) {
+      const target = path.join(archiveRootFor(file), path.basename(path.dirname(file)));
+      const companion = path.join(path.dirname(file), c.id);
+      try {
+        await fsp.mkdir(target, { recursive: true });
+        const dest = path.join(target, path.basename(file));
+        if (fs.existsSync(dest)) throw new Error(`${dest} already exists`);
+        await fsp.rename(file, dest);
+        if (fs.existsSync(companion) && !fs.existsSync(path.join(target, c.id))) await fsp.rename(companion, path.join(target, c.id));
+        forgetFile(file);
+        if (!report.archiveDirs.includes(target)) report.archiveDirs.push(target);
+        report.moved.push({ id: c.id, from: file, to: dest });
+      } catch (err) {
+        report.failed.push({ id: c.id, file, error: err.message });
+      }
+    }
+  }
+  return report;
 }
 
 const TAB_STATES = {
@@ -779,4 +988,4 @@ function pickByName(sessions, name, runningIds = new Set()) {
   return sessions.filter((s) => s.customTitle && re.test(s.customTitle) && !runningIds.has(s.id));
 }
 
-module.exports = { filesForSession, sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, scoredSearch, conversationText, foldText, matchSnippet, deepSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
+module.exports = { sessionKind, classifyFile, classifyRepo, cleanupAutomated, archiveRootFor, filesForSession, sessionPaths, loadCache, loadTextCache, peekMeta, searchSessions, scoredSearch, conversationText, foldText, matchSnippet, deepSnippet, readStateFile, writeStatePatch, timeAgo, archiveDuplicates, readState, sessionName, archiveInState, pickByName, tabPresentation, SLUG_RE, renameSession, claudeDirs, readRunningSessions, processChildren, findSession, cwdOfPid, withTimeout, sleep, isSyntheticPrompt, formatTime, oneLine, sessionSummary, sessionMeta, metaForSession, listRepoSessions };
